@@ -1,0 +1,21 @@
+{
+  "projectId": "coldbrew-demo-001",
+  "heroShotId": "shot-03-focus",
+  "heroVideoAsset": {
+    "id": "coldbrew-demo-001-shot-03-focus-hero-video",
+    "projectId": "coldbrew-demo-001",
+    "shotId": "shot-03-focus",
+    "source": "happyhorse-api",
+    "fileName": "hero-shot.mp4",
+    "mimeType": "video/mp4",
+    "sizeBytes": 3267922,
+    "durationSec": 5.16,
+    "width": 720,
+    "height": 1280,
+    "aspectRatio": "9:16",
+    "localPath": "public/generated/coldbrew-demo-001/video/hero-shot.mp4",
+    "publicUrl": "/generated/coldbrew-demo-001/video/hero-shot.mp4",
+    "createdAt": "2026-07-14T14:42:01.851Z"
+  },
+  "updatedAt": "2026-07-14T14:42:01.851Z"
+}

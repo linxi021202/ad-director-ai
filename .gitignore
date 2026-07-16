@@ -1,0 +1,27 @@
+node_modules/
+.next/
+out/
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+*.log
+tsconfig.tsbuildinfo
+# Local runtime and browser-test artifacts
+.codex-dev*
+output/
+.playwright-cli/
+*.pid
+
+# User uploads and generated media must never enter source control
+public/generated/
+public/uploads/
+storage/
+
+# Keep only the checked-in cold brew demo state; ignore test/runtime project records
+data/projects/*
+!data/projects/coldbrew-demo-001.json
+!data/projects/coldbrew-demo-001.narration.json
+!data/projects/coldbrew-demo-001.render.json

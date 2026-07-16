@@ -1,0 +1,13 @@
+{
+  "projectId": "coldbrew-demo-001",
+  "status": "completed",
+  "progress": 1,
+  "stage": "成片已生成",
+  "outputUrl": "/generated/coldbrew-demo-001/final/ad-final.mp4",
+  "errorCode": null,
+  "errorMessage": null,
+  "warningMessage": null,
+  "startedAt": "2026-07-14T17:36:47.010Z",
+  "completedAt": "2026-07-14T17:40:15.752Z",
+  "updatedAt": "2026-07-14T17:40:15.752Z"
+}

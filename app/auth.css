@@ -1,0 +1,18 @@
+.auth-page{min-height:100dvh;display:grid;place-items:center;padding:32px 20px;background:radial-gradient(circle at 20% 20%,rgba(34,211,238,.12),transparent 34%),radial-gradient(circle at 80% 70%,rgba(99,102,241,.12),transparent 38%),#05070b}
+.auth-page::before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:36px 36px}
+.auth-form{position:relative;width:min(100%,430px);display:grid;gap:17px;border:1px solid rgba(255,255,255,.1);border-radius:18px;background:rgba(9,13,21,.86);padding:30px;box-shadow:0 30px 90px rgba(0,0,0,.38)}
+.auth-form__heading{margin-bottom:4px}.auth-form__heading>span{color:#7dd3fc;font-size:12px;font-weight:700}.auth-form h1{margin:8px 0 0;font-size:32px;line-height:1.15}.auth-form__heading p{margin:9px 0 0;color:#94a3b8;font-size:14px;line-height:1.6}
+.auth-form label{display:grid;gap:8px;color:#cbd5e1;font-size:13px}.auth-form input{width:100%;min-height:44px;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(0,0,0,.45);padding:0 13px;color:#fff;outline:none}.auth-form input:focus{border-color:rgba(125,211,252,.6);box-shadow:0 0 0 3px rgba(125,211,252,.08)}
+.auth-form button[type="submit"]{min-height:46px;border:0;border-radius:10px;background:#ede9dd;color:#09090b;font-weight:750}.auth-form button:disabled{cursor:not-allowed;opacity:.58}
+.auth-form__error{margin:0;border:1px solid rgba(248,113,113,.25);border-radius:9px;background:rgba(248,113,113,.08);padding:10px 12px;color:#fecaca;font-size:13px;line-height:1.5}
+.auth-form__switch{margin:0;color:#71717a;font-size:13px;text-align:center}.auth-form__switch a{margin-left:6px;color:#bae6fd}
+.account-page{min-height:100dvh;padding:88px 24px 40px;background:radial-gradient(circle at 50% 0,rgba(14,116,144,.13),transparent 36%),#070a0f}.account-page__content{width:min(100%,980px);margin:0 auto}.account-page h1{margin:8px 0 0;font-size:clamp(30px,5vw,44px)}.account-page p{color:#94a3b8;line-height:1.7}
+.account-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}.account-actions a{display:inline-flex;min-height:42px;align-items:center;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(255,255,255,.04);padding:0 16px}.account-actions a:first-child{background:#ede9dd;color:#09090b}
+.account-note{margin-top:32px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(255,255,255,.025);padding:18px}
+.workspace-user-menu{position:relative}.workspace-user-menu__panel{position:absolute;z-index:80;top:calc(100% + 10px);right:0;width:210px;display:grid;gap:4px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:#090d14;padding:10px;box-shadow:0 18px 50px rgba(0,0,0,.4)}
+.workspace-user-menu__panel>strong,.workspace-user-menu__panel>span{padding:4px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-user-menu__panel>span{color:#768198;font-size:11px}.workspace-user-menu__panel>a,.workspace-user-menu__panel>button{min-height:34px;border:0;border-radius:8px;background:transparent;padding:0 8px;color:#dce5f2;text-align:left}.workspace-user-menu__panel>a:hover,.workspace-user-menu__panel>button:hover{background:rgba(255,255,255,.06)}
+@media(max-width:520px){.auth-form{padding:24px 20px}}
+@media(max-width:680px){
+  .workspace-header__tools>.workspace-user-menu{display:block!important}
+  .workspace-user-menu .workspace-avatar{display:grid!important}
+}
