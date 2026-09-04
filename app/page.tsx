@@ -8,7 +8,7 @@ import { useState } from "react";
 import { ModelSettingsSheet } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
-import { RaycastSpotlightBackground } from "@/components/RaycastSpotlightBackground";
+import { UnicornHeroBackground } from "@/components/UnicornHeroBackground";
 import "./home-final.css";
 import "./home-api-settings.css";
 
@@ -41,7 +41,7 @@ export default function HomePage() {
 
   return (
     <main className="home-final">
-      <RaycastSpotlightBackground isNavigating={isNavigating} />
+      <UnicornHeroBackground isNavigating={isNavigating} />
 
       <header className={`home-header ${exitClass}`}>
         <div className="home-header-inner">

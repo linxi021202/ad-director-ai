@@ -1,6 +1,6 @@
 .model-settings-layer { position:fixed; inset:0; z-index:80; }
 .model-settings-backdrop { position:absolute; inset:0; width:100%; height:100%; border:0; background:rgba(0,0,0,.58); backdrop-filter:blur(5px); }
-.model-settings-sheet { position:absolute; inset:0 0 0 auto; width:min(550px,92vw); height:100%; display:flex; flex-direction:column; overflow:hidden; border-left:1px solid rgba(255,255,255,.1); background:#0b0e14; color:#f8fafc; box-shadow:-24px 0 60px rgba(0,0,0,.38); animation:model-sheet-in .26s cubic-bezier(.16,1,.3,1); }
+.model-settings-sheet { position:absolute; inset:0 0 0 auto; width:min(550px,92vw); height:100%; display:flex; flex-direction:column; overflow:hidden; border-left:1px solid rgba(114,234,223,.13); background:#07100f; color:#f6fbfa; box-shadow:-24px 0 60px rgba(0,0,0,.38); animation:model-sheet-in .26s cubic-bezier(.16,1,.3,1); }
 @keyframes model-sheet-in { from { transform:translateX(32px); opacity:.4; } }
 .model-settings-head { padding:26px 26px 20px; display:flex; align-items:flex-start; gap:24px; border-bottom:1px solid rgba(255,255,255,.08); }
 .model-settings-head div { flex:1; }
@@ -37,8 +37,8 @@
 .model-provider-actions summary { display:grid; place-items:center; list-style:none; }
 .model-provider-actions details button { position:absolute; top:35px; right:0; width:104px; z-index:2; background:#18181b; }
 .model-local-status { height:46px; margin-top:14px; display:flex; align-items:center; padding:0 13px; border:1px dashed rgba(255,255,255,.1); border-radius:10px; color:#a1a1aa; font-size:12px; }
-.model-settings-message { position:absolute; left:26px; right:26px; bottom:78px; padding:10px 13px; border:1px solid rgba(103,232,249,.16); border-radius:10px; background:#0c1a23; color:#a5f3fc; font-size:12px; }
-.model-settings-footer { position:absolute; inset:auto 0 0; height:68px; padding:0 26px; display:flex; align-items:center; justify-content:space-between; border-top:1px solid rgba(255,255,255,.08); background:rgba(11,14,20,.96); }
+.model-settings-message { position:absolute; left:26px; right:26px; bottom:78px; padding:10px 13px; border:1px solid rgba(114,234,223,.18); border-radius:10px; background:#0b201e; color:#b8f8f1; font-size:12px; }
+.model-settings-footer { position:absolute; inset:auto 0 0; height:68px; padding:0 26px; display:flex; align-items:center; justify-content:space-between; border-top:1px solid rgba(255,255,255,.08); background:rgba(7,16,15,.96); }
 .model-settings-footer > span { color:#71717a; font-size:11px; }
 .model-settings-footer > div { display:flex; gap:8px; }
 .model-settings-footer button { height:38px; padding:0 16px; border:1px solid rgba(255,255,255,.1); border-radius:10px; background:#151922; color:#d4d4d8; }
