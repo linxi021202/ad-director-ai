@@ -18,11 +18,14 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --include=dev
+# better-auth currently declares an optional Zod 4 peer while the app still
+# validates its workflow payloads with Zod 3. Keep the lockfile resolution
+# deterministic across newer npm releases used by hosted builders.
+RUN npm ci --include=dev --legacy-peer-deps
 
 COPY . .
 RUN npm run build \
-    && npm prune --omit=dev \
+    && npm prune --omit=dev --legacy-peer-deps \
     && npm cache clean --force \
     && mkdir -p /app/storage
 
