@@ -8,14 +8,14 @@ const sheet = readFileSync("components/ModelSettingsSheet.tsx", "utf8");
 describe("home hero and model settings", () => {
   it("keeps the single-line hero at the requested responsive scale", () => {
     expect(page).toContain("一份简报，直接成片。");
-    expect(styles).toContain("clamp(48px, 5vw, 72px)");
-    expect(styles).toContain("gap: 40px");
+    expect(styles).toContain("clamp(42px, 4.2vw, 62px)");
+    expect(styles).toContain("white-space: nowrap");
   });
 
   it("uses compact layered pill CTAs", () => {
     expect(styles).toContain("border-radius: 999px");
-    expect(styles).toContain("min-width: 188px");
-    expect(styles).toContain("min-height: 48px");
+    expect(styles).toContain("min-width: 168px");
+    expect(styles).toContain("min-height: 44px");
     expect(styles).toContain(".home-primary-action::before");
   });
 

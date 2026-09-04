@@ -1,9 +1,15 @@
+"use client";
+
+import { usePathname } from "next/navigation";
+
 const BACKDROP_VIDEO_URL =
   "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260217_030345_246c0224-10a4-422c-b324-070b7c0eceda.mp4";
 
 export function SiteVideoBackdrop() {
+  const pathname = usePathname();
+
   return (
-    <div className="site-video-backdrop" aria-hidden="true">
+    <div className={`site-video-backdrop${pathname === "/" ? " is-home" : ""}`} aria-hidden="true">
       <video className="site-video-backdrop__media" autoPlay loop muted playsInline preload="metadata">
         <source src={BACKDROP_VIDEO_URL} type="video/mp4" media="(prefers-reduced-motion: no-preference)" />
       </video>

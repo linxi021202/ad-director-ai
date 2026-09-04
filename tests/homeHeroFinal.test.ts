@@ -40,8 +40,16 @@ describe("homepage final hero", () => {
     expect(layout).toContain("general-sans@400,500,600");
     expect(backdrop).toContain("hf_20260217_030345_246c0224-10a4-422c-b324-070b7c0eceda.mp4");
     expect(backdrop).toContain("autoPlay loop muted playsInline");
+    expect(backdrop).toContain('pathname === "/" ? " is-home"');
     expect(cinemaStyles).toContain("site-video-backdrop__overlay");
+    expect(cinemaStyles).toContain("object-position: center top");
     expect(cinemaStyles).toContain("prefers-reduced-motion: reduce");
     expect(backdrop).not.toContain("UnicornScene");
+  });
+
+  it("keeps the short cover line unbroken without affecting product pages", () => {
+    expect(styles).toContain("white-space: nowrap");
+    expect(styles).toContain("clamp(28px, 8.35vw, 42px)");
+    expect(cinemaStyles).toContain(".site-video-backdrop.is-home");
   });
 });

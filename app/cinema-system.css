@@ -66,6 +66,7 @@ html { background: #000; }
   object-fit: cover;
   filter: saturate(.82) contrast(1.12);
   transform: scale(1.01);
+  transition: filter .6s ease, object-position .6s ease, transform .6s ease;
 }
 .site-video-backdrop__overlay { position: absolute; inset: 0; background: rgba(0, 0, 0, .5); }
 .site-video-backdrop__vignette {
@@ -74,6 +75,17 @@ html { background: #000; }
   background:
     linear-gradient(180deg, rgba(0, 0, 0, .3), transparent 34%, rgba(0, 0, 0, .36)),
     radial-gradient(ellipse at center, transparent 30%, rgba(0, 0, 0, .42) 100%);
+}
+.site-video-backdrop.is-home .site-video-backdrop__media {
+  object-position: center top;
+  filter: saturate(1.24) brightness(1.08) contrast(1.04);
+  transform: scale(1);
+}
+.site-video-backdrop.is-home .site-video-backdrop__overlay { background: rgba(0, 0, 0, .34); }
+.site-video-backdrop.is-home .site-video-backdrop__vignette {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, .03) 0%, rgba(0, 0, 0, .08) 34%, rgba(0, 0, 0, .38) 76%, rgba(0, 0, 0, .66) 100%),
+    linear-gradient(90deg, rgba(0, 0, 0, .2), transparent 22%, transparent 78%, rgba(0, 0, 0, .2));
 }
 .site-body > :not(.site-video-backdrop) { position: relative; z-index: 1; }
 
@@ -485,6 +497,8 @@ html { background: #000; }
 @media (max-width: 640px) {
   .site-video-backdrop__media { object-position: 58% center; }
   .site-video-backdrop__overlay { background: rgba(0, 0, 0, .58); }
+  .site-video-backdrop.is-home .site-video-backdrop__media { object-position: 50% top; }
+  .site-video-backdrop.is-home .site-video-backdrop__overlay { background: rgba(0, 0, 0, .42); }
   .site-body .workspace-header__tools > :not(.workspace-model-settings-trigger) { display: none; }
   .site-body .workspace-model-settings-trigger { width: 40px; min-width: 40px; padding: 0; }
   .site-body .workspace-model-settings-trigger .model-settings-trigger__label { display: none; }
