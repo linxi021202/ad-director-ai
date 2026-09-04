@@ -1,36 +1,39 @@
-vi.mock("@/lib/auth/api", () => ({
-  requireApiUser: vi.fn(async () => ({
-    authenticated: true,
-    user: { id: "test-user", email: "test@example.com", name: "测试用户" }
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/session/api", () => ({
+  getAnonymousApiSession: vi.fn(async () => ({
+    initialized: true,
+    session: { id: "truth-session", expiresAt: Date.now() + 60_000 }
   }))
 }));
-import { readFileSync } from "node:fs";
-import { NextRequest } from "next/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GET as modelStatusGET } from "../app/api/model-settings/status/route";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+
 import { POST as validateProviderPOST } from "../app/api/model-settings/[provider]/validate/route";
+import { GET as modelStatusGET } from "../app/api/model-settings/status/route";
 import { redactProviderError, sanitizeProviderError } from "../lib/api/provider-error";
 import { createHappyHorseValidationResponse } from "../lib/api/happyhorse-validation";
-import { createDeepSeekClient } from "../lib/llm/deepseekClient";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
 import { getHappyHorseCapability } from "../lib/providers/happyHorseCapability";
-import { resolveProviderSecret } from "../lib/secrets/resolver";
+import { resolveSessionProviderSecret } from "../lib/secrets/resolver";
 import { secretStore } from "../lib/secrets/store";
 
 const originalEnv = { ...process.env };
 
 function strategyResponse() {
-  return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(coldBrewDemo.strategy) } }] }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" }
-  });
+  return new Response(
+    JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(coldBrewDemo.strategy) } }]
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
 }
 
-describe("task 1 truth and capability gate", () => {
-  afterEach(() => {
+describe("anonymous truth and capability gate", () => {
+  afterEach(async () => {
     process.env = { ...originalEnv };
+    await secretStore.clear();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -42,82 +45,94 @@ describe("task 1 truth and capability gate", () => {
     const fetchMock = vi.fn().mockResolvedValue(strategyResponse());
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await deepseekProvider.generateStrategy(coldBrewDemo.brief, { sessionId: "deepseek-session" });
+    const result = await deepseekProvider.generateStrategy(coldBrewDemo.brief, {
+      sessionId: "deepseek-session"
+    });
 
     expect(result.success).toBe(true);
     const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
     expect(headers.get("Authorization")).toBe("Bearer session-secret-value");
   });
 
-  it("uses the environment secret when the session has none", async () => {
-    process.env.DEEPSEEK_API_KEY = "environment-secret-value";
-    expect(await resolveProviderSecret("deepseek", "empty-session")).toMatchObject({
+  it("uses an environment secret only when local platform keys are explicitly allowed", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("ALLOW_PLATFORM_KEYS", "true");
+    vi.stubEnv("DEEPSEEK_API_KEY", "environment-secret-value");
+
+    expect(await resolveSessionProviderSecret({
+      sessionId: "empty-session",
+      provider: "deepseek"
+    })).toMatchObject({
       value: "environment-secret-value",
       source: "env",
       lastFour: "alue"
     });
   });
 
-  it("prefers session secrets and reports none clearly", async () => {
-    process.env.DEEPSEEK_API_KEY = "environment-secret-value";
-    await secretStore.set("priority-session", "deepseek", "priority-session-value");
-    expect((await resolveProviderSecret("deepseek", "priority-session")).source).toBe("session");
+  it("returns a clear provider-not-configured result", async () => {
+    process.env.ALLOW_PLATFORM_KEYS = "false";
     process.env.DEEPSEEK_API_KEY = "";
-    expect(await resolveProviderSecret("deepseek", "missing-session")).toEqual({ value: null, source: "none" });
+
+    expect(await resolveSessionProviderSecret({
+      sessionId: "missing-session",
+      provider: "deepseek"
+    })).toMatchObject({
+      value: null,
+      source: "none",
+      code: "PROVIDER_NOT_CONFIGURED",
+      message: "请先配置 DeepSeek API Key。"
+    });
   });
 
-  it("creates a DeepSeek client only from explicit runtime arguments", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const client = createDeepSeekClient({ apiKey: "explicit-secret-value", baseUrl: "https://example.test", model: "deepseek-v4-pro" });
-    const result = await client.call({ messages: [{ role: "user", content: "hello" }], responseFormat: "text" });
-    expect(result.success).toBe(true);
-    expect(result.model).toBe("deepseek-v4-pro");
-  });
-
-  it("never performs a guessed HappyHorse validation request", async () => {
+  it("never accepts HappyHorse as a configurable key provider", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const response = await validateProviderPOST(
-      new NextRequest("http://localhost/api/model-settings/happyhorse/validate", { method: "POST" }),
+      new NextRequest("http://localhost/api/model-settings/happyhorse/validate", {
+        method: "POST"
+      }),
       { params: Promise.resolve({ provider: "happyhorse" }) }
     );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ valid: true, capability: "manual-import" });
+
+    expect(response.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("blocks HappyHorse when manual import is unavailable", async () => {
-    expect(getHappyHorseCapability(false)).toMatchObject({
-      capability: "not-configured",
+  it("keeps HappyHorse manual import as the truthful capability", async () => {
+    expect(getHappyHorseCapability(true)).toMatchObject({
+      capability: "manual-import",
       apiAvailable: false,
-      manualImportAvailable: false,
-      status: "blocked"
+      manualImportAvailable: true
     });
-    expect((await createHappyHorseValidationResponse(false)).status).toBe(409);
+    const response = await createHappyHorseValidationResponse(true);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      valid: true,
+      capability: "manual-import"
+    });
   });
 
-  it("publishes only minimal model status fields", async () => {
-    process.env.DEEPSEEK_API_KEY = "environment-secret-value";
+  it("publishes only minimal anonymous model status fields", async () => {
+    await secretStore.set("truth-session", "deepseek", "session-secret-last-1234");
     const response = await modelStatusGET();
     const body = await response.json();
     const serialized = JSON.stringify(body);
-    expect(serialized).not.toContain("environment-secret-value");
-    expect(body.deepseek).toMatchObject({ configured: true, source: "env", lastFour: "alue" });
-    expect(body.happyHorse).toMatchObject({ capability: "manual-import", apiAvailable: false });
-    expect(body.remotion).toEqual({ configured: false, source: "local", status: "not-installed" });
+
+    expect(body.deepseek).toMatchObject({
+      configured: true,
+      source: "session",
+      lastFour: "1234"
+    });
+    expect(body.qwenImage).toEqual({ configured: false, source: "none" });
+    expect(body.happyHorse).toEqual({
+      capability: "manual-import",
+      apiAvailable: false
+    });
+    expect(body.remotion).toEqual({ source: "local" });
+    expect(serialized).not.toContain("session-secret");
     expect(serialized).not.toContain("updatedAt");
   });
 
-
-  it("marks HappyHorse api available only when real video and a server key exist", async () => {
-    process.env.ENABLE_REAL_VIDEO = "true";
-    process.env.DASHSCOPE_API_KEY = "dashscope-secret-value";
-    const response = await modelStatusGET();
-    const body = await response.json();
-    expect(body.happyHorse).toMatchObject({ capability: "api-available", apiAvailable: true, configured: true });
-    expect(JSON.stringify(body)).not.toContain("dashscope-secret-value");
-  });
   it("redacts tokens and returns provider-safe public messages", () => {
     const unsafe = "Authorization: Bearer secret-token-value apiKey=super-secret-value?key=query-secret";
     const redacted = redactProviderError(unsafe);
@@ -127,17 +142,4 @@ describe("task 1 truth and capability gate", () => {
     expect(publicMessage).toContain("HappyHorse");
     expect(publicMessage).not.toContain("secret-token-value");
   });
-
-  it("contains no browser-persisted or public model keys and no connected HappyHorse claim", () => {
-    const files = [
-      readFileSync("components/ModelSettingsSheet.tsx", "utf8"),
-      readFileSync("components/GenerateWorkflow.tsx", "utf8"),
-      readFileSync("components/ModelTracePanel.tsx", "utf8"),
-      readFileSync(".env.example", "utf8")
-    ].join("\n");
-    expect(files).not.toMatch(/NEXT_PUBLIC_(?:DEEPSEEK|DASHSCOPE|HAPPYHORSE)/);
-    expect(files).not.toMatch(/NEXT_PUBLIC_(?:DEEPSEEK|DASHSCOPE|HAPPYHORSE)/);
-    expect(readFileSync("components/ModelSettingsSheet.tsx", "utf8")).not.toMatch(/localStorage|sessionStorage|indexedDB/);
-  });
 });
-

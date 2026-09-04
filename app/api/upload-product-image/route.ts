@@ -1,47 +1,94 @@
 import "server-only";
 
-import { requireApiUser } from "@/lib/auth/api";
-
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { NextResponse } from "next/server";
-import { MAX_PRODUCT_IMAGE_SIZE_BYTES, SUPPORTED_PRODUCT_IMAGE_TYPES } from "@/lib/productImages";
 
-const extensions: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp"
-};
+import { createPrivateAsset, deletePrivateAsset } from "@/lib/assets/assetStore";
+import { validateProductImage } from "@/lib/assets/media";
+import { getProjectAssetUrl } from "@/lib/assets/url";
+import { authorizeOwnedProject } from "@/lib/projects/api";
+import { updateOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
+import { productImageRoleSchema } from "@/lib/schemas/project";
+import { getAnonymousApiSession } from "@/lib/session/api";
 
 export async function POST(request: Request) {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const { session } = sessionResult;
+
   try {
     const formData = await request.formData();
     const file = formData.get("file");
-    const projectId = safeSegment(String(formData.get("projectId") ?? "project"));
-    const assetId = safeSegment(String(formData.get("assetId") ?? crypto.randomUUID()));
-
+    const authorization = await authorizeOwnedProject(session.id, String(formData.get("projectId") ?? ""));
+    if (!authorization.authorized) return authorization.response;
     if (!(file instanceof File)) return response(false, null, "未收到图片文件。", 400);
-    if (!SUPPORTED_PRODUCT_IMAGE_TYPES.includes(file.type as (typeof SUPPORTED_PRODUCT_IMAGE_TYPES)[number])) return response(false, null, "仅支持 PNG、JPG、WebP 图片。", 400);
-    if (file.size > MAX_PRODUCT_IMAGE_SIZE_BYTES) return response(false, null, "单张图片不能超过 5MB。", 400);
 
-    const extension = extensions[file.type]!;
-    const directory = path.join(process.cwd(), "public", "uploads", projectId);
-    const fileName = `${assetId}.${extension}`;
-    await mkdir(directory, { recursive: true });
-    await writeFile(path.join(directory, fileName), Buffer.from(await file.arrayBuffer()));
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const inspected = validateProductImage({ bytes, declaredMimeType: file.type, fileName: file.name });
+    const clientImageId = String(formData.get("assetId") ?? crypto.randomUUID()).trim().slice(0, 120);
+    const requestedRole = productImageRoleSchema.safeParse(String(formData.get("role") ?? "main-product"));
+    const existingImages = authorization.record.project.brief.productImages ?? [];
+    const previous = existingImages.find((image) => image.id === clientImageId);
+    const role = requestedRole.success ? requestedRole.data : previous?.role ?? "main-product";
 
-    return response(true, { localUrl: `/uploads/${projectId}/${fileName}` }, null, 200);
-  } catch {
-    return response(false, null, "产品图本地保存失败，请重新选择图片。", 500);
+    const asset = await createPrivateAsset(session.id, authorization.projectId, {
+      kind: role === "logo" ? "logo" : role === "reference" ? "reference-image" : "product-image",
+      role,
+      source: "user-upload",
+      fileName: file.name,
+      mimeType: inspected.mimeType,
+      bytes,
+      width: inspected.width,
+      height: inspected.height
+    });
+    const localUrl = getProjectAssetUrl(authorization.projectId, asset.id);
+    const nextImage = {
+      id: clientImageId,
+      assetId: asset.id,
+      name: file.name,
+      type: inspected.mimeType,
+      size: bytes.byteLength,
+      localUrl,
+      role
+    };
+    const retained = existingImages.filter((image) => image.id !== clientImageId);
+    if (retained.length >= 3) {
+      await deletePrivateAsset(session.id, authorization.projectId, asset.id);
+      return response(false, null, "最多只能保存 3 张产品图。", 400);
+    }
+
+    try {
+      await updateOwnedAnonymousProject(session.id, authorization.projectId, {
+        brief: {
+          ...authorization.record.project.brief,
+          productImages: [...retained, nextImage]
+        }
+      });
+    } catch (error) {
+      await deletePrivateAsset(session.id, authorization.projectId, asset.id);
+      throw error;
+    }
+    if (previous?.assetId && previous.assetId !== asset.id) {
+      await deletePrivateAsset(session.id, authorization.projectId, previous.assetId).catch(() => undefined);
+    }
+
+    return response(true, {
+      assetId: asset.id,
+      localUrl,
+      width: inspected.width,
+      height: inspected.height,
+      mimeType: inspected.mimeType,
+      sizeBytes: asset.sizeBytes
+    }, null, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/PRODUCT_IMAGE_SIZE_INVALID/.test(message)) return response(false, null, "单张图片必须小于 5MB。", 400);
+    if (/MIME|EXTENSION|UNSUPPORTED_OR_CORRUPT_IMAGE/.test(message)) {
+      return response(false, null, "图片内容、扩展名或 MIME 类型不一致，仅支持有效的 PNG、JPG、WebP。", 400);
+    }
+    return response(false, null, "产品图私有保存失败，请重新选择图片。", 500);
   }
 }
 
-function safeSegment(value: string) {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").slice(0, 80) || "asset";
-}
-
-function response(success: boolean, data: { localUrl: string } | null, error: string | null, status: number) {
+function response(success: boolean, data: unknown, error: string | null, status: number) {
   return NextResponse.json({ success, data, trace: null, fallbackUsed: false, fallbackReason: null, error }, { status });
 }

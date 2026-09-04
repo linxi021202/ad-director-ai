@@ -1,36 +1,73 @@
-﻿import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getProviderSecretStatus, resolveProviderApiKey } from "../lib/secrets/resolver";
+import {
+  getProviderSecretStatus,
+  resolveProviderApiKey,
+  resolveSessionProviderSecret
+} from "../lib/secrets/resolver";
 import { secretStore } from "../lib/secrets/store";
 
-describe("model settings secret resolution", () => {
-  afterEach(() => vi.unstubAllEnvs());
+describe("anonymous model settings secret resolution", () => {
+  afterEach(async () => {
+    await secretStore.clear();
+    vi.unstubAllEnvs();
+  });
 
-  it("prefers the current server session over environment variables", async () => {
+  it("keeps DeepSeek secrets isolated by anonymous session", async () => {
+    await secretStore.set("session-a", "deepseek", "session-a-secret-value");
+    await secretStore.set("session-b", "deepseek", "session-b-secret-value");
+
+    expect(await resolveProviderApiKey("deepseek", "session-a")).toBe("session-a-secret-value");
+    expect(await resolveProviderApiKey("deepseek", "session-b")).toBe("session-b-secret-value");
+  });
+
+  it("keeps Qwen-Image independent from another session", async () => {
+    await secretStore.set("session-a", "qwen-image", "dashscope-secret-A1B2");
+    const statusA = await getProviderSecretStatus("qwen-image", "session-a");
+    const statusB = await getProviderSecretStatus("qwen-image", "session-b");
+
+    expect(statusA).toMatchObject({ configured: true, source: "session", lastFour: "A1B2" });
+    expect(statusB).toEqual({ configured: false, source: "none" });
+    expect(JSON.stringify(statusA)).not.toContain("dashscope-secret");
+  });
+
+  it("does not use platform keys unless explicitly allowed in local development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("ALLOW_PLATFORM_KEYS", "false");
     vi.stubEnv("DEEPSEEK_API_KEY", "environment-secret-value");
-    await secretStore.set("session-test", "deepseek", "session-secret-value");
-    expect(await resolveProviderApiKey("deepseek", "session-test")).toBe("session-secret-value");
+
+    expect(await resolveSessionProviderSecret({
+      sessionId: "empty-session",
+      provider: "deepseek"
+    })).toMatchObject({ value: null, source: "none", code: "PROVIDER_NOT_CONFIGURED" });
+
+    vi.stubEnv("ALLOW_PLATFORM_KEYS", "true");
+    expect(await resolveSessionProviderSecret({
+      sessionId: "empty-session",
+      provider: "deepseek"
+    })).toMatchObject({ value: "environment-secret-value", source: "env" });
   });
 
-  it("returns public metadata without returning the full key", async () => {
-    await secretStore.set("status-test", "qwen-image", "dashscope-secret-A1B2");
-    const status = await getProviderSecretStatus("qwen-image", "status-test");
-    expect(status).toMatchObject({ configured: true, source: "session", lastFour: "A1B2" });
-    expect(JSON.stringify(status)).not.toContain("dashscope-secret");
+  it("never exposes platform keys in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("ALLOW_PLATFORM_KEYS", "true");
+    vi.stubEnv("DASHSCOPE_API_KEY", "production-platform-secret");
+
+    expect(await resolveSessionProviderSecret({
+      sessionId: "anonymous-session",
+      provider: "qwen-image"
+    })).toMatchObject({ value: null, source: "none", code: "PROVIDER_NOT_CONFIGURED" });
   });
 
+  it("clears only the requested session and clears all secrets on service restart", async () => {
+    await secretStore.set("session-a", "deepseek", "session-a-secret-value");
+    await secretStore.set("session-b", "deepseek", "session-b-secret-value");
 
-  it("reuses the Qwen-Image DashScope session key for HappyHorse", async () => {
-    await secretStore.set("dashscope-shared", "qwen-image", "dashscope-shared-key-Z9Y8");
-    expect(await resolveProviderApiKey("happyhorse", "dashscope-shared")).toBe("dashscope-shared-key-Z9Y8");
-    const status = await getProviderSecretStatus("happyhorse", "dashscope-shared");
-    expect(status).toMatchObject({ configured: true, source: "session", lastFour: "Z9Y8" });
-    expect(JSON.stringify(status)).not.toContain("dashscope-shared-key");
-  });
-  it("removes session keys immediately", async () => {
-    await secretStore.set("delete-test", "happyhorse", "happyhorse-secret-value");
-    await secretStore.delete("delete-test", "happyhorse");
-    expect(await resolveProviderApiKey("happyhorse", "delete-test")).toBeNull();
+    await secretStore.deleteSession("session-a");
+    expect(await resolveProviderApiKey("deepseek", "session-a")).toBeNull();
+    expect(await resolveProviderApiKey("deepseek", "session-b")).toBe("session-b-secret-value");
+
+    await secretStore.clear();
+    expect(await resolveProviderApiKey("deepseek", "session-b")).toBeNull();
   });
 });
-

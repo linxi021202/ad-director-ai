@@ -1,40 +1,54 @@
 import "server-only";
 
-import { requireApiUser } from "@/lib/auth/api";
-
-import { stat } from "node:fs/promises";
-import path from "node:path";
 import { NextResponse } from "next/server";
+
+import {
+  assertPrivateAssetReadable,
+  getProjectAssetUrl,
+  getPrivateAsset
+} from "@/lib/assets/assetStore";
+import { authorizeOwnedProject } from "@/lib/projects/api";
 import { getProjectRenderState } from "@/lib/render/renderManager";
-import { safeSegment } from "@/lib/render/renderStateStore";
+import { getAnonymousApiSession } from "@/lib/session/api";
 
 type RouteContext = { params: Promise<{ projectId: string }> };
 
 export async function GET(_request: Request, context: RouteContext) {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
-  const projectId = await getProjectId(context);
-  const state = await getProjectRenderState(projectId);
-  const filePath = path.join(process.cwd(), "public", "generated", projectId, "final", "ad-final.mp4");
-  const fileInfo = await stat(filePath).catch(() => null);
-  const exists = Boolean(fileInfo?.isFile() && fileInfo.size > 0);
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const { session } = sessionResult;
+  const authorization = await authorizeOwnedProject(
+    session.id,
+    (await context.params).projectId
+  );
+  if (!authorization.authorized) return authorization.response;
+
+  const project = authorization.record.project;
+  const state = await getProjectRenderState(authorization.projectId);
+  const asset = project.finalVideoAssetId
+    ? await getPrivateAsset(session.id, authorization.projectId, project.finalVideoAssetId)
+    : null;
+  const readable = asset?.kind === "final-video"
+    ? await assertPrivateAssetReadable(asset).then(() => true).catch(() => false)
+    : false;
+  const outputUrl = readable && asset
+    ? getProjectAssetUrl(authorization.projectId, asset.id)
+    : null;
 
   return NextResponse.json({
     success: true,
     data: {
-      status: exists ? "completed" : state.status,
-      outputUrl: exists ? `/generated/${projectId}/final/ad-final.mp4` : state.outputUrl,
-      sizeBytes: exists ? fileInfo?.size ?? 0 : 0,
-      downloadable: exists
+      status: readable ? "completed" : state.status,
+      outputUrl,
+      downloadUrl: readable && asset
+        ? getProjectAssetUrl(authorization.projectId, asset.id, true)
+        : null,
+      sizeBytes: readable && asset ? asset.sizeBytes : 0,
+      downloadable: readable
     },
     trace: { route: "final-video" },
     fallbackUsed: false,
     fallbackReason: null,
     error: null
   });
-}
-
-async function getProjectId(context: RouteContext) {
-  const params = await context.params;
-  return safeSegment(params.projectId);
 }

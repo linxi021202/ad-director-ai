@@ -1,54 +1,74 @@
-﻿import { cookies } from "next/headers";
-
 import { assertServerOnly } from "../server-only";
-import { MODEL_SESSION_COOKIE } from "./session";
+import { getAnonymousSession } from "../session/anonymousSession";
 import { secretStore } from "./store";
-import type { PublicSecretStatus, ResolvedSecret, SecretProvider } from "./types";
+import type {
+  ConfigurableProvider,
+  PublicSecretStatus,
+  ResolvedSecret,
+  SecretProvider
+} from "./types";
 
 assertServerOnly("Secret resolver");
 
-const envNames: Record<SecretProvider, "DEEPSEEK_API_KEY" | "DASHSCOPE_API_KEY" | "HAPPYHORSE_API_KEY"> = {
+const envNames: Record<ConfigurableProvider, "DEEPSEEK_API_KEY" | "DASHSCOPE_API_KEY"> = {
   deepseek: "DEEPSEEK_API_KEY",
-  "qwen-image": "DASHSCOPE_API_KEY",
-  happyhorse: "HAPPYHORSE_API_KEY"
+  "qwen-image": "DASHSCOPE_API_KEY"
 };
 
 export async function currentModelSessionId(): Promise<string | undefined> {
   try {
-    return (await cookies()).get(MODEL_SESSION_COOKIE)?.value;
+    return (await getAnonymousSession())?.id;
   } catch {
     return undefined;
   }
 }
 
-async function getSessionSecret(sessionId: string, provider: SecretProvider) {
+async function getSessionSecret(sessionId: string, provider: ConfigurableProvider) {
   return sessionId ? await secretStore.get(sessionId, provider) : null;
 }
 
-function getEnvSecret(provider: SecretProvider): ResolvedSecret {
+export function platformKeysAllowed(): boolean {
+  return process.env.NODE_ENV !== "production" && process.env.ALLOW_PLATFORM_KEYS === "true";
+}
+
+function providerNotConfigured(provider: ConfigurableProvider): ResolvedSecret {
+  return {
+    value: null,
+    source: "none",
+    code: "PROVIDER_NOT_CONFIGURED",
+    message: provider === "deepseek"
+      ? "请先配置 DeepSeek API Key。"
+      : "请先配置 Qwen-Image API Key。"
+  };
+}
+
+function getEnvSecret(provider: ConfigurableProvider): ResolvedSecret {
+  if (!platformKeysAllowed()) return providerNotConfigured(provider);
   const primary = process.env[envNames[provider]]?.trim();
   if (primary) return { value: primary, source: "env", lastFour: primary.slice(-4) };
+  return providerNotConfigured(provider);
+}
 
-  if (provider === "happyhorse") {
-    const dashscope = process.env.DASHSCOPE_API_KEY?.trim();
-    if (dashscope) return { value: dashscope, source: "env", lastFour: dashscope.slice(-4) };
-  }
-
-  return { value: null, source: "none" };
+export async function resolveSessionProviderSecret(input: {
+  sessionId: string;
+  provider: ConfigurableProvider;
+}): Promise<ResolvedSecret> {
+  const { sessionId, provider } = input;
+  const saved = await getSessionSecret(sessionId, provider);
+  if (saved?.value) return { value: saved.value, source: "session", lastFour: saved.lastFour };
+  return getEnvSecret(provider);
 }
 
 export async function resolveProviderSecret(provider: SecretProvider, sessionId: string): Promise<ResolvedSecret> {
-  const saved = await getSessionSecret(sessionId, provider);
-  if (saved?.value) return { value: saved.value, source: "session", lastFour: saved.lastFour };
-
   if (provider === "happyhorse") {
-    const dashscopeSessionSecret = await getSessionSecret(sessionId, "qwen-image");
-    if (dashscopeSessionSecret?.value) {
-      return { value: dashscopeSessionSecret.value, source: "session", lastFour: dashscopeSessionSecret.lastFour };
-    }
+    return {
+      value: null,
+      source: "none",
+      code: "PROVIDER_NOT_CONFIGURED",
+      message: "HappyHorse 当前使用手动导入模式。"
+    };
   }
-
-  return getEnvSecret(provider);
+  return resolveSessionProviderSecret({ sessionId, provider });
 }
 
 export async function resolveProviderApiKey(provider: SecretProvider, sessionId?: string): Promise<string | null> {
@@ -56,19 +76,18 @@ export async function resolveProviderApiKey(provider: SecretProvider, sessionId?
   return (await resolveProviderSecret(provider, resolvedSessionId)).value;
 }
 
-export async function getProviderSecretStatus(provider: SecretProvider, sessionId = ""): Promise<PublicSecretStatus> {
+export async function getProviderSecretStatus(
+  provider: ConfigurableProvider,
+  sessionId = ""
+): Promise<PublicSecretStatus> {
   const saved = await getSessionSecret(sessionId, provider);
-  if (saved) return { configured: true, source: "session", lastFour: saved.lastFour, validated: saved.validated };
-
-  if (provider === "happyhorse") {
-    const dashscopeSessionSecret = await getSessionSecret(sessionId, "qwen-image");
-    if (dashscopeSessionSecret) {
-      return { configured: true, source: "session", lastFour: dashscopeSessionSecret.lastFour, validated: dashscopeSessionSecret.validated };
-    }
+  if (saved) {
+    return {
+      configured: true,
+      source: "session",
+      lastFour: saved.lastFour,
+      validated: saved.validated
+    };
   }
-
-  const resolved = await resolveProviderSecret(provider, "");
-  return resolved.value
-    ? { configured: true, source: "env", lastFour: resolved.lastFour }
-    : { configured: false, source: "none" };
+  return { configured: false, source: "none" };
 }

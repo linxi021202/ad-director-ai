@@ -18,14 +18,15 @@ export function AdComposition(props: AdCompositionProps) {
         cursor += duration;
         const isHero = shot.id === heroShotId;
         const productAsset = productAssets[0]?.url;
-        const shotFourSource = index === 3 ? productAsset || shot.keyframeUrl : shot.keyframeUrl;
+        const isClosingShot = index === shots.length - 1;
+        const closingSource = isClosingShot ? productAsset || shot.keyframeUrl : shot.keyframeUrl;
 
         return (
           <Sequence key={shot.id} from={from} durationInFrames={duration}>
             {isHero ? (
               <HeroVideoShot src={heroVideoUrl} subtitle={shot.subtitle} keywords={shot.keywords} muted={Boolean(voiceoverUrl)} />
-            ) : index === 3 ? (
-              <ProductEndCard src={shotFourSource} brandName={brandName} cta={cta} subtitle={shot.subtitle} keywords={shot.keywords} />
+            ) : isClosingShot ? (
+              <ProductEndCard src={closingSource} brandName={brandName} cta={cta} subtitle={shot.subtitle} keywords={shot.keywords} />
             ) : (
               <ImageShot src={shot.keyframeUrl} title={shot.title} subtitle={shot.subtitle} keywords={shot.keywords} mode={index === 1 ? "pan" : "scale"} />
             )}

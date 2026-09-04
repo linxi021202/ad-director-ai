@@ -1,0 +1,56 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+const workflow = readFileSync("components/GenerateWorkflow.tsx", "utf8");
+const workspaceCss = readFileSync("app/workspace-v3.css", "utf8");
+
+describe("generate workflow shot count interaction", () => {
+  it("keeps direct shot count editing available for draft projects", () => {
+    expect(workflow).toContain("<ShotCountControl value={shotCount}");
+    expect(workflow).toContain("onShotCountChange={updateShotCount}");
+    expect(workflow).toContain("MIN_SHOT_COUNT");
+    expect(workflow).toContain("MAX_SHOT_COUNT");
+    expect(workflow).toContain('type="number"');
+    expect(workflow).toContain('inputMode="numeric"');
+    expect(workflow).toContain("hasGeneratedStoryboard(activeProject)");
+    expect(workflow).toContain("if (shotCountSaving || isGenerating) return;");
+    expect(workflow).not.toContain("if (shotCountSaving || isGenerating || generated) return;");
+  });
+
+  it("keeps brief edits in draft state until the explicit server save succeeds", () => {
+    expect(workflow).toContain("const [briefDraft");
+    expect(workflow).toContain('setBriefSaveStatus("dirty")');
+    expect(workflow).toContain("saveServerBrief(activeProject.id, activeVersion, briefDraft)");
+    expect(workflow).toContain("保存商品简报");
+    expect(workflow).toContain('briefSaveStatus !== "saved"');
+    expect(workflow).toContain('router.replace(`/generate?projectId=${encodeURIComponent(refreshed.id)}`)');
+  });
+
+  it("shows target duration as a precise number stepper", () => {
+    expect(workflow).toContain("<TargetDurationControl");
+    expect(workflow).toContain("getAllowedTargetDurationRange(shotCount)");
+    expect(workflow).toContain("目标时长");
+    expect(workflow).toContain("可设置总时长");
+  });
+
+  it("keeps the number between the stepper buttons readable", () => {
+    expect(workspaceCss).toContain('.shot-count-stepper input[type="number"]');
+    expect(workspaceCss).toContain("-webkit-text-fill-color: #f8fafc");
+    expect(workspaceCss).toContain("font-variant-numeric: tabular-nums");
+    expect(workspaceCss).toContain("grid-template-columns: 30px minmax(28px, 1fr) 30px");
+    expect(workspaceCss).toContain("padding: 0 !important");
+  });
+
+  it("offers a safe adjustment flow after generation instead of a disabled control", () => {
+    expect(workflow).toContain("shot-count-adjust-trigger");
+    expect(workflow).toContain("requestGeneratedShotCountChange");
+    expect(workflow).toContain("重新生成完整分镜");
+    expect(workflow).toContain("regenerateExisting: true");
+    expect(workflow).toContain("现有关键帧、主镜头视频和最终成片会失效");
+  });
+
+  it("refreshes the server-owned project after rebuilding the storyboard", () => {
+    expect(workflow).toContain("fetchServerProject(activeProject.id)");
+    expect(workflow).toContain("setLiveKeyframes(projectKeyframesToImages(refreshed))");
+  });
+});

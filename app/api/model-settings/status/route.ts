@@ -1,33 +1,27 @@
-import { requireApiUser } from "@/lib/auth/api";
 import { NextResponse } from "next/server";
 
-import { getAIConfig } from "../../../../lib/config/ai";
-import { getHappyHorseCapability } from "../../../../lib/providers/happyHorseCapability";
-import { getProviderSecretStatus } from "../../../../lib/secrets/resolver";
+import { getProviderSecretStatus } from "@/lib/secrets/resolver";
+import { getAnonymousApiSession } from "@/lib/session/api";
 
 export async function GET() {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const { session } = sessionResult;
 
-  const ownerId = authResult.user.id;
-  const config = getAIConfig({ allowSessionSecrets: true });
-  const [deepseek, qwenImage, happyHorseSecret] = await Promise.all([
-    getProviderSecretStatus("deepseek", ownerId),
-    getProviderSecretStatus("qwen-image", ownerId),
-    getProviderSecretStatus("happyhorse", ownerId)
+  const [deepseek, qwenImage] = await Promise.all([
+    getProviderSecretStatus("deepseek", session.id),
+    getProviderSecretStatus("qwen-image", session.id)
   ]);
-  const apiAvailable = config.realVideoEnabled && happyHorseSecret.configured;
-  const capability = getHappyHorseCapability(true, apiAvailable);
 
   return NextResponse.json({
     deepseek,
     qwenImage,
     happyHorse: {
-      ...happyHorseSecret,
-      capability: capability.capability,
-      apiAvailable: capability.apiAvailable,
-      realVideoEnabled: config.realVideoEnabled
+      capability: "manual-import" as const,
+      apiAvailable: false
     },
-    remotion: { configured: false, source: "local" as const, status: "not-installed" as const }
+    remotion: {
+      source: "local" as const
+    }
   });
 }

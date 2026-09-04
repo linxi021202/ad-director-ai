@@ -1,106 +1,32 @@
-﻿# Roadmap
+# Roadmap
 
-## Current Main Route
+## 当前已完成
 
-```text
-DeepSeek -> Qwen-Image -> HappyHorse -> Remotion
-```
+- 匿名 HttpOnly Session 与 BYOK 密钥隔离。
+- 匿名项目所有权和私有媒体资产。
+- DeepSeek 结构化策略、分镜和提示词。
+- Qwen-Image 单镜头与批量关键帧，支持部分成功。
+- HappyHorse 单主镜头 API 与手动导入 fallback。
+- Remotion 动态时间轴、旁白、字幕、卖点、CTA 和私有 MP4。
+- 服务端 GenerationEvent 持久化、查询、脱敏和中断恢复。
+- 生成页最近活动项目恢复。
+- 新项目默认 40 秒、8 镜头；旧项目时长兼容。
 
-The route is intentionally narrow so the 10-day solo MVP can remain understandable, testable, and demo-ready.
+## 当前默认方案
 
-## Stage 2: Real Text Only
+- 默认 8 镜头 × 5 秒；支持 3–12 镜头和 3–8 秒独立时长。
+- 默认主镜头按当前分镜数量约 60% 的叙事位置动态选择，时长来自该镜头设置。
+- Qwen-Image 按当前项目的真实分镜数量生成关键帧。
+- HappyHorse 只生成 1 个主镜头视频。
+- Remotion 合成完整广告。
 
-Status: current.
+## 后续工作
 
-- DeepSeek real text generation for strategy, storyboard, prompt generation, and scoring.
-- JSON output parsing.
-- Zod validation.
-- One retry on validation or JSON failure.
-- Fallback to mockTextProvider.
-- Trace UI for provider, model, latencyMs, tokenUsage, costEstimate, fallbackUsed, and fallbackReason.
+- 将本地私有文件迁移到对象存储。
+- 将活跃渲染任务迁移到持久化队列。
+- 增加自动清理、配额和可观察性。
+- 增加真实部署环境下的恢复测试和 MP4 媒体探测。
 
-No real image, video, or render API calls are made in Stage 2.
+## 不进入当前主链路
 
-## Stage 3: Qwen-Image Keyframes
-
-Planned scope:
-
-- Connect Qwen-Image for keyframes and Chinese poster-like frames.
-- Generate up to 4 keyframes per run.
-- Keep cost limits and fallback to mock keyframes.
-- Continue to avoid real video generation unless Stage 4 is active.
-
-## Stage 4: HappyHorse Video
-
-Planned scope:
-
-- Generate or prepare only one Hero Shot.
-- Hero Shot duration: 4-5 seconds.
-- Support Shots remain Qwen-Image keyframes plus Remotion image motion.
-- If the HappyHorse API is unstable or too expensive, keep keyframe motion as the fallback workflow.
-
-## Stage 5: Remotion Final Composition
-
-Planned scope:
-
-- Compose 15-20 second final ad.
-- Add subtitles, CTA, timing, music placeholder, image motion, and one Hero Shot video.
-- Produce a real MP4 only after Stage 3 and Stage 4 inputs are stable.
-
-## Future Vendor Exploration
-
-The following vendors are not part of the MVP main route and should not appear in current routing UI or cost mainline:
-
-- Wan
-- Kling
-- Hailuo
-- Vidu
-- Seedream
-- fal.ai
-- Fish Audio
-- OpenAI
-- Qwen text model
-
-They may be evaluated later for quality benchmarking, backup routes, or enterprise customization. They are excluded now because they add cost, orchestration, and explanation complexity before the core product workflow is proven.
-
-## Why One Real Video Shot
-
-A full four-shot real-video pipeline is too expensive and unstable for a fast interview demo. One Hero Shot proves video capability. Keyframes plus Remotion motion complete the rest of the ad at lower cost.
-
-## Release Gate
-
-Every stage must pass:
-
-```bash
-npm test
-npm run build
-```
-
-## Stage 3 Status: Qwen-Image Keyframes
-
-Status: current.
-
-- Qwen-Image real keyframe generation is connected through DashScope.
-- `hero-only` generates one low-cost debug keyframe, defaulting to Shot 3.
-- `all-shots` generates up to 4 keyframes and respects `MAX_IMAGES_PER_RUN`.
-- Successful temporary URLs are cached locally under `public/generated/images/{projectId}/shot-N.png`.
-- Failed shots fallback to placeholder images while successful shots remain usable.
-- Product images are local CTA references only and are not sent to Qwen-Image.
-
-Stage 4 remains HappyHorse for one real Hero Shot video. Stage 5 remains Remotion final composition.
-
-## Stage 4 Status: One Hero Shot Video
-
-Status: current implementation layer.
-
-- `heroShotId` defaults to `shot-3`.
-- Users can choose another storyboard shot as the Hero Shot.
-- The Hero Shot shows the original video prompt and an optimized image-to-video prompt.
-- Manual upload supports mp4, webm, and mov files up to 50MB through local object URL preview.
-- `/demo-videos/hero-shot.mp4` can be used as a local demo asset.
-- Failed video preparation can fallback to Hero Shot keyframe motion.
-- HappyHorse Provider is reserved, returns `not-implemented`, and does not call a real video API.
-
-Next: Stage 5 Remotion composition will combine keyframes, the Hero Shot video, subtitles, CTA, and fallback motion into a full ad preview.
-
-
+Seedance、小云雀、Wan、Kling、Hailuo、Vidu、Seedream、fal.ai、Fish Audio、OpenAI 和 Qwen 文本模型不属于当前 MVP 路由。

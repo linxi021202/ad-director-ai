@@ -15,7 +15,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
     platform: "douyin",
     style: "小红书/抖音竖版广告，深色科技感，城市通勤，高级清爽，适合AI产品Demo展示",
     aspectRatio: "9:16",
-    durationSec: 28
+    durationSec: 40
   },
   strategy: {
     audienceInsight: "一线城市上班族每天在通勤、会议和深度工作之间切换，需要快速恢复清醒，同时希望饮品不要带来高糖负担。",
@@ -24,14 +24,14 @@ export const coldBrewDemo = generationProjectSchema.parse({
     emotionalHook: "在高压工作日里，用一瓶轻盈冷萃找回对节奏的掌控感。",
     bigIdea: "把低糖冷萃咖啡塑造成城市工作流里的轻量能量插件：打开它，就像给自己切换到高效模式。",
     title: "低糖冷萃咖啡",
-    subtitle: "28秒竖版城市通勤广告",
+    subtitle: "40秒竖版城市通勤广告",
     cta: "开启你的轻负担清醒时刻"
   },
   shots: [
     {
       id: "shot-01-commute",
       index: 1,
-      durationSec: 6,
+      durationSec: 4,
       goal: "建立一线城市通勤场景，让目标用户立刻代入忙碌工作日。",
       visualDescription: "清晨地铁口与写字楼之间，人流快速穿梭，主角从画面侧面进入，手里拿着低糖冷萃咖啡，瓶身在玻璃幕墙反光中被突出。",
       cameraAngle: "中景到中近景，低角度三分之二侧拍",
@@ -46,7 +46,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
     {
       id: "shot-02-product-closeup",
       index: 2,
-      durationSec: 7,
+      durationSec: 5,
       goal: "突出产品质感、低糖卖点和冷萃口感，让用户记住商品本体。",
       visualDescription: "办公桌上电脑亮起，低糖冷萃咖啡位于画面中心，瓶身有细密冷凝水珠，旁边是键盘、会议资料和手机提醒。",
       cameraAngle: "产品近景特写，略带俯拍",
@@ -61,7 +61,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
     {
       id: "shot-03-selling-points",
       index: 3,
-      durationSec: 7,
+      durationSec: 5,
       goal: "把低糖、冷萃、轻负担三个核心卖点信息可视化。",
       visualDescription: "咖啡瓶居中悬浮在深色背景前，周围浮现三组无字符的几何光环，背景有轻微城市数据流光；卖点文字由 Remotion 后期叠加。",
       cameraAngle: "正面居中构图，产品中近景",
@@ -76,7 +76,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
     {
       id: "shot-04-hero-ending",
       index: 4,
-      durationSec: 8,
+      durationSec: 5,
       goal: "完成品牌记忆、情绪收束和行动召唤，形成唯一真实AI视频镜头预留位。",
       visualDescription: "傍晚城市天台，主角手持低糖冷萃咖啡看向天际线，产品和人物剪影同框，最终保留干净的文案安全区；标题、核心口号和 CTA 由 Remotion 后期叠加。",
       cameraAngle: "中景背侧角度，结尾切到产品英雄近景",
@@ -87,6 +87,67 @@ export const coldBrewDemo = generationProjectSchema.parse({
       videoPromptCn: appendNoReadableTextRules("镜头从人物背侧缓慢拉远，城市天际线和产品形成记忆点，最后切到咖啡瓶英雄近景并保留干净安全区，不生成文字；标题、口号和 CTA 由 Remotion 后期叠加。当前只准备给 HappyHorse 的详细视频 Prompt，后续用它生成这一条核心 AI 视频镜头。"),
       recommendedModel: "HappyHorse 视频生成模型；Remotion完成标题、字幕和CTA合成。",
       fallbackPlan: "如果核心视频镜头失败，使用天台关键帧做慢速拉远、景深模糊和品牌字幕收束，输出图片动效视频。"
+    }
+    ,
+    {
+      id: "shot-05-hero-transition",
+      index: 5,
+      durationSec: 6,
+      goal: "用真实产品作为主镜头，完成从疲惫到清醒的情绪转折。",
+      visualDescription: "真实产品瓶身位于前景，办公环境光线从低沉逐渐转为清透，人物仅作为虚化背景，保持包装外观一致。",
+      cameraAngle: "产品中近景，正面三分之二构图",
+      cameraMovement: "缓慢推进并伴随轻微横移，光线逐步提亮",
+      subtitle: "清醒回归，节奏重启。",
+      imagePromptCn: appendNoReadableTextRules("9:16竖版广告主镜头，真实低糖冷萃咖啡产品位于前景，现代办公室从低沉冷光转为清透晨光，产品包装轮廓保持一致，商业摄影，细腻冷凝水，人物仅作虚化背景，构图稳定且有干净字幕安全区。"),
+      imagePromptEn: appendNoReadableTextRules("9:16 vertical advertising hero keyframe, authentic low-sugar cold brew product in the foreground, modern office lighting transitioning from subdued cool tones to clean daylight, preserve package silhouette and product proportions, premium commercial photography, condensation detail, people only as soft background silhouettes, stable composition and clean title-safe area."),
+      videoPromptCn: appendNoReadableTextRules("以当前真实产品关键帧为首帧，按项目中该镜头的真实时长生成广告主镜头。镜头缓慢推进并轻微横移，背景光线由低沉转为清透，冷凝水高光自然变化；保持瓶身、包装颜色、比例和主体构图完全一致，不新增人物，不改变产品设计，所有广告文字由Remotion后期叠加。"),
+      recommendedModel: "happyhorse-1.0-r2v",
+      fallbackPlan: "主镜头视频失败时使用关键帧做缓慢推进、轻微横移和光线变化。"
+    },
+    {
+      id: "shot-06-focus-work",
+      index: 6,
+      durationSec: 5,
+      goal: "展示饮用后的专注工作状态，强化使用场景。",
+      visualDescription: "干净的深度工作桌面，咖啡瓶与键盘、笔记本形成稳定三角构图，人物双手快速完成工作。",
+      cameraAngle: "桌面中景，轻微俯拍",
+      cameraMovement: "横向慢移并保持产品清晰",
+      subtitle: "少一点糖，多一点专注。",
+      imagePromptCn: appendNoReadableTextRules("9:16竖版广告关键帧，现代办公室深度工作场景，低糖冷萃咖啡与键盘、笔记本构成稳定三角构图，手部自然操作电脑，产品清晰，冷色商业摄影，画面干净，预留字幕安全区。"),
+      imagePromptEn: appendNoReadableTextRules("9:16 vertical advertising keyframe, focused work scene in a modern office, low-sugar cold brew bottle forming a stable triangular composition with keyboard and notebook, natural hands working at a computer, product in sharp focus, cool premium commercial photography, clean subtitle-safe negative space."),
+      videoPromptCn: appendNoReadableTextRules("镜头沿桌面缓慢横移，产品始终保持清晰，背景手部动作自然克制，光线轻微流动，不改变包装与主体构图，广告卖点文字由Remotion后期叠加。"),
+      recommendedModel: "qwen-image-2.0",
+      fallbackPlan: "使用桌面关键帧做横移和景深变化。"
+    },
+    {
+      id: "shot-07-afternoon-refresh",
+      index: 7,
+      durationSec: 5,
+      goal: "覆盖下午低电量场景，延续轻负担清醒体验。",
+      visualDescription: "午后窗边，产品被柔和侧光照亮，人物伸手拿起咖啡，环境从疲惫灰调转为通透蓝调。",
+      cameraAngle: "中近景侧拍",
+      cameraMovement: "轻微推近并跟随拿取动作",
+      subtitle: "下午低电量，也能轻装续航。",
+      imagePromptCn: appendNoReadableTextRules("9:16竖版广告关键帧，午后办公室窗边，真实低糖冷萃咖啡被柔和侧光照亮，人物自然伸手拿取，环境由灰调转为通透蓝调，高级清爽商业摄影，产品包装保持一致。"),
+      imagePromptEn: appendNoReadableTextRules("9:16 vertical advertising keyframe, afternoon office window scene, authentic low-sugar cold brew illuminated by soft side light, a natural hand reaching for the product, atmosphere transitioning from muted gray to clean blue, premium refreshing commercial photography, preserve packaging consistency."),
+      videoPromptCn: appendNoReadableTextRules("镜头轻微推近并跟随拿取动作，光线与环境色温平滑变亮，产品包装、瓶身比例与构图保持一致，不生成任何文字。"),
+      recommendedModel: "qwen-image-2.0",
+      fallbackPlan: "使用午后关键帧做推近、色温变化和高光动画。"
+    },
+    {
+      id: "shot-08-cta-product",
+      index: 8,
+      durationSec: 5,
+      goal: "以真实产品和清晰行动召唤完成品牌收束。",
+      visualDescription: "真实产品图置于干净深色台面，背景有克制城市光线，右侧和底部保留充足CTA安全区。",
+      cameraAngle: "产品正面英雄近景",
+      cameraMovement: "极慢推近，最后3秒稳定停留",
+      subtitle: "现在，开启轻负担清醒。",
+      imagePromptCn: appendNoReadableTextRules("9:16竖版广告结尾关键帧，真实低糖冷萃咖啡产品正面英雄近景，干净深色台面，克制城市光线，产品包装比例保持一致，右侧与底部保留宽裕CTA安全区，高级商业摄影。"),
+      imagePromptEn: appendNoReadableTextRules("9:16 vertical advertising end card keyframe, authentic low-sugar cold brew product in a frontal hero close-up on a clean dark surface, restrained city light, preserve package proportions, generous CTA-safe negative space on the right and bottom, premium commercial photography."),
+      videoPromptCn: appendNoReadableTextRules("产品保持正面英雄构图，镜头极慢推近并在最后3秒稳定停留，背景只有克制光线变化，不改变包装，不新增主体；品牌名、卖点和CTA全部由Remotion后期叠加。"),
+      recommendedModel: "remotion",
+      fallbackPlan: "优先使用用户真实产品图制作结尾卡，叠加CTA和品牌文案。"
     }
   ],
   modelRoutes: [
@@ -103,7 +164,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
       taskType: "storyboard",
       primaryModel: "DeepSeek-V4-Flash",
       backupModel: "coldBrewDemo mock fallback",
-      reason: "4镜头分镜与镜头目标继续由DeepSeek生成，避免额外文本模型造成成本和风格漂移。",
+      reason: "动态镜头分镜与镜头目标继续由DeepSeek生成，避免额外文本模型造成成本和风格漂移。",
       estimatedCost: 0.5,
       estimatedLatency: "3-8s",
       fallbackMode: "失败后读取mock分镜"
@@ -170,7 +231,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
       explanation: "DeepSeek + Qwen-Image关键帧 + HappyHorse真实视频 + Remotion。后续接入HappyHorse API后，核心视频镜头切到自动化生成链路。"
     }
   ],
-  heroShotId: "shot-3",
+  heroShotId: "shot-05-hero-transition",
   status: "completed",
   assets: [
     {
@@ -204,7 +265,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
     {
       id: "asset-final-video",
       type: "video",
-      name: "coldbrew-vertical-ad-18s.mp4",
+      name: "coldbrew-vertical-ad-40s.mp4",
       url: "/mock/coldbrew/final-vertical-ad.mp4",
       status: "mock"
     },

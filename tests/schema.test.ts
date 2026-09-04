@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import {
   adStrategySchema,
@@ -26,9 +26,9 @@ describe("AIGC ad director schemas", () => {
     expect(coldBrewDemo.brief.productName).toBe("低糖冷萃咖啡");
     expect(coldBrewDemo.brief.targetAudience).toBe("一线城市上班族");
     expect(coldBrewDemo.brief.aspectRatio).toBe("9:16");
-    expect(coldBrewDemo.brief.durationSec).toBe(28);
-    expect(coldBrewDemo.shots).toHaveLength(4);
-    expect(coldBrewDemo.shots.reduce((total, shot) => total + shot.durationSec, 0)).toBe(28);
+    expect(coldBrewDemo.brief.durationSec).toBe(40);
+    expect(coldBrewDemo.shots).toHaveLength(8);
+    expect(coldBrewDemo.shots.reduce((total, shot) => total + shot.durationSec, 0)).toBe(40);
     expect(coldBrewDemo.costEstimates).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: "最低成本演示模式", minCny: 8, maxCny: 15 }),

@@ -20,10 +20,10 @@
 .model-status-dot { margin-top:5px; width:7px; height:7px; border-radius:50%; background:#fb923c; }
 .model-status-dot.is-configured { background:#86efac; box-shadow:0 0 8px rgba(134,239,172,.4); }
 .model-provider-card label { display:block; margin-top:14px; color:#a1a1aa; font-size:11px; }
-.model-key-field { height:46px; margin-top:7px; display:grid; grid-template-columns:1fr 44px; border:1px solid #29303c; border-radius:10px; background:#07090e; overflow:hidden; }
+.model-key-field { position:relative; z-index:1; height:46px; min-width:0; margin-top:7px; display:grid; grid-template-columns:minmax(0,1fr) 44px; border:1px solid #29303c; border-radius:10px; background:#07090e; overflow:hidden; pointer-events:auto; }
 .model-key-field:focus-within { border-color:rgba(103,232,249,.55); box-shadow:0 0 0 3px rgba(34,211,238,.08); }
-.model-key-field input { min-width:0; border:0; outline:0; padding:0 13px; background:transparent; color:#f8fafc; font-family:Consolas,monospace; font-size:14px; }
-.model-key-field button { border:0; border-left:1px solid #29303c; background:transparent; }
+.model-key-field input { position:relative; z-index:1; min-width:0; border:0; outline:0; padding:0 12px; background:transparent; color:#f8fafc; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:14px; pointer-events:auto; }
+.model-key-field button { position:relative; z-index:2; width:44px; border:0; border-left:1px solid #29303c; background:transparent; pointer-events:auto; }
 .model-eye { position:relative; width:18px; height:12px; display:inline-block; border:1.5px solid #94a3b8; border-radius:50%/65%; }
 .model-eye::after { content:""; position:absolute; left:5px; top:2px; width:5px; height:5px; border-radius:50%; background:#94a3b8; }
 .model-eye:not(.is-open)::before { content:""; position:absolute; left:-2px; top:5px; width:21px; height:1px; background:#94a3b8; transform:rotate(-35deg); }

@@ -108,7 +108,7 @@ export function buildHappyHorseRequestBody(input: HappyHorseVideoRequest, model:
     parameters: {
       resolution: process.env.HAPPYHORSE_VIDEO_RESOLUTION || "720P",
       ratio: input.aspectRatio,
-      duration: Math.max(3, Math.min(5, Math.round(input.durationSec))),
+      duration: Math.max(3, Math.min(8, Math.round(input.durationSec))),
       watermark: false
     }
   };

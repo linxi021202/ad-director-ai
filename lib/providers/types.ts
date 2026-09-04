@@ -72,6 +72,7 @@ export type ImageGenerationResult = {
 export type ShotImageGenerationResult = {
   shotId: string;
   imageUrl: string;
+  assetId?: string;
   localUrl?: string;
   prompt: string;
   provider: string;
@@ -95,6 +96,7 @@ export type VideoGenerationResult = {
 
 export type HeroVideoFromImageInput = {
   imageUrl: string;
+  heroImageAssetId?: string;
   productImages?: ProductImage[];
   prompt: string;
   durationSec: number;
@@ -148,7 +150,12 @@ export type ProviderRouterInput = {
   isHeroShot?: boolean;
 };
 
-export type ProviderRequestContext = { sessionId?: string };
+export type ProviderRequestContext = {
+  sessionId?: string;
+  requestedShotCount?: number;
+  targetDurationSec?: number;
+  shotDurationPlan?: number[];
+};
 
 export type TextProvider = {
   provider: string;

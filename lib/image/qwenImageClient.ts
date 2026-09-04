@@ -237,23 +237,24 @@ async function pollQwenImageTask(baseUrl: string, apiKey: string, taskId: string
   };
 }
 
-async function cacheImageIfNeeded(input: QwenImageRequest, imageUrl: string): Promise<Pick<QwenImageResult, "localUrl" | "cacheStatus">> {
-  if (!input.projectId || !input.shotId) {
-    return { cacheStatus: "remote-only" };
-  }
-
+async function cacheImageIfNeeded(
+  input: QwenImageRequest,
+  imageUrl: string
+): Promise<Pick<QwenImageResult, "assetId" | "localUrl" | "cacheStatus" | "error">> {
+  if (!input.projectId || !input.shotId) return { cacheStatus: "remote-only" };
   const download = await downloadGeneratedImage({
     imageUrl,
     projectId: input.projectId,
-    shotId: input.shotId
+    shotId: input.shotId,
+    sessionId: input.sessionId
   });
-
   return {
+    assetId: download.assetId,
     localUrl: download.localUrl,
-    cacheStatus: download.cacheStatus
+    cacheStatus: download.cacheStatus,
+    error: download.error
   };
 }
-
 export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageResult> {
   assertServerOnly();
 
@@ -379,10 +380,24 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
     }
 
     const cached = await cacheImageIfNeeded(input, imageUrl);
+    if (input.projectId && input.shotId && (!cached.assetId || cached.cacheStatus !== "cached")) {
+      return {
+        success: false,
+        requestId,
+        provider: "dashscope",
+        model,
+        latencyMs: Date.now() - startedAt,
+        size,
+        cacheStatus: cached.cacheStatus,
+        costEstimate: estimateQwenImageCost(size),
+        error: sanitizeErrorMessage(cached.error || "Generated image could not be persisted privately.")
+      };
+    }
 
     return {
       success: true,
       imageUrl,
+      assetId: cached.assetId,
       localUrl: cached.localUrl,
       requestId,
       provider: "dashscope",

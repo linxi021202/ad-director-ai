@@ -183,23 +183,23 @@ function fromTextResponse<TData>(response: TextProviderResponse<TData>): RoutedT
   return fromLegacyResponse(response);
 }
 
-async function runMockTextTask(input: RunTextTaskInput, fallbackReason?: string): Promise<RoutedTextResult<unknown>> {
+async function runMockTextTask(input: RunTextTaskInput, fallbackReason?: string, context?: ProviderRequestContext): Promise<RoutedTextResult<unknown>> {
   switch (input.taskType) {
     case "strategy":
-      return { ...fromTextResponse(await mockTextProvider.generateStrategy(input.brief)), fallbackUsed: Boolean(fallbackReason), fallbackReason };
+      return { ...fromTextResponse(await mockTextProvider.generateStrategy(input.brief, context)), fallbackUsed: Boolean(fallbackReason), fallbackReason };
     case "storyboard":
-      return { ...fromTextResponse(await mockTextProvider.generateStoryboard(input.brief, input.strategy)), fallbackUsed: Boolean(fallbackReason), fallbackReason };
+      return { ...fromTextResponse(await mockTextProvider.generateStoryboard(input.brief, input.strategy, context)), fallbackUsed: Boolean(fallbackReason), fallbackReason };
     case "prompt": {
       if (mockTextProvider.generatePrompts) {
-        const response = await mockTextProvider.generatePrompts(input.brief, input.strategy, input.shots);
+        const response = await mockTextProvider.generatePrompts(input.brief, input.strategy, input.shots, context);
         return { ...fromTextResponse(response), fallbackUsed: Boolean(fallbackReason), fallbackReason };
       }
 
-      return { ...fromTextResponse(await mockTextProvider.generateStoryboard(input.brief, input.strategy)), fallbackUsed: Boolean(fallbackReason), fallbackReason };
+      return { ...fromTextResponse(await mockTextProvider.generateStoryboard(input.brief, input.strategy, context)), fallbackUsed: Boolean(fallbackReason), fallbackReason };
     }
     case "scoring": {
       if (mockTextProvider.scoreAdPlan) {
-        const response = await mockTextProvider.scoreAdPlan(input.brief, input.strategy, input.shots);
+        const response = await mockTextProvider.scoreAdPlan(input.brief, input.strategy, input.shots, context);
         return { ...fromTextResponse(response), fallbackUsed: Boolean(fallbackReason), fallbackReason };
       }
 
@@ -238,12 +238,12 @@ async function runDeepSeekTextTask(input: RunTextTaskInput, context?: ProviderRe
 
 export async function runTextTask(input: RunTextTaskInput, context?: ProviderRequestContext): Promise<RoutedTextResult<unknown>> {
   if (isMockMode() || !shouldUseRealText()) {
-    return runMockTextTask(input);
+    return runMockTextTask(input, undefined, context);
   }
 
   const resolvedKey = await resolveProviderApiKey("deepseek", context?.sessionId);
   if (!resolvedKey) {
-    return runMockTextTask(input, "DeepSeek real text route is unavailable because AI config is invalid: DEEPSEEK_API_KEY is required.");
+    return runMockTextTask(input, "DeepSeek real text route is unavailable because AI config is invalid: DEEPSEEK_API_KEY is required.", context);
   }
 
   try {
@@ -254,7 +254,7 @@ export async function runTextTask(input: RunTextTaskInput, context?: ProviderReq
       `DeepSeek real text route is unavailable because AI config is invalid: ${
         error instanceof Error ? error.message : "unknown config error"
       }`
-    );
+    , context);
   }
 
   const primary = await runDeepSeekTextTask(input, context);
@@ -266,7 +266,7 @@ export async function runTextTask(input: RunTextTaskInput, context?: ProviderReq
   return runMockTextTask(
     input,
     `DeepSeek ${input.taskType} failed: ${primary.error ?? "unknown error"}. Used mockTextProvider coldBrewDemo fallback.`
-  );
+  , context);
 }
 
 function mockShotImageResult(shot: StoryboardShot, response: ProviderResponse<{ imageUrl: string; prompt: string }>): ShotImageGenerationResult {

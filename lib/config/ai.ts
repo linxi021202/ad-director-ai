@@ -47,6 +47,7 @@ const envSchema = z.object({
   ENABLE_REAL_TEXT: booleanEnvSchema,
   ENABLE_REAL_IMAGE: booleanEnvSchema,
   ENABLE_REAL_VIDEO: booleanEnvSchema,
+  ALLOW_PLATFORM_KEYS: booleanEnvSchema,
 
   DEEPSEEK_API_KEY: optionalSecretSchema,
   DEEPSEEK_BASE_URL: z.string().url().default("https://api.deepseek.com"),
@@ -71,9 +72,9 @@ const envSchema = z.object({
   HAPPYHORSE_VIDEO_ASSET_PATH: z.string().min(1).default("/demo-videos/hero-shot.mp4"),
 
   MAX_TEXT_CALLS_PER_RUN: positiveIntEnvSchema(3),
-  MAX_IMAGES_PER_RUN: positiveIntEnvSchema(4),
+  MAX_IMAGES_PER_RUN: positiveIntEnvSchema(12),
   MAX_REAL_VIDEO_SHOTS_PER_RUN: positiveIntEnvSchema(1),
-  MAX_VIDEO_SECONDS_PER_SHOT: positiveIntEnvSchema(5)
+  MAX_VIDEO_SECONDS_PER_SHOT: positiveIntEnvSchema(7)
 });
 
 type RawAIEnv = z.infer<typeof envSchema>;
@@ -83,6 +84,7 @@ export type AIConfig = {
   realTextEnabled: boolean;
   realImageEnabled: boolean;
   realVideoEnabled: boolean;
+  platformKeysAllowed: boolean;
   deepseek: { apiKey?: string; baseUrl: string; model: string; configured: boolean };
   qwenImage: { apiKey?: string; baseUrl: string; imageModel: string; size: string; promptExtend: boolean; watermark: boolean; configured: boolean };
   video: { provider: RawAIEnv["VIDEO_PROVIDER"]; happyHorseApiKey?: string; happyHorseBaseUrl: string; happyHorseModel: string; assetPath: string; configured: boolean };
@@ -95,6 +97,7 @@ export type PublicAIStatus = {
   realTextEnabled: boolean;
   realImageEnabled: boolean;
   realVideoEnabled: boolean;
+  platformKeysAllowed: boolean;
   deepseekConfigured: boolean;
   textModel: string;
   imageConfigured: boolean;
@@ -131,34 +134,30 @@ function assertRequiredSecrets(env: RawAIEnv) {
 }
 
 function buildConfig(env: RawAIEnv): AIConfig {
+  const allowPlatformKeys = process.env.NODE_ENV !== "production" && env.ALLOW_PLATFORM_KEYS;
+  const deepseekApiKey = allowPlatformKeys ? env.DEEPSEEK_API_KEY : undefined;
+  const dashscopeApiKey = allowPlatformKeys ? env.DASHSCOPE_API_KEY : undefined;
+
   return {
     mode: env.AI_MODE,
     realTextEnabled: env.ENABLE_REAL_TEXT,
     realImageEnabled: env.ENABLE_REAL_IMAGE,
     realVideoEnabled: env.ENABLE_REAL_VIDEO,
-    deepseek: { apiKey: env.DEEPSEEK_API_KEY, baseUrl: env.DEEPSEEK_BASE_URL, model: env.DEEPSEEK_MODEL, configured: Boolean(env.DEEPSEEK_API_KEY) },
-    qwenImage: { apiKey: env.DASHSCOPE_API_KEY, baseUrl: env.DASHSCOPE_BASE_URL, imageModel: env.QWEN_IMAGE_MODEL, size: env.QWEN_IMAGE_SIZE, promptExtend: env.QWEN_IMAGE_PROMPT_EXTEND, watermark: env.QWEN_IMAGE_WATERMARK, configured: Boolean(env.DASHSCOPE_API_KEY) },
-    video: { provider: env.VIDEO_PROVIDER, happyHorseApiKey: env.HAPPYHORSE_API_KEY ?? env.DASHSCOPE_API_KEY, happyHorseBaseUrl: env.HAPPYHORSE_BASE_URL || env.DASHSCOPE_BASE_URL, happyHorseModel: env.HAPPYHORSE_MODEL, assetPath: env.HAPPYHORSE_VIDEO_ASSET_PATH, configured: Boolean(env.HAPPYHORSE_API_KEY ?? env.DASHSCOPE_API_KEY) },
-    tts: { baseUrl: env.COSYVOICE_BASE_URL, model: env.COSYVOICE_MODEL, voice: env.COSYVOICE_VOICE, configured: Boolean(env.DASHSCOPE_API_KEY) },
+    platformKeysAllowed: allowPlatformKeys,
+    deepseek: { apiKey: deepseekApiKey, baseUrl: env.DEEPSEEK_BASE_URL, model: env.DEEPSEEK_MODEL, configured: Boolean(deepseekApiKey) },
+    qwenImage: { apiKey: dashscopeApiKey, baseUrl: env.DASHSCOPE_BASE_URL, imageModel: env.QWEN_IMAGE_MODEL, size: env.QWEN_IMAGE_SIZE, promptExtend: env.QWEN_IMAGE_PROMPT_EXTEND, watermark: env.QWEN_IMAGE_WATERMARK, configured: Boolean(dashscopeApiKey) },
+    video: { provider: env.VIDEO_PROVIDER, happyHorseApiKey: undefined, happyHorseBaseUrl: env.HAPPYHORSE_BASE_URL || env.DASHSCOPE_BASE_URL, happyHorseModel: env.HAPPYHORSE_MODEL, assetPath: env.HAPPYHORSE_VIDEO_ASSET_PATH, configured: false },
+    tts: { baseUrl: env.COSYVOICE_BASE_URL, model: env.COSYVOICE_MODEL, voice: env.COSYVOICE_VOICE, configured: false },
     limits: { maxTextCallsPerRun: env.MAX_TEXT_CALLS_PER_RUN, maxImagesPerRun: env.MAX_IMAGES_PER_RUN, maxRealVideoShotsPerRun: env.MAX_REAL_VIDEO_SHOTS_PER_RUN, maxVideoSecondsPerShot: env.MAX_VIDEO_SECONDS_PER_SHOT }
   };
 }
-function isPubliclyConfigured(env: RawAIEnv) {
-  if (env.AI_MODE === "real" && env.ENABLE_REAL_TEXT && !env.DEEPSEEK_API_KEY) {
-    return false;
-  }
-
-  if (env.ENABLE_REAL_IMAGE && !env.DASHSCOPE_API_KEY) {
-    return false;
-  }
-
+function isPubliclyConfigured(_env: RawAIEnv) {
   return true;
 }
 
 export function getAIConfig(options: { allowSessionSecrets?: boolean } = {}): AIConfig {
   const env = parseEnv();
-  if (!options.allowSessionSecrets) assertRequiredSecrets(env);
-
+  void options;
   return buildConfig(env);
 }
 
@@ -172,6 +171,7 @@ export function getPublicAIStatus(): PublicAIStatus {
     realTextEnabled: config.realTextEnabled,
     realImageEnabled: config.realImageEnabled,
     realVideoEnabled: config.realVideoEnabled,
+    platformKeysAllowed: config.platformKeysAllowed,
     deepseekConfigured: config.deepseek.configured,
     textModel: config.deepseek.model,
     imageConfigured: config.qwenImage.configured,

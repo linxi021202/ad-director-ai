@@ -1,112 +1,130 @@
-import { requireApiUser } from "@/lib/auth/api";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import path from "node:path";
+import "server-only";
+
 import { NextResponse } from "next/server";
 
-import { assertServerOnly } from "@/lib/server-only";
-import { safeSegment } from "@/lib/render/renderStateStore";
+import {
+  createPrivateAsset,
+  deletePrivateAsset,
+  getPrivateAsset,
+  toPublicProjectAsset
+} from "@/lib/assets/assetStore";
+import { hasSupportedAudioSignature } from "@/lib/assets/media";
+import { authorizeOwnedProject } from "@/lib/projects/api";
+import { updateOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
+import {
+  completeGenerationEvent,
+  failGenerationEvent,
+  startGenerationEvent
+} from "@/lib/projects/generationEvents";
+import { getAnonymousApiSession } from "@/lib/session/api";
 
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
-const MIME_EXTENSIONS: Record<string, string> = {
-  "audio/mpeg": "mp3",
-  "audio/mp3": "mp3",
-  "audio/wav": "wav",
-  "audio/x-wav": "wav",
-  "audio/mp4": "m4a",
-  "audio/aac": "aac"
-};
+const SUPPORTED_AUDIO_TYPES = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/aac"] as const;
 
 type RouteContext = { params: Promise<{ projectId: string }> };
-type NarrationAsset = {
-  projectId: string;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  publicUrl: string;
-  createdAt: string;
-};
 
 export async function GET(_request: Request, context: RouteContext) {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
-  assertServerOnly("narration asset route");
-  const projectId = await getProjectId(context);
-  const asset = await readAsset(projectId);
-  return json(true, { exists: Boolean(asset), asset }, null, 200);
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const authorization = await authorizeOwnedProject(sessionResult.session.id, (await context.params).projectId);
+  if (!authorization.authorized) return authorization.response;
+  const assetId = authorization.record.project.narrationAssetId;
+  const asset = assetId
+    ? await getPrivateAsset(sessionResult.session.id, authorization.projectId, assetId)
+    : null;
+  return json(true, {
+    exists: Boolean(asset),
+    asset: asset ? toPublicProjectAsset(asset) : null
+  }, null, 200);
 }
 
 export async function POST(request: Request, context: RouteContext) {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
-  assertServerOnly("narration asset route");
-  try {
-    const projectId = await getProjectId(context);
-    const formData = await request.formData();
-    const file = formData.get("file");
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const { session } = sessionResult;
+  const authorization = await authorizeOwnedProject(session.id, (await context.params).projectId);
+  if (!authorization.authorized) return authorization.response;
 
+  let eventId: string | null = null;
+  try {
+    const file = (await request.formData()).get("file");
     if (!(file instanceof File)) return json(false, null, "请选择旁白音频文件。", 400);
-    const extension = MIME_EXTENSIONS[file.type];
-    if (!extension) return json(false, null, "旁白仅支持 MP3、WAV、M4A 或 AAC。", 400);
+
+    const event = await startGenerationEvent(session.id, authorization.projectId, {
+      stage: "narration",
+      provider: "system",
+      action: "upload-narration",
+      message: "旁白音频开始上传。",
+      progressCurrent: 0,
+      progressTotal: 1
+    });
+    eventId = event.id;
+
+    if (!SUPPORTED_AUDIO_TYPES.includes(file.type as (typeof SUPPORTED_AUDIO_TYPES)[number])) {
+      await failGenerationEvent(session.id, authorization.projectId, eventId, "旁白格式校验失败。", "ASSET_VALIDATION_FAILED");
+      return json(false, null, "旁白仅支持 MP3、WAV、M4A 或 AAC。", 400);
+    }
     if (file.size <= 0 || file.size > MAX_AUDIO_BYTES) {
+      await failGenerationEvent(session.id, authorization.projectId, eventId, "旁白文件大小校验失败。", "ASSET_VALIDATION_FAILED");
       return json(false, null, "旁白音频不能为空且不能超过 20MB。", 400);
     }
 
-    const directory = assetDirectory(projectId);
-    await mkdir(directory, { recursive: true });
-    await Promise.all(["mp3", "wav", "m4a", "aac"].map((ext) =>
-      rm(path.join(directory, "voiceover." + ext), { force: true })
-    ));
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!hasSupportedAudioSignature(bytes, file.type)) {
+      await failGenerationEvent(session.id, authorization.projectId, eventId, "旁白文件签名校验失败。", "ASSET_VALIDATION_FAILED");
+      return json(false, null, "旁白文件内容与声明格式不一致。", 400);
+    }
 
-    const fileName = "voiceover." + extension;
-    await writeFile(path.join(directory, fileName), Buffer.from(await file.arrayBuffer()));
-    const asset: NarrationAsset = {
-      projectId,
+    const previousAssetId = authorization.record.project.narrationAssetId;
+    const asset = await createPrivateAsset(session.id, authorization.projectId, {
+      kind: "narration-audio",
+      source: "user-upload",
       fileName: file.name,
       mimeType: file.type,
-      sizeBytes: file.size,
-      publicUrl: "/generated/" + projectId + "/audio/" + fileName,
-      createdAt: new Date().toISOString()
-    };
-    await mkdir(path.dirname(metadataPath(projectId)), { recursive: true });
-    await writeFile(metadataPath(projectId), JSON.stringify(asset, null, 2), "utf8");
-    return json(true, { exists: true, asset }, null, 201);
+      bytes
+    });
+    try {
+      await updateOwnedAnonymousProject(session.id, authorization.projectId, { narrationAssetId: asset.id });
+    } catch (error) {
+      await deletePrivateAsset(session.id, authorization.projectId, asset.id);
+      throw error;
+    }
+    if (previousAssetId && previousAssetId !== asset.id) {
+      await deletePrivateAsset(session.id, authorization.projectId, previousAssetId).catch(() => undefined);
+    }
+
+    await completeGenerationEvent(
+      session.id,
+      authorization.projectId,
+      eventId,
+      "旁白音频已上传并保存到项目私有资产。",
+      { progressCurrent: 1, progressTotal: 1 }
+    );
+    return json(true, { exists: true, asset: toPublicProjectAsset(asset) }, null, 201);
   } catch {
-    return json(false, null, "旁白音频保存失败，请重新上传。", 500);
+    if (eventId) {
+      await failGenerationEvent(
+        session.id,
+        authorization.projectId,
+        eventId,
+        "旁白音频私有保存失败，请重新上传。",
+        "ASSET_UPLOAD_FAILED"
+      ).catch(() => undefined);
+    }
+    return json(false, null, "旁白音频私有保存失败，请重新上传。", 500);
   }
 }
 
 export async function DELETE(_request: Request, context: RouteContext) {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
-  assertServerOnly("narration asset route");
-  const projectId = await getProjectId(context);
-  await rm(assetDirectory(projectId), { recursive: true, force: true });
-  await rm(metadataPath(projectId), { force: true });
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const { session } = sessionResult;
+  const authorization = await authorizeOwnedProject(session.id, (await context.params).projectId);
+  if (!authorization.authorized) return authorization.response;
+  const assetId = authorization.record.project.narrationAssetId;
+  await updateOwnedAnonymousProject(session.id, authorization.projectId, { narrationAssetId: null });
+  if (assetId) await deletePrivateAsset(session.id, authorization.projectId, assetId);
   return json(true, { exists: false, asset: null }, null, 200);
-}
-
-async function getProjectId(context: RouteContext) {
-  const params = await context.params;
-  return safeSegment(params.projectId);
-}
-
-async function readAsset(projectId: string): Promise<NarrationAsset | null> {
-  try {
-    const asset = JSON.parse(await readFile(metadataPath(projectId), "utf8")) as NarrationAsset;
-    const filePath = path.join(process.cwd(), "public", asset.publicUrl.replace(/^\//, ""));
-    const info = await stat(filePath);
-    return info.isFile() && info.size > 0 ? asset : null;
-  } catch {
-    return null;
-  }
-}
-
-function assetDirectory(projectId: string) {
-  return path.join(process.cwd(), "public", "generated", projectId, "audio");
-}
-
-function metadataPath(projectId: string) {
-  return path.join(process.cwd(), "data", "projects", projectId + ".narration.json");
 }
 
 function json(success: boolean, data: unknown, error: string | null, status: number) {

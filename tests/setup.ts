@@ -1,0 +1,1 @@
+process.env.ALLOW_PLATFORM_KEYS ??= "true";

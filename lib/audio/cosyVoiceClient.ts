@@ -1,14 +1,16 @@
-﻿import "server-only";
+import "server-only";
 
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { createPrivateAsset, deletePrivateAsset, getProjectAssetUrl } from "../assets/assetStore";
+import { hasSupportedAudioSignature } from "../assets/media";
 import { getAIConfig } from "../config/ai";
+import { requireOwnedAnonymousProject, updateOwnedAnonymousProject } from "../projects/anonymousProjectStore";
 import { resolveProviderApiKey } from "../secrets/resolver";
 import type { GenerationProject } from "../schemas/project";
-import { safeSegment } from "../render/renderStateStore";
 
 type CosyVoiceResponse = { output?: { audio?: { url?: string } }; code?: string; message?: string };
-export type AutoNarrationResult = { success: true; publicUrl: string; script: string; model: string } | { success: false; error: string };
+export type AutoNarrationResult =
+  | { success: true; assetId: string; publicUrl: string; script: string; model: string }
+  | { success: false; error: string };
 const REQUEST_TIMEOUT_MS = 90_000;
 
 export function buildNarrationScript(project: GenerationProject) {
@@ -21,6 +23,7 @@ export function buildNarrationScript(project: GenerationProject) {
 }
 
 export async function ensureAutoNarration(projectId: string, project: GenerationProject, sessionId?: string): Promise<AutoNarrationResult> {
+  if (!sessionId) return { success: false, error: "匿名会话不可用，已保留主镜头原声。" };
   const apiKey = await resolveProviderApiKey("qwen-image", sessionId);
   if (!apiKey) return { success: false, error: "百炼密钥未配置，已保留主镜头原声。" };
   const config = getAIConfig({ allowSessionSecrets: true });
@@ -40,22 +43,39 @@ export async function ensureAutoNarration(projectId: string, project: Generation
       const detail = payload.message || payload.code || `HTTP ${response.status}`;
       return { success: false, error: `自动旁白生成失败：${sanitizeError(detail)}，已保留主镜头原声。` };
     }
-    const audioResponse = await fetch(audioUrl, { signal: controller.signal });
+    const audioResponse = await fetch(audioUrl, { signal: controller.signal, cache: "no-store" });
     if (!audioResponse.ok) return { success: false, error: "自动旁白下载失败，已保留主镜头原声。" };
-    const bytes = Buffer.from(await audioResponse.arrayBuffer());
-    if (bytes.length === 0) return { success: false, error: "自动旁白文件为空，已保留主镜头原声。" };
-    const safeProjectId = safeSegment(projectId);
-    const outputDir = path.join(process.cwd(), "public", "generated", safeProjectId, "audio");
-    const dataDir = path.join(process.cwd(), "data", "projects");
-    const publicUrl = `/generated/${safeProjectId}/audio/voiceover.wav`;
-    await mkdir(outputDir, { recursive: true });
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(path.join(outputDir, "voiceover.wav"), bytes);
-    await writeFile(path.join(dataDir, `${safeProjectId}.narration.json`), JSON.stringify({
-      projectId: safeProjectId, fileName: "AI 自动旁白.wav", mimeType: "audio/wav", sizeBytes: bytes.length,
-      publicUrl, createdAt: new Date().toISOString(), source: "cosyvoice-auto", script
-    }, null, 2), "utf8");
-    return { success: true, publicUrl, script, model: config.tts.model };
+    const bytes = new Uint8Array(await audioResponse.arrayBuffer());
+    if (!hasSupportedAudioSignature(bytes, "audio/wav")) {
+      return { success: false, error: "自动旁白文件格式无效，已保留主镜头原声。" };
+    }
+
+    const record = await requireOwnedAnonymousProject(sessionId, projectId);
+    const previousAssetId = record.project.narrationAssetId;
+    const asset = await createPrivateAsset(sessionId, projectId, {
+      kind: "narration-audio",
+      source: "user-upload",
+      role: "cosyvoice-auto",
+      fileName: "AI 自动旁白.wav",
+      mimeType: "audio/wav",
+      bytes
+    });
+    try {
+      await updateOwnedAnonymousProject(sessionId, projectId, { narrationAssetId: asset.id });
+    } catch (error) {
+      await deletePrivateAsset(sessionId, projectId, asset.id);
+      throw error;
+    }
+    if (previousAssetId && previousAssetId !== asset.id) {
+      await deletePrivateAsset(sessionId, projectId, previousAssetId).catch(() => undefined);
+    }
+    return {
+      success: true,
+      assetId: asset.id,
+      publicUrl: getProjectAssetUrl(projectId, asset.id),
+      script,
+      model: config.tts.model
+    };
   } catch (error) {
     return { success: false, error: error instanceof Error && error.name === "AbortError" ? "自动旁白生成超时，已保留主镜头原声。" : "自动旁白生成失败，已保留主镜头原声。" };
   } finally {
@@ -66,4 +86,3 @@ export async function ensureAutoNarration(projectId: string, project: Generation
 function sanitizeError(message: string) {
   return message.replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]").replace(/sk-[A-Za-z0-9_-]+/gi, "[redacted]").slice(0, 120);
 }
-

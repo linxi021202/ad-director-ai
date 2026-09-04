@@ -5,19 +5,18 @@ const page = readFileSync("app/page.tsx", "utf8");
 const styles = readFileSync("app/home-final.css", "utf8");
 
 describe("homepage final hero", () => {
-  it("routes authenticated users directly and anonymous users through sign-in", () => {
-    expect(page).toContain('const workspaceTarget = isAuthenticated ? "/generate"');
-    expect(page).toContain('"/sign-in?callbackUrl=%2Fgenerate"');
-    expect(page).toContain('const projectPath = "/projects/coldbrew-demo-001"');
-    expect(page).toContain('href="/demo"');
-    expect(page).not.toContain('href="#features"');
+  it("routes anonymous visitors directly to public product pages", () => {
+    expect(page).toContain('const workspaceTarget = "/generate"');
+    expect(page).toContain('const projectPath = "/demo/project"');
+    expect(page).toContain('href={projectTarget}');
+    expect(page).not.toContain("/sign-in");
+    expect(page).not.toContain("/sign-up");
   });
 
-  it("renders the final hierarchy and calls to action", () => {
-    expect(page).toContain("从一份商品简报，");
-    expect(page).toContain("生成</strong>一支完整广告片。");
-    expect(page).toContain("开始生成广告");
-    expect(page).toContain("查看演示项目");
+  it("keeps the public model settings entry", () => {
+    expect(page).toContain("ModelSettingsTrigger");
+    expect(page).toContain("模型设置");
+    expect(page).toContain("打开工作台");
   });
 
   it("includes responsive navigation and reduced-motion support", () => {

@@ -19,6 +19,7 @@ import {
   type StoryboardShot
 } from "../schemas/project";
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
+import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
 
 const allowedModelSchema = z.enum(["deepseek-v4-flash", "qwen-image", "happyhorse-1.0-r2v", "remotion"]);
 
@@ -30,26 +31,25 @@ const subtitleSafeShotSchema = routedShotSchema.refine((shot) => [...shot.subtit
   message: "subtitle must be no more than 16 Chinese characters"
 });
 
-const baseShotsPayloadSchema = z.preprocess((value) => {
-  if (Array.isArray(value)) {
+function createShotsPayloadSchema(shotDurationPlan: number[]): z.ZodType<StoryboardShot[]> {
+  const expectedShotCount = shotDurationPlan.length;
+  const base = z.preprocess((value) => {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object" && "shots" in value) {
+      return (value as { shots?: unknown }).shots;
+    }
     return value;
-  }
+  }, z.array(subtitleSafeShotSchema).length(expectedShotCount).transform((shots) => shots.map((shot, index) => ({
+    ...shot,
+    index: index + 1,
+    durationSec: shotDurationPlan[index]!
+  })))) as z.ZodType<StoryboardShot[]>;
 
-  if (value && typeof value === "object" && "shots" in value) {
-    return (value as { shots?: unknown }).shots;
-  }
-
-  return value;
-}, z.array(subtitleSafeShotSchema).length(4)) as z.ZodType<StoryboardShot[]>;
-
-const shotsPayloadSchema: z.ZodType<StoryboardShot[]> = baseShotsPayloadSchema.refine(
-  (shots) => {
-    const totalDurationSec = shots.reduce((sum, shot) => sum + shot.durationSec, 0);
-    return totalDurationSec >= 25 && totalDurationSec <= 30;
-  },
-  { message: "storyboard total duration must be 25-30 seconds" }
-);
-
+  return base.refine(
+    (shots) => validateShotConfiguration(expectedShotCount, shots, shotDurationPlan).valid,
+    { message: `storyboard must contain exactly ${expectedShotCount} shots using the requested duration plan` }
+  );
+}
 const adScoreSchema = z.object({
   overallScore: z.number().min(0).max(100),
   dimensionScores: z.object({
@@ -184,7 +184,7 @@ export const deepseekProvider = {
   provider: "deepseek",
 
   async generateStrategy(brief: ProductBrief, context?: ProviderRequestContext): Promise<RealTextProviderResponse<AdStrategy>> {
-    return callAndValidate(buildStrategyPrompt(brief), adStrategySchema, {
+    return callAndValidate(buildStrategyPrompt(brief, context), adStrategySchema, {
       temperature: 0.35,
       maxTokens: 1800
     }, context);
@@ -195,9 +195,14 @@ export const deepseekProvider = {
     strategy: AdStrategy,
     context?: ProviderRequestContext
   ): Promise<RealTextProviderResponse<StoryboardShot[]>> {
-    return callAndValidate(buildStoryboardPrompt(brief, strategy), shotsPayloadSchema, {
+    const timeline = resolveShotPlan(
+      context?.requestedShotCount,
+      context?.shotDurationPlan,
+      context?.targetDurationSec ?? (context?.shotDurationPlan ? undefined : brief.durationSec)
+    );
+    return callAndValidate(buildStoryboardPrompt(brief, strategy, timeline), createShotsPayloadSchema(timeline.shotDurationPlan), {
       temperature: 0.45,
-      maxTokens: 3600
+      maxTokens: Math.max(3600, timeline.shotCount * 650)
     }, context);
   },
 
@@ -221,7 +226,7 @@ export const deepseekProvider = {
     shots: StoryboardShot[],
     context?: ProviderRequestContext
   ): Promise<RealTextProviderResponse<StoryboardShot[]>> {
-    return callAndValidate(buildPromptGenerationPrompt(brief, strategy, shots), shotsPayloadSchema, {
+    return callAndValidate(buildPromptGenerationPrompt(brief, strategy, shots), createShotsPayloadSchema(shots.map((shot) => shot.durationSec)), {
       temperature: 0.35,
       maxTokens: 4200
     }, context);

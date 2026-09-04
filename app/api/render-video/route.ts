@@ -1,12 +1,23 @@
-import { requireApiUser } from "@/lib/auth/api";
+import { getAnonymousApiSession } from "@/lib/session/api";
+import { authorizeOwnedProject } from "@/lib/projects/api";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const { session } = sessionResult;
   try {
     const body = await request.json().catch(() => ({}));
-    const projectId = typeof body?.projectId === "string" ? body.projectId : null;
+    const requestedProjectId = typeof body?.projectId === "string" ? body.projectId : null;
+    if (!requestedProjectId) {
+      return NextResponse.json({
+        success: false, data: null, trace: { route: "render-video", stage: "validation" },
+        fallbackUsed: false, fallbackReason: null, error: "缺少项目 ID。"
+      }, { status: 400 });
+    }
+    const authorization = await authorizeOwnedProject(session.id, requestedProjectId);
+    if (!authorization.authorized) return authorization.response;
+    const projectId = authorization.projectId;
 
     return NextResponse.json({
       success: false,

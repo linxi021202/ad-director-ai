@@ -2,8 +2,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
+import { getStorageRoot } from "../assets/path";
+
 export const renderStatusSchema = z.enum([
   "idle",
+  "queued",
   "validating",
   "narrating",
   "bundling",
@@ -22,6 +25,8 @@ export const renderErrorCodeSchema = z.enum([
   "MEDIA_UNREADABLE",
   "FONT_LOAD_FAILED",
   "BUNDLE_FAILED",
+  "RENDER_INTERRUPTED",
+  "RENDER_QUEUE_FULL",
   "RENDER_FAILED",
   "ENCODE_FAILED",
   "RENDER_CANCELLED"
@@ -46,7 +51,6 @@ export type RenderErrorCode = z.infer<typeof renderErrorCodeSchema>;
 export type RenderStatusState = z.infer<typeof renderStatusStateSchema>;
 
 const stateCache = new Map<string, RenderStatusState>();
-const DATA_DIR = path.join(process.cwd(), "data", "projects");
 
 export function idleRenderState(projectId: string): RenderStatusState {
   return {
@@ -93,13 +97,13 @@ export async function setRenderState(projectId: string, patch: Partial<RenderSta
     updatedAt: new Date().toISOString()
   });
   stateCache.set(safeProjectId, next);
-  await mkdir(DATA_DIR, { recursive: true });
+  await mkdir(renderStateDirectory(), { recursive: true });
   await writeFile(renderStatePath(safeProjectId), JSON.stringify(next, null, 2), "utf8");
   return next;
 }
 
 export function isActiveRenderStatus(status: RenderStatus) {
-  return status === "validating" || status === "narrating" || status === "bundling" || status === "rendering" || status === "encoding";
+  return status === "queued" || status === "validating" || status === "narrating" || status === "bundling" || status === "rendering" || status === "encoding";
 }
 
 export function safeSegment(value: string) {
@@ -107,7 +111,11 @@ export function safeSegment(value: string) {
 }
 
 function renderStatePath(projectId: string) {
-  return path.join(DATA_DIR, `${projectId}.render.json`);
+  return path.join(renderStateDirectory(), `${projectId}.render.json`);
+}
+
+function renderStateDirectory() {
+  return path.join(getStorageRoot(), "render-state");
 }
 
 

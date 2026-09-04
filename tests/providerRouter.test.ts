@@ -61,6 +61,21 @@ describe("providerRouter", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it("keeps a 12-shot duration plan in mock mode", async () => {
+    process.env.AI_MODE = "mock";
+    const durations = [3, 4, 5, 6, 7, 8, 3, 4, 5, 5, 5, 5];
+
+    const result = await runTextTask(
+      { taskType: "storyboard", brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy },
+      { requestedShotCount: 12, shotDurationPlan: durations }
+    );
+    const shots = result.data as typeof coldBrewDemo.shots;
+
+    expect(result.success).toBe(true);
+    expect(shots).toHaveLength(12);
+    expect(shots.map((shot) => shot.durationSec)).toEqual(durations);
+    expect(shots.map((shot) => shot.index)).toEqual(Array.from({ length: 12 }, (_, index) => index + 1));
+  });
   it("routes strategy to deepseekProvider.generateStrategy in real text mode", async () => {
     enableRealTextMode();
     const spy = vi.spyOn(deepseekProvider, "generateStrategy").mockResolvedValue(realTextSuccess(coldBrewDemo.strategy));

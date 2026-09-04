@@ -5,16 +5,14 @@ import { useRouter } from "next/navigation";
 import type { MouseEvent } from "react";
 import { useState } from "react";
 
-import { UserMenu } from "@/components/auth/UserMenu";
 import { ModelSettingsSheet } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
 import { RaycastSpotlightBackground } from "@/components/RaycastSpotlightBackground";
-import { authClient } from "@/lib/auth-client";
 import "./home-final.css";
 import "./home-api-settings.css";
 
-const projectPath = "/projects/coldbrew-demo-001";
+const projectPath = "/demo/project";
 
 const features = [
   { icon: "director", title: "AI 导演模式", description: "秒级生成分镜与提示词" },
@@ -27,13 +25,9 @@ export default function HomePage() {
   const [isNavigating, setIsNavigating] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { data: session } = authClient.useSession();
-  const isAuthenticated = Boolean(session?.user);
-  const workspaceTarget = isAuthenticated ? "/generate" : "/sign-in?callbackUrl=%2Fgenerate";
-  const projectTarget = isAuthenticated
-    ? projectPath
-    : "/sign-in?callbackUrl=" + encodeURIComponent(projectPath);
-  const { status: modelStatus, setStatus: setModelStatus } = useModelSettingsStatus(isAuthenticated);
+  const workspaceTarget = "/generate";
+  const projectTarget = projectPath;
+  const { status: modelStatus, setStatus: setModelStatus } = useModelSettingsStatus();
 
   const handleTransition = (target: string) => (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -57,23 +51,25 @@ export default function HomePage() {
           </Link>
 
           <nav className="home-desktop-nav" aria-label="主要导航">
-            <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)} className="is-current">工作台</Link>
+            <Link href="/" className="is-current">首页</Link>
+            <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)}>工作台</Link>
             <Link href={projectTarget} onClick={handleTransition(projectTarget)}>项目</Link>
           </nav>
 
           <div className="home-header-actions">
-            {isAuthenticated ? (
-              <>
-                <ModelSettingsTrigger status={modelStatus} onClick={() => setSettingsOpen(true)} className="home-settings-button" label="模型设置" />
-                <UserMenu />
-              </>
-            ) : (
-              <>
-                <Link href="/sign-in" className="home-account-link">登录</Link>
-                <Link href="/sign-up" className="home-account-link">注册</Link>
-                <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)} className="home-open-button">打开工作台</Link>
-              </>
-            )}
+            <ModelSettingsTrigger
+              status={modelStatus}
+              onClick={() => setSettingsOpen(true)}
+              className="home-settings-button"
+              label="模型设置"
+            />
+            <Link
+              href={workspaceTarget}
+              onClick={handleTransition(workspaceTarget)}
+              className="home-open-button"
+            >
+              打开工作台
+            </Link>
           </div>
 
           <button
@@ -89,8 +85,10 @@ export default function HomePage() {
 
         {menuOpen ? (
           <nav className="home-mobile-nav" aria-label="移动端导航">
+            <Link href="/" onClick={() => setMenuOpen(false)}>首页</Link>
             <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)}>工作台</Link>
             <Link href={projectTarget} onClick={handleTransition(projectTarget)}>项目</Link>
+            <button type="button" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>模型设置</button>
           </nav>
         ) : null}
       </header>
@@ -110,7 +108,7 @@ export default function HomePage() {
               <span>开始生成广告</span>
               <span className="home-action-arrow" aria-hidden="true"><i /></span>
             </Link>
-            <Link href="/demo" onClick={handleTransition("/demo")} className="home-secondary-action">
+            <Link href={projectTarget} onClick={handleTransition(projectTarget)} className="home-secondary-action">
               <span className="home-play-icon" aria-hidden="true" />
               <span>查看演示项目</span>
               <span aria-hidden="true" />
@@ -127,7 +125,7 @@ export default function HomePage() {
           ))}
         </div>
       </section>
-      <ModelSettingsSheet open={settingsOpen && isAuthenticated} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} />
+      <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} />
     </main>
   );
 }

@@ -1,39 +1,54 @@
-import { requireApiUser } from "@/lib/auth/api";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { sanitizeProviderError } from "../../../../../lib/api/provider-error";
-import { createHappyHorseValidationResponse } from "../../../../../lib/api/happyhorse-validation";
-import { getDeepSeekRuntimeConfig, getAIConfig } from "../../../../../lib/config/ai";
-import { resolveProviderSecret } from "../../../../../lib/secrets/resolver";
-import { isRateLimited, isSameOrigin } from "../../../../../lib/secrets/security";
-import { secretStore } from "../../../../../lib/secrets/store";
-import { configurableProviders } from "../../../../../lib/secrets/types";
+import { sanitizeProviderError } from "@/lib/api/provider-error";
+import { getAIConfig, getDeepSeekRuntimeConfig } from "@/lib/config/ai";
+import { resolveSessionProviderSecret } from "@/lib/secrets/resolver";
+import { isPlausibleApiKey, isRateLimited, isSameOrigin } from "@/lib/secrets/security";
+import { secretStore } from "@/lib/secrets/store";
+import { configurableProviders } from "@/lib/secrets/types";
+import { getAnonymousApiSession } from "@/lib/session/api";
 
 const providerSchema = z.enum(configurableProviders);
+const bodySchema = z.object({ apiKey: z.string().optional() }).optional();
 
-export async function POST(request: NextRequest, context: { params: Promise<{ provider: string }> }) {
-  const authResult = await requireApiUser();
-  if (!authResult.authenticated) return authResult.response;
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ provider: string }> }
+) {
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const { session } = sessionResult;
+
   if (!isSameOrigin(request)) {
-    return NextResponse.json({ valid: false, message: "Invalid request origin." }, { status: 403 });
+    return NextResponse.json({ valid: false, message: "请求来源无效。" }, { status: 403 });
   }
 
   const provider = providerSchema.safeParse((await context.params).provider);
   if (!provider.success) {
-    return NextResponse.json({ valid: false, message: "Unknown model provider." }, { status: 400 });
+    return NextResponse.json({ valid: false, message: "未知模型服务。" }, { status: 400 });
   }
 
-  if (provider.data === "happyhorse") return await createHappyHorseValidationResponse(true, authResult.user.id);
-
-  const sessionId = authResult.user.id;
-  if (isRateLimited(`${sessionId || "env"}:validate`, 6)) {
-    return NextResponse.json({ valid: false, message: "Validation is too frequent. Try again later." }, { status: 429 });
+  if (isRateLimited(`${session.id}:validate`, 6)) {
+    return NextResponse.json({ valid: false, message: "验证过于频繁，请稍后重试。" }, { status: 429 });
   }
 
-  const secret = await resolveProviderSecret(provider.data, sessionId);
-  if (!secret.value) {
-    return NextResponse.json({ valid: false, message: "API key is not configured." }, { status: 409 });
+  const body = bodySchema.safeParse(await request.json().catch(() => undefined));
+  const submittedKey = body.success ? body.data?.apiKey?.trim() : undefined;
+  if (submittedKey && !isPlausibleApiKey(submittedKey)) {
+    return NextResponse.json({ valid: false, message: "密钥格式无效。" }, { status: 400 });
+  }
+
+  const saved = await resolveSessionProviderSecret({
+    sessionId: session.id,
+    provider: provider.data
+  });
+  const apiKey = submittedKey || saved.value;
+  if (!apiKey) {
+    return NextResponse.json({
+      valid: false,
+      message: saved.message ?? "请先配置模型 API Key。"
+    }, { status: 409 });
   }
 
   const deepSeekRuntime = getDeepSeekRuntimeConfig();
@@ -44,7 +59,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pr
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/+$/, "")}${path}`, {
-      headers: { Authorization: `Bearer ${secret.value}` },
+      headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(8_000)
     });
     valid = response.ok;
@@ -52,12 +67,15 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pr
     sanitizeProviderError(error, provider.data);
   }
 
-  if (sessionId) await secretStore.setValidated(sessionId, provider.data, valid);
+  if (!submittedKey && saved.source === "session") {
+    await secretStore.setValidated(session.id, provider.data, valid);
+  }
+
   const message = valid
-    ? "Connection validated."
+    ? "连接验证成功。"
     : provider.data === "deepseek"
-      ? "DeepSeek validation failed. Check API key, quota, or service status."
-      : "Qwen-Image validation failed. Check API key, workspace, or service status.";
+      ? "DeepSeek 验证失败，请检查密钥、额度或服务状态。"
+      : "Qwen-Image 验证失败，请检查密钥、工作空间或服务状态。";
 
   return NextResponse.json({ valid, message });
 }

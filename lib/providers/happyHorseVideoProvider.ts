@@ -38,7 +38,9 @@ export const happyHorseVideoProvider: VideoProvider = {
 
     try {
       const referenceImages = await resolveHappyHorseReferenceImages({
-        heroImageUrl: input.imageUrl,
+        sessionId: input.sessionId!,
+        projectId: input.projectId,
+        heroImageAssetId: input.heroImageAssetId,
         productImages: input.productImages
       });
 

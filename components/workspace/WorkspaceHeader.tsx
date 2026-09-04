@@ -1,18 +1,17 @@
-import React from "react";
 import Link from "next/link";
-import type { ReactNode } from "react";
-
-import { UserMenu } from "../auth/UserMenu";
+import React, { type ReactNode } from "react";
 
 type WorkspaceHeaderProps = {
   active: "工作台" | "项目" | "设置";
   projectHref: string;
+  workbenchHref?: string;
   trailing?: ReactNode;
 };
 
-export function WorkspaceHeader({ active, projectHref, trailing }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generate", trailing }: WorkspaceHeaderProps) {
   const navItems = [
-    { label: "工作台", href: "/generate" },
+    { label: "首页", href: "/" },
+    { label: "工作台", href: workbenchHref },
     { label: "项目", href: projectHref },
     { label: "模型设置", href: "/settings" }
   ] as const;
@@ -25,16 +24,16 @@ export function WorkspaceHeader({ active, projectHref, trailing }: WorkspaceHead
       </Link>
       <nav className="workspace-nav" aria-label="工作台导航">
         {navItems.map((item) => (
-          <Link key={item.label} className={active === item.label ? "is-active" : ""} href={item.href}>
+          <Link
+            key={item.label}
+            className={active === item.label ? "is-active" : ""}
+            href={item.href}
+          >
             {item.label}
           </Link>
         ))}
       </nav>
-      <div className="workspace-header__tools">
-        {trailing}
-        <button type="button" aria-label="查看通知"><span className="workspace-tool-dot" /></button>
-        <UserMenu />
-      </div>
+      <div className="workspace-header__tools">{trailing}</div>
     </header>
   );
 }

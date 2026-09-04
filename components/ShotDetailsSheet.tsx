@@ -91,9 +91,11 @@ export function ShotDetailsSheet({
             <>
               <EditablePrompt title="中文图片提示词" value={shot.imagePromptCn} onChange={(value) => onUpdateShot(shot.id, { imagePromptCn: value })} />
               <EditablePrompt title="英文图片提示词" value={shot.imagePromptEn} onChange={(value) => onUpdateShot(shot.id, { imagePromptEn: value })} />
-              <button type="button" className="shot-details-sheet__secondary" onClick={() => onRewritePrompt?.(shot)} disabled={!onRewritePrompt || isRewritingPrompt}>
-                {isRewritingPrompt ? "DeepSeek 优化中" : "调用 DeepSeek 优化提示词"}
-              </button>
+              {onRewritePrompt ? (
+                <button type="button" className="shot-details-sheet__secondary" onClick={() => onRewritePrompt(shot)} disabled={isRewritingPrompt}>
+                  {isRewritingPrompt ? "DeepSeek 优化中" : "调用 DeepSeek 优化提示词"}
+                </button>
+              ) : null}
             </>
           ) : null}
           {activeTab === "video" ? (

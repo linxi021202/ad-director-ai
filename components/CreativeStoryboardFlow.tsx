@@ -3,7 +3,7 @@ import React from "react";
 export type CreativeStoryboardItem = { id: string; label: string; imageUrl?: string; hero?: boolean };
 
 export function CreativeStoryboardFlow({ items }: { items: CreativeStoryboardItem[] }) {
-  const frames = items.slice(0, 4);
+  const frames = items;
   return (
     <div className="creative-storyboard-flow" aria-label="四镜头创意流">
       <svg className="creative-storyboard-flow__path" viewBox="0 0 260 160" aria-hidden="true">

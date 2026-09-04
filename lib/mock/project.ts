@@ -1,4 +1,4 @@
-﻿import { coldBrewDemo } from "./coldBrewDemo";
+import { coldBrewDemo } from "./coldBrewDemo";
 
 export { coldBrewDemo };
 
@@ -47,7 +47,7 @@ export const mockProject = {
     title: coldBrewDemo.strategy.title,
     description: coldBrewDemo.strategy.coreMessage,
     aspectRatio: "9:16" as const,
-    durationSec: 28 as const
+    durationSec: 40 as const
   }
 };
 

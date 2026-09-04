@@ -30,8 +30,8 @@ describe("HappyHorse reference-to-video request", () => {
     expect(body.parameters).toEqual({ resolution: "720P", ratio: "9:16", duration: 5, watermark: false });
   });
 
-  it("clamps the Hero Shot duration to five seconds", () => {
+  it("clamps the Hero Shot duration to eight seconds", () => {
     const body = buildHappyHorseRequestBody({ ...request, durationSec: 12 }, "happyhorse-1.0-r2v");
-    expect(body.parameters.duration).toBe(5);
+    expect(body.parameters.duration).toBe(8);
   });
 });

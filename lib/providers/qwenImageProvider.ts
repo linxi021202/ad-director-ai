@@ -40,6 +40,11 @@ function getDefaultModel() {
 function getDefaultSize() {
   return process.env.QWEN_IMAGE_SIZE || "1152*2048";
 }
+function getSizeForAspectRatio(aspectRatio: ImageGenerationOptions["aspectRatio"] = "9:16") {
+  if (aspectRatio === "16:9") return "2048*1152";
+  if (aspectRatio === "1:1") return "2048*2048";
+  return getDefaultSize();
+}
 
 function buildShotPrompt(shot: StoryboardShot): string {
   const basePrompt = (shot.imagePromptCn || shot.imagePromptEn || shot.visualDescription).trim();
@@ -85,7 +90,7 @@ async function generateShotImage(
   let referenceImage: string | undefined;
 
   try {
-    referenceImage = await readProductReferenceDataUrl(options?.productImage);
+    referenceImage = await readProductReferenceDataUrl(options?.productImage, { sessionId: options?.sessionId, projectId });
     if (options?.productImage && !referenceImage) {
       throw new Error("The selected product image is not persisted on the server.");
     }
@@ -118,7 +123,7 @@ async function generateShotImage(
     negativePrompt: DEFAULT_QWEN_NEGATIVE_PROMPT,
     projectId,
     shotId: shot.id,
-    size: getDefaultSize(),
+    size: getSizeForAspectRatio(options?.aspectRatio),
     sessionId: options?.sessionId
   });
 
@@ -137,7 +142,8 @@ async function generateShotImage(
 
   return {
     shotId: shot.id,
-    imageUrl: remoteUrl || localUrl || QWEN_IMAGE_PLACEHOLDER_URL,
+    imageUrl: localUrl || QWEN_IMAGE_PLACEHOLDER_URL,
+    assetId: result.assetId,
     localUrl,
     prompt,
     provider: result.provider,
@@ -158,11 +164,17 @@ async function generateBatchShotImages(
   shots: StoryboardShot[],
   options?: ImageGenerationOptions
 ): Promise<ShotImageGenerationResult[]> {
-  const results: ShotImageGenerationResult[] = [];
+  const results = new Array<ShotImageGenerationResult>(shots.length);
+  let cursor = 0;
+  const workerCount = Math.min(2, shots.length);
 
-  for (const shot of shots) {
-    results.push(await generateShotImage(projectId, shot, options));
-  }
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (cursor < shots.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await generateShotImage(projectId, shots[index]!, options);
+    }
+  }));
 
   return results;
 }
@@ -176,7 +188,7 @@ export const qwenImageProvider: ImageProvider = {
         "9:16竖版广告关键帧，小红书/抖音短视频质感，产品外观清晰稳定，包装可读区域不得由模型重绘。"
       ].join("\n")),
       negativePrompt: DEFAULT_QWEN_NEGATIVE_PROMPT,
-      size: getDefaultSize(),
+      size: getSizeForAspectRatio(options.aspectRatio),
       sessionId: options.sessionId
     });
 

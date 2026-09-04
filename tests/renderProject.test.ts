@@ -1,7 +1,26 @@
-﻿import { mkdir, rm, writeFile } from "node:fs/promises";
+vi.mock("server-only", () => ({}));
+
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  createPrivateAsset,
+  resetAssetStoreForTests
+} from "../lib/assets/assetStore";
+import {
+  resetRenderAssetTokensForTests,
+  resolveRenderAssetGrant,
+  revokeRenderAssetToken
+} from "../lib/assets/renderAccess";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
+import {
+  createAnonymousProject,
+  requireOwnedAnonymousProject,
+  resetAnonymousProjectQueuesForTests,
+  updateOwnedAnonymousProject
+} from "../lib/projects/anonymousProjectStore";
 import {
   getTimelineBoundaries,
   isForbiddenRenderUrl,
@@ -13,166 +32,183 @@ import {
 import { DEFAULT_DURATION_IN_FRAMES, getCompositionSize } from "../remotion/schemas";
 import type { GenerationProject } from "../lib/schemas/project";
 
-const PROJECT_ID = "render-test-project";
-const PNG_BYTES = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lX4xQwAAAABJRU5ErkJggg==",
-  "base64"
-);
-const MP4_BYTES = Buffer.from([
-  0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d,
-  0x00, 0x00, 0x02, 0x00, 0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32
-]);
+const SESSION_ID = "render-private-session";
+let storageRoot = "";
+let project: GenerationProject;
+const originalEnv = { ...process.env };
 
-describe("Remotion render project preparation", () => {
-  beforeEach(async () => {
-    await createRenderAssets();
+beforeEach(async () => {
+  process.env = { ...originalEnv };
+  storageRoot = await mkdtemp(path.join(tmpdir(), "ad-director-render-private-"));
+  process.env.STORAGE_ROOT = storageRoot;
+  process.env.ANONYMOUS_SESSION_OWNERSHIP_SALT = "render-private-test-salt";
+  resetAnonymousProjectQueuesForTests();
+  resetAssetStoreForTests();
+  resetRenderAssetTokensForTests();
+
+  const record = await createAnonymousProject(SESSION_ID, { templateId: "cold-brew-demo" });
+  const keyframes = [];
+  for (const shot of record.project.shots) {
+    const asset = await createPrivateAsset(SESSION_ID, record.id, {
+      kind: "keyframe",
+      source: "qwen-image",
+      role: shot.id,
+      fileName: `shot-${shot.index}.png`,
+      mimeType: "image/png",
+      bytes: new Uint8Array([137, 80, 78, 71, shot.index])
+    });
+    keyframes.push({
+      shotId: shot.id,
+      assetId: asset.id,
+      imageUrl: `/api/projects/${record.id}/assets/${asset.id}`,
+      localUrl: `/api/projects/${record.id}/assets/${asset.id}`,
+      provider: "dashscope",
+      model: "qwen-image",
+      fallbackUsed: false,
+      status: "ready" as const,
+      storageTransition: "PRIVATE_ASSET_V1" as const
+    });
+  }
+  const hero = await createPrivateAsset(SESSION_ID, record.id, {
+    kind: "hero-video",
+    source: "happyhorse-manual-import",
+    role: record.project.heroShotId,
+    fileName: "hero-shot.mp4",
+    mimeType: "video/mp4",
+    bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109]),
+    width: 720,
+    height: 1280,
+    durationSec: 4
   });
-
-  afterEach(async () => {
-    await rm(path.join(process.cwd(), "public", "generated", PROJECT_ID), { recursive: true, force: true });
-    await rm(path.join(process.cwd(), "data", "projects", `${PROJECT_ID}.json`), { force: true });
-    await rm(path.join(process.cwd(), "data", "projects", `${PROJECT_ID}.render.json`), { force: true });
+  const narration = await createPrivateAsset(SESSION_ID, record.id, {
+    kind: "narration-audio",
+    source: "user-upload",
+    role: "voiceover",
+    fileName: "voiceover.wav",
+    mimeType: "audio/wav",
+    bytes: new Uint8Array([82, 73, 70, 70, 0, 0, 0, 0, 87, 65, 86, 69])
   });
+  const updated = await updateOwnedAnonymousProject(SESSION_ID, record.id, {
+    keyframes,
+    narrationAssetId: narration.id,
+    heroVideo: {
+      shotId: record.project.heroShotId ?? record.project.shots[0]!.id,
+      assetId: hero.id,
+      source: "happyhorse-manual-import",
+      status: "uploaded",
+      url: `/api/projects/${record.id}/assets/${hero.id}`,
+      fileName: "hero-shot.mp4",
+      mimeType: "video/mp4",
+      sizeBytes: hero.sizeBytes,
+      durationSec: 4,
+      aspectRatio: "9:16",
+      storageTransition: "PRIVATE_ASSET_V1"
+    }
+  });
+  project = updated.project;
+});
 
-  it("maps aspect ratios to the required Remotion canvas sizes", () => {
+afterEach(async () => {
+  resetRenderAssetTokensForTests();
+  resetAssetStoreForTests();
+  resetAnonymousProjectQueuesForTests();
+  if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
+  process.env = { ...originalEnv };
+});
+
+function context(renderId = crypto.randomUUID()) {
+  return {
+    sessionId: SESSION_ID,
+    assetBaseUrl: "http://127.0.0.1:3000",
+    renderId
+  };
+}
+
+describe("private Remotion render preparation", () => {
+  it("maps aspect ratios to the required canvas sizes", () => {
     expect(getCompositionSize("9:16")).toEqual({ width: 1080, height: 1920 });
     expect(getCompositionSize("16:9")).toEqual({ width: 1920, height: 1080 });
     expect(getCompositionSize("1:1")).toEqual({ width: 1080, height: 1080 });
   });
 
-  it("keeps the 28 second timeline and fixed shot boundaries", () => {
-    expect(sumShotDurations(coldBrewDemo.shots)).toBe(28);
-    expect(getTimelineBoundaries(coldBrewDemo.shots)).toEqual([
-      { id: coldBrewDemo.shots[0].id, startSec: 0, endSec: 6, durationSec: 6 },
-      { id: coldBrewDemo.shots[1].id, startSec: 6, endSec: 13, durationSec: 7 },
-      { id: coldBrewDemo.shots[2].id, startSec: 13, endSec: 20, durationSec: 7 },
-      { id: coldBrewDemo.shots[3].id, startSec: 20, endSec: 28, durationSec: 8 }
-    ]);
+  it("keeps the 40 second timeline and shot boundaries", () => {
+    expect(sumShotDurations(coldBrewDemo.shots)).toBe(40);
+    expect(getTimelineBoundaries(coldBrewDemo.shots).at(-1)?.endSec).toBe(40);
   });
 
-  it("builds valid inputProps and places the hero video in shot 3", async () => {
-    const project = renderProject();
-    const prepared = await prepareRenderProject(PROJECT_ID, {
-      project,
-      keyframes: keyframeManifest(project)
-    });
-
+  it("builds input props only from short-lived internal asset URLs", async () => {
+    const prepared = await prepareRenderProject(project.id, { project }, context());
     expect(prepared.inputProps.durationInFrames).toBe(DEFAULT_DURATION_IN_FRAMES);
-    expect(prepared.inputProps.heroShotId).toBe(project.shots[2].id);
-    expect(prepared.inputProps.heroVideoUrl).toBe(`/generated/${PROJECT_ID}/video/hero-shot.mp4`);
-    expect(prepared.inputProps.shots[2].id).toBe(project.shots[2].id);
-    expect(prepared.outputUrl).toBe(`/generated/${PROJECT_ID}/final/ad-final.mp4`);
+    expect(prepared.inputProps.heroShotId).toBe(project.heroShotId);
+    expect(prepared.inputProps.heroVideoUrl).toContain("/api/internal/render-assets/");
+    expect(prepared.inputProps.heroVideoUrl).toContain("token=");
+    expect(prepared.inputProps.shots.every((shot) =>
+      shot.keyframeUrl.includes("/api/internal/render-assets/")
+    )).toBe(true);
+    expect(prepared.inputProps.voiceoverUrl).toContain("/api/internal/render-assets/");
+    expect(prepared.outputLocation.startsWith(storageRoot)).toBe(true);
+    expect(prepared.outputLocation).not.toContain("public");
+
+    const heroAssetId = project.heroVideo?.assetId;
+    expect(heroAssetId).toBeTruthy();
+    expect(resolveRenderAssetGrant(prepared.renderAssetToken, heroAssetId!)).not.toBeNull();
+    revokeRenderAssetToken(prepared.renderAssetToken);
+    expect(resolveRenderAssetGrant(prepared.renderAssetToken, heroAssetId!)).toBeNull();
   });
 
-  it("rejects remote, blob, mock and placeholder URLs", () => {
-    expect(isForbiddenRenderUrl("https://example.com/temp.png")).toBe(true);
+  it("blocks rendering when a keyframe asset ID is missing", async () => {
+    const missing = {
+      ...project,
+      keyframes: project.keyframes?.filter((frame) => frame.shotId !== project.shots[1].id)
+    };
+    await expect(prepareRenderProject(project.id, { project: missing }, context()))
+      .rejects.toMatchObject({ code: "KEYFRAME_MISSING" });
+  });
+
+  it("blocks rendering when the private hero video is missing", async () => {
+    const missing = { ...project, heroVideo: undefined };
+    await expect(prepareRenderProject(project.id, { project: missing }, context()))
+      .rejects.toMatchObject({ code: "HERO_VIDEO_MISSING" });
+  });
+
+  it("uses the persisted dynamic duration while keeping explicit normalization available", async () => {
+    const changed = {
+      ...project,
+      shots: project.shots.map((shot, index) =>
+        index === 0 ? { ...shot, durationSec: 3 } : shot
+      )
+    };
+    const prepared = await prepareRenderProject(project.id, { project: changed }, context());
+    const preserved = normalizeShotDurations(changed.shots);
+    const normalized = normalizeShotDurations(changed.shots, 40);
+    expect(preserved).toHaveLength(8);
+    expect(preserved.reduce((sum, seconds) => sum + seconds, 0)).toBe(38);
+    expect(normalized.reduce((sum, seconds) => sum + seconds, 0)).toBe(40);
+    expect(sumShotDurations(prepared.inputProps.shots)).toBe(38);
+    expect(prepared.inputProps.durationInFrames).toBe(38 * 30);
+    revokeRenderAssetToken(prepared.renderAssetToken);
+  });
+
+  it("rejects browser-only and placeholder render URLs", () => {
     expect(isForbiddenRenderUrl("blob:http://local")).toBe(true);
     expect(isForbiddenRenderUrl("/mock/final.mp4")).toBe(true);
     expect(isForbiddenRenderUrl("/landing-cold-brew-hero.png")).toBe(true);
-    expect(isForbiddenRenderUrl(`/generated/images/${PROJECT_ID}/shot-1.png`)).toBe(false);
+    expect(isForbiddenRenderUrl("/api/projects/id/assets/id")).toBe(false);
   });
 
-  it("blocks rendering when a keyframe is missing", async () => {
-    await rm(path.join(process.cwd(), "public", "generated", "images", PROJECT_ID, "shot-2.png"), { force: true });
-    await expect(prepareRenderProject(PROJECT_ID, {
-      project: renderProject(),
-      keyframes: keyframeManifest(renderProject())
-    })).rejects.toMatchObject({ code: "KEYFRAME_MISSING" });
+  it("keeps the legacy URL helper passive and does not invent public paths", () => {
+    expect(resolveShotKeyframeUrl(project.id, project.shots[0])).toBe("");
   });
 
-  it("blocks rendering when the hero video is missing", async () => {
-    await rm(path.join(process.cwd(), "public", "generated", PROJECT_ID, "video", "hero-shot.mp4"), { force: true });
-    await expect(prepareRenderProject(PROJECT_ID, {
-      project: renderProject(),
-      keyframes: keyframeManifest(renderProject())
-    })).rejects.toMatchObject({ code: "HERO_VIDEO_MISSING" });
+  it("does not allow another session to prepare the project assets", async () => {
+    const foreignContext = { ...context(), sessionId: "render-private-session-b" };
+    await expect(prepareRenderProject(project.id, { project }, foreignContext)).rejects.toThrow();
   });
 
-  it("normalizes arbitrary shot durations to a 28 second composition", async () => {
-    const project = renderProject({ shots: coldBrewDemo.shots.map((shot, index) => index === 0 ? { ...shot, durationSec: 3 } : shot) });
-    const prepared = await prepareRenderProject(PROJECT_ID, {
-      project,
-      keyframes: keyframeManifest(project)
-    });
-
-    expect(normalizeShotDurations(project.shots)).toHaveLength(4);
-    expect(sumShotDurations(prepared.inputProps.shots)).toBe(28);
-    expect(prepared.inputProps.shots.every((shot) => shot.durationSec > 0)).toBe(true);
-  });
-
-  it("passes a persisted narration asset and generated keywords to Remotion", async () => {
-    const project = renderProject();
-    const prepared = await prepareRenderProject(PROJECT_ID, {
-      project,
-      keyframes: keyframeManifest(project),
-      voiceoverUrl: `/generated/${PROJECT_ID}/audio/voiceover.mp3`
-    });
-
-    expect(prepared.inputProps.voiceoverUrl).toBe(`/generated/${PROJECT_ID}/audio/voiceover.mp3`);
-    expect(prepared.inputProps.shots.some((shot) => shot.keywords.length > 0)).toBe(true);
-  });
-
-  it("falls back to stable local keyframe paths when the manifest is absent", () => {
-    expect(resolveShotKeyframeUrl(PROJECT_ID, coldBrewDemo.shots[0])).toBe(`/generated/images/${PROJECT_ID}/shot-1.png`);
+  it("persists all asset IDs in the owned project", async () => {
+    const restored = await requireOwnedAnonymousProject(SESSION_ID, project.id);
+    expect(restored.project.keyframes?.every((frame) => Boolean(frame.assetId))).toBe(true);
+    expect(restored.project.heroVideo?.assetId).toBeTruthy();
+    expect(restored.project.narrationAssetId).toBeTruthy();
   });
 });
-
-async function createRenderAssets() {
-  const imageDir = path.join(process.cwd(), "public", "generated", "images", PROJECT_ID);
-  const videoDir = path.join(process.cwd(), "public", "generated", PROJECT_ID, "video");
-  const audioDir = path.join(process.cwd(), "public", "generated", PROJECT_ID, "audio");
-  const dataDir = path.join(process.cwd(), "data", "projects");
-  await mkdir(imageDir, { recursive: true });
-  await mkdir(videoDir, { recursive: true });
-  await mkdir(audioDir, { recursive: true });
-  await mkdir(dataDir, { recursive: true });
-  for (let index = 1; index <= 4; index += 1) {
-    await writeFile(path.join(imageDir, `shot-${index}.png`), PNG_BYTES);
-  }
-  await writeFile(path.join(videoDir, "hero-shot.mp4"), MP4_BYTES);
-  await writeFile(path.join(audioDir, "voiceover.mp3"), Buffer.from([0x49, 0x44, 0x33, 0x04]));
-  await writeFile(path.join(dataDir, `${PROJECT_ID}.json`), JSON.stringify({
-    projectId: PROJECT_ID,
-    heroShotId: coldBrewDemo.shots[2].id,
-    heroVideoAsset: {
-      id: `${PROJECT_ID}-hero`,
-      projectId: PROJECT_ID,
-      shotId: coldBrewDemo.shots[2].id,
-      source: "happyhorse-manual-import",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: MP4_BYTES.length,
-      durationSec: 4,
-      width: 1080,
-      height: 1920,
-      aspectRatio: "9:16",
-      localPath: `public/generated/${PROJECT_ID}/video/hero-shot.mp4`,
-      publicUrl: `/generated/${PROJECT_ID}/video/hero-shot.mp4`,
-      createdAt: new Date().toISOString()
-    },
-    updatedAt: new Date().toISOString()
-  }), "utf8");
-}
-
-function renderProject(patch: Partial<GenerationProject> = {}): GenerationProject {
-  return {
-    ...coldBrewDemo,
-    ...patch,
-    id: PROJECT_ID,
-    heroShotId: coldBrewDemo.shots[2].id,
-    brief: {
-      ...coldBrewDemo.brief,
-      ...(patch.brief ?? {})
-    }
-  };
-}
-
-function keyframeManifest(project: GenerationProject) {
-  return Object.fromEntries(project.shots.map((shot) => [shot.id, {
-    shotId: shot.id,
-    localUrl: `/generated/images/${PROJECT_ID}/shot-${shot.index}.png`,
-    status: "ready"
-  }]));
-}
-
-

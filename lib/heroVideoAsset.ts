@@ -1,16 +1,29 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import path from "node:path";
+import "server-only";
+
 import { z } from "zod";
+
+import {
+  assertPrivateAssetReadable,
+  createPrivateAsset,
+  deletePrivateAsset,
+  getPrivateAsset,
+  getProjectAssetUrl
+} from "./assets/assetStore";
+import { hasMp4Signature } from "./assets/media";
 import {
   MAX_HERO_VIDEO_DURATION_SEC,
   MAX_HERO_VIDEO_SIZE,
   MIN_HERO_VIDEO_DURATION_SEC
 } from "./heroVideo";
+import {
+  requireOwnedAnonymousProject,
+  updateOwnedAnonymousProject
+} from "./projects/anonymousProjectStore";
 import type { AspectRatio } from "./schemas/project";
 
 export const heroVideoAssetSchema = z.object({
-  id: z.string().min(1),
-  projectId: z.string().min(1),
+  assetId: z.string().uuid(),
+  projectId: z.string().uuid(),
   shotId: z.string().min(1),
   source: z.enum(["happyhorse-manual-import", "happyhorse-api"]),
   fileName: z.string().min(1),
@@ -20,13 +33,12 @@ export const heroVideoAssetSchema = z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   aspectRatio: z.string().min(1),
-  localPath: z.string().min(1),
   publicUrl: z.string().min(1),
   createdAt: z.string().datetime()
 });
 
 export const heroVideoProjectStateSchema = z.object({
-  projectId: z.string().min(1),
+  projectId: z.string().uuid(),
   heroShotId: z.string().min(1).nullable(),
   heroVideoAsset: heroVideoAssetSchema.nullable(),
   updatedAt: z.string().datetime()
@@ -36,6 +48,7 @@ export type HeroVideoAsset = z.infer<typeof heroVideoAssetSchema>;
 export type HeroVideoProjectState = z.infer<typeof heroVideoProjectStateSchema>;
 
 export type HeroVideoUploadInput = {
+  sessionId: string;
   projectId: string;
   shotId: string;
   aspectRatio: AspectRatio;
@@ -50,38 +63,55 @@ export type HeroVideoUploadResult =
   | { success: true; asset: HeroVideoAsset }
   | { success: false; error: string; status: number };
 
-const DATA_DIR = path.join(process.cwd(), "data", "projects");
-const PUBLIC_GENERATED_DIR = path.join(process.cwd(), "public", "generated");
-
-export async function readHeroVideoProjectState(projectId: string): Promise<HeroVideoProjectState> {
-  const safeProjectId = safeSegment(projectId, "project");
-  try {
-    const raw = await readFile(projectStatePath(safeProjectId), "utf8");
-    const parsed = heroVideoProjectStateSchema.safeParse(JSON.parse(raw));
-    if (parsed.success) return parsed.data;
-  } catch {
-    // Missing local state is expected for a fresh demo project.
+export async function readHeroVideoProjectState(sessionId: string, projectId: string): Promise<HeroVideoProjectState> {
+  const record = await requireOwnedAnonymousProject(sessionId, projectId);
+  const metadata = record.project.heroVideo;
+  if (!metadata?.assetId) {
+    return {
+      projectId: record.id,
+      heroShotId: record.project.heroShotId ?? null,
+      heroVideoAsset: null,
+      updatedAt: record.project.updatedAt
+    };
   }
-
+  const stored = await getPrivateAsset(sessionId, projectId, metadata.assetId);
+  if (!stored || stored.kind !== "hero-video") {
+    return {
+      projectId: record.id,
+      heroShotId: record.project.heroShotId ?? null,
+      heroVideoAsset: null,
+      updatedAt: record.project.updatedAt
+    };
+  }
   return {
-    projectId: safeProjectId,
-    heroShotId: null,
-    heroVideoAsset: null,
-    updatedAt: new Date().toISOString()
+    projectId: record.id,
+    heroShotId: record.project.heroShotId ?? null,
+    heroVideoAsset: heroVideoAssetSchema.parse({
+      assetId: stored.id,
+      projectId: record.id,
+      shotId: metadata.shotId,
+      source: metadata.source,
+      fileName: stored.fileName,
+      mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes,
+      durationSec: stored.durationSec,
+      width: stored.width,
+      height: stored.height,
+      aspectRatio: metadata.aspectRatio ?? record.project.brief.aspectRatio,
+      publicUrl: getProjectAssetUrl(record.id, stored.id),
+      createdAt: stored.createdAt
+    }),
+    updatedAt: record.project.updatedAt
   };
 }
 
-export async function writeHeroShotState(projectId: string, heroShotId: string | null) {
-  const safeProjectId = safeSegment(projectId, "project");
-  const state = await readHeroVideoProjectState(safeProjectId);
-  await writeHeroVideoProjectState(safeProjectId, { ...state, heroShotId, updatedAt: new Date().toISOString() });
+export async function writeHeroShotState(sessionId: string, projectId: string, heroShotId: string | null) {
+  if (!heroShotId) return;
+  await updateOwnedAnonymousProject(sessionId, projectId, { heroShotId });
 }
 
 export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<HeroVideoUploadResult> {
-  const projectId = safeSegment(input.projectId, "project");
-  const shotId = safeSegment(input.shotId, "shot");
   const fileName = input.fileName.trim();
-
   if (!fileName.toLowerCase().endsWith(".mp4")) return fail("仅支持 .mp4 视频文件。", 400);
   if (input.mimeType !== "video/mp4") return fail("仅支持 video/mp4 视频文件。", 400);
   if (input.sizeBytes <= 0) return fail("视频文件为空。", 400);
@@ -90,71 +120,111 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
 
   const metadata = parseMp4Metadata(input.buffer);
   if (!metadata) return fail("无法读取 MP4 视频元数据。", 400);
-  if (metadata.width <= 0 || metadata.height <= 0) return fail("无法读取视频宽高。", 400);
-  if (metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC) return fail("主镜头视频时长不能短于 3 秒。", 400);
-  if (metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC) return fail("主镜头视频时长不能超过 8 秒。", 400);
-  const isManualImport = (input.source ?? "happyhorse-manual-import") === "happyhorse-manual-import";
-  if (isManualImport && !matchesAspectDirection(metadata.width, metadata.height, input.aspectRatio)) {
+  if (metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC) return fail(`主镜头视频时长不能短于 ${MIN_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
+  if (metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC) return fail(`主镜头视频时长不能超过 ${MAX_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
+  const source = input.source ?? "happyhorse-manual-import";
+  if (source === "happyhorse-manual-import" && !matchesAspectDirection(metadata.width, metadata.height, input.aspectRatio)) {
     return fail("上传视频画幅与当前项目设置不一致。", 400);
   }
 
-  const dir = path.join(PUBLIC_GENERATED_DIR, projectId, "video");
-  const tempPath = path.join(dir, "hero-shot.uploading.mp4");
-  const finalPath = path.join(dir, "hero-shot.mp4");
-  await mkdir(dir, { recursive: true });
-
   try {
-    await writeFile(tempPath, input.buffer);
-    await rename(tempPath, finalPath);
+    const record = await requireOwnedAnonymousProject(input.sessionId, input.projectId);
+    const configuredHeroShot = record.project.shots.find((shot) => shot.id === input.shotId);
+    if (!configuredHeroShot) {
+      return fail("HERO_VIDEO_DURATION_MISMATCH：当前视频对应的主镜头已失效，请重新选择主镜头。", 409);
+    }
+    if (Math.abs(metadata.durationSec - configuredHeroShot.durationSec) > 0.75) {
+      return fail(
+        "HERO_VIDEO_DURATION_MISMATCH：当前视频时长与主镜头设定不一致。主镜头需要 "
+          + configuredHeroShot.durationSec
+          + " 秒，上传视频实际为 "
+          + metadata.durationSec.toFixed(1)
+          + " 秒。",
+        422
+      );
+    }
+    const previousAssetId = record.project.heroVideo?.assetId;
+    const stored = await createPrivateAsset(input.sessionId, input.projectId, {
+      kind: "hero-video",
+      role: input.shotId,
+      source,
+      fileName,
+      mimeType: "video/mp4",
+      bytes: input.buffer,
+      width: metadata.width,
+      height: metadata.height,
+      durationSec: metadata.durationSec
+    });
+    const asset = heroVideoAssetSchema.parse({
+      assetId: stored.id,
+      projectId: input.projectId,
+      shotId: input.shotId,
+      source,
+      fileName: stored.fileName,
+      mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes,
+      durationSec: stored.durationSec,
+      width: stored.width,
+      height: stored.height,
+      aspectRatio: input.aspectRatio,
+      publicUrl: getProjectAssetUrl(input.projectId, stored.id),
+      createdAt: stored.createdAt
+    });
+    try {
+      await updateOwnedAnonymousProject(input.sessionId, input.projectId, {
+        heroShotId: input.shotId,
+        heroVideo: {
+          shotId: input.shotId,
+          assetId: stored.id,
+          source,
+          status: "uploaded",
+          url: asset.publicUrl,
+          fileName: stored.fileName,
+          mimeType: stored.mimeType,
+          sizeBytes: stored.sizeBytes,
+          durationSec: stored.durationSec,
+          aspectRatio: input.aspectRatio,
+          storageTransition: "PRIVATE_ASSET_V1"
+        },
+        workflowSteps: {
+          ...(record.project.workflowSteps ?? defaultWorkflow()),
+          heroShot: "completed",
+          render: "pending"
+        }
+      });
+    } catch (error) {
+      await deletePrivateAsset(input.sessionId, input.projectId, stored.id);
+      throw error;
+    }
+    if (previousAssetId && previousAssetId !== stored.id) {
+      await deletePrivateAsset(input.sessionId, input.projectId, previousAssetId).catch(() => undefined);
+    }
+    return { success: true, asset };
   } catch {
-    await rm(tempPath, { force: true }).catch(() => undefined);
-    return fail("主镜头视频保存失败，旧视频已保留。", 500);
+    return fail("主镜头视频私有保存失败，原视频未被覆盖。", 500);
   }
-
-  const now = new Date().toISOString();
-  const asset: HeroVideoAsset = {
-    id: `${projectId}-${shotId}-hero-video`,
-    projectId,
-    shotId,
-    source: input.source ?? "happyhorse-manual-import",
-    fileName: "hero-shot.mp4",
-    mimeType: "video/mp4",
-    sizeBytes: input.sizeBytes,
-    durationSec: metadata.durationSec,
-    width: metadata.width,
-    height: metadata.height,
-    aspectRatio: input.aspectRatio,
-    localPath: `public/generated/${projectId}/video/hero-shot.mp4`,
-    publicUrl: `/generated/${projectId}/video/hero-shot.mp4`,
-    createdAt: now
-  };
-
-  await writeHeroVideoProjectState(projectId, {
-    projectId,
-    heroShotId: shotId,
-    heroVideoAsset: asset,
-    updatedAt: now
-  });
-
-  return { success: true, asset };
 }
 
-export async function deleteHeroVideoAsset(projectId: string) {
-  const safeProjectId = safeSegment(projectId, "project");
-  const state = await readHeroVideoProjectState(safeProjectId);
-  const finalPath = path.join(PUBLIC_GENERATED_DIR, safeProjectId, "video", "hero-shot.mp4");
-  await rm(finalPath, { force: true }).catch(() => undefined);
-  await writeHeroVideoProjectState(safeProjectId, {
-    ...state,
-    heroVideoAsset: null,
-    updatedAt: new Date().toISOString()
+export async function deleteHeroVideoAsset(sessionId: string, projectId: string) {
+  const record = await requireOwnedAnonymousProject(sessionId, projectId);
+  const assetId = record.project.heroVideo?.assetId;
+  await updateOwnedAnonymousProject(sessionId, projectId, {
+    heroVideo: null,
+    workflowSteps: {
+      ...(record.project.workflowSteps ?? defaultWorkflow()),
+      heroShot: "pending",
+      render: "pending"
+    }
   });
+  if (assetId) await deletePrivateAsset(sessionId, projectId, assetId);
 }
 
-export async function heroVideoFileExists(asset: HeroVideoAsset | null) {
+export async function heroVideoFileExists(sessionId: string, asset: HeroVideoAsset | null) {
   if (!asset) return false;
   try {
-    await stat(path.join(process.cwd(), asset.localPath));
+    const stored = await getPrivateAsset(sessionId, asset.projectId, asset.assetId);
+    if (!stored) return false;
+    await assertPrivateAssetReadable(stored);
     return true;
   } catch {
     return false;
@@ -170,14 +240,13 @@ export function getHeroShotWorkflowStatus(input: { hasHeroShot: boolean; hasVide
 }
 
 export function heroShotWorkflowStatusLabel(status: ReturnType<typeof getHeroShotWorkflowStatus>) {
-  const labels: Record<ReturnType<typeof getHeroShotWorkflowStatus>, string> = {
+  return {
     blocked: "请先选择主镜头",
     "waiting-manual-import": "等待导入视频",
     running: "正在上传",
     completed: "主镜头已就绪",
     failed: "上传失败"
-  };
-  return labels[status];
+  }[status];
 }
 
 export function sanitizeHeroVideoAssetForClient(asset: HeroVideoAsset | null) {
@@ -189,45 +258,23 @@ export function safeSegment(value: string, fallback = "asset") {
   return safe || fallback;
 }
 
-function projectStatePath(projectId: string) {
-  return path.join(DATA_DIR, `${projectId}.json`);
-}
-
-async function writeHeroVideoProjectState(projectId: string, state: HeroVideoProjectState) {
-  await mkdir(DATA_DIR, { recursive: true });
-  const safeState = heroVideoProjectStateSchema.parse(state);
-  await writeFile(projectStatePath(projectId), JSON.stringify(safeState, null, 2), "utf8");
-}
-
 function fail(error: string, status: number): HeroVideoUploadResult {
   return { success: false, error, status };
 }
 
-function hasMp4Signature(buffer: Buffer) {
-  if (buffer.length < 12) return false;
-  return buffer.subarray(4, 8).toString("ascii") === "ftyp";
-}
-
 function parseMp4Metadata(buffer: Buffer): { durationSec: number; width: number; height: number } | null {
-  const mvhd = findAtom(buffer, "mvhd");
+  const mvhd = findAtoms(buffer, "mvhd")[0];
   const tkhdAtoms = findAtoms(buffer, "tkhd");
   if (!mvhd || tkhdAtoms.length === 0) return null;
-
   const durationSec = readMvhdDuration(buffer, mvhd.offset + mvhd.headerSize, mvhd.size - mvhd.headerSize);
   const dimensions = tkhdAtoms
     .map((atom) => readTkhdDimensions(buffer, atom.offset + atom.headerSize, atom.size - atom.headerSize))
     .filter((item): item is { width: number; height: number } => Boolean(item && item.width > 0 && item.height > 0))
     .sort((a, b) => b.width * b.height - a.width * a.height)[0];
-
-  if (!durationSec || !dimensions) return null;
-  return { durationSec, width: dimensions.width, height: dimensions.height };
+  return durationSec && dimensions ? { durationSec, ...dimensions } : null;
 }
 
 type AtomInfo = { offset: number; size: number; headerSize: number; type: string };
-
-function findAtom(buffer: Buffer, target: string) {
-  return findAtoms(buffer, target)[0] ?? null;
-}
 
 function findAtoms(buffer: Buffer, target: string, start = 0, end = buffer.length): AtomInfo[] {
   const result: AtomInfo[] = [];
@@ -237,7 +284,6 @@ function findAtoms(buffer: Buffer, target: string, start = 0, end = buffer.lengt
     const type = buffer.subarray(offset + 4, offset + 8).toString("ascii");
     let size = size32;
     let headerSize = 8;
-
     if (size32 === 1) {
       if (offset + 16 > end) break;
       const large = buffer.readBigUInt64BE(offset + 8);
@@ -247,10 +293,8 @@ function findAtoms(buffer: Buffer, target: string, start = 0, end = buffer.lengt
     } else if (size32 === 0) {
       size = end - offset;
     }
-
     if (size < headerSize || offset + size > end) break;
     if (type === target) result.push({ offset, size, headerSize, type });
-
     if (["moov", "trak", "mdia", "minf", "stbl"].includes(type)) {
       result.push(...findAtoms(buffer, target, offset + headerSize, offset + size));
     }
@@ -266,20 +310,15 @@ function readMvhdDuration(buffer: Buffer, contentOffset: number, contentSize: nu
     if (contentSize < 36) return null;
     const timescale = buffer.readUInt32BE(contentOffset + 20);
     const duration = buffer.readBigUInt64BE(contentOffset + 24);
-    if (!timescale) return null;
-    return Number(duration) / timescale;
+    return timescale ? Number(duration) / timescale : null;
   }
-
   const timescale = buffer.readUInt32BE(contentOffset + 12);
-  const duration = buffer.readUInt32BE(contentOffset + 16);
-  if (!timescale) return null;
-  return duration / timescale;
+  return timescale ? buffer.readUInt32BE(contentOffset + 16) / timescale : null;
 }
 
 function readTkhdDimensions(buffer: Buffer, contentOffset: number, contentSize: number) {
   if (contentSize < 84) return null;
-  const version = buffer.readUInt8(contentOffset);
-  const dimensionOffset = contentOffset + (version === 1 ? 88 : 76);
+  const dimensionOffset = contentOffset + (buffer.readUInt8(contentOffset) === 1 ? 88 : 76);
   if (dimensionOffset + 8 > contentOffset + contentSize) return null;
   return {
     width: Math.round(buffer.readUInt32BE(dimensionOffset) / 65536),
@@ -294,9 +333,13 @@ function matchesAspectDirection(width: number, height: number, aspectRatio: Aspe
   return ratio >= 0.9 && ratio <= 1.1;
 }
 
-
-
-
-
-
-
+function defaultWorkflow() {
+  return {
+    brief: "completed" as const,
+    strategy: "completed" as const,
+    storyboard: "completed" as const,
+    keyframes: "completed" as const,
+    heroShot: "pending" as const,
+    render: "pending" as const
+  };
+}

@@ -75,12 +75,33 @@ describe("deepseekProvider", () => {
     const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy);
 
     expect(result.success).toBe(true);
-    expect(result.data).toHaveLength(4);
+    expect(result.data).toHaveLength(8);
     expect(result.data?.every((shot) => shot.recommendedModel === "qwen-image")).toBe(true);
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("honors a custom storyboard count and duration plan", async () => {
+    const durations = [3, 5, 8];
+    const shots = coldBrewDemo.shots.slice(0, 3).map((shot, index) => ({
+      ...shot,
+      id: `shot-${index + 1}`,
+      index: index + 1,
+      durationSec: durations[index],
+      recommendedModel: "qwen-image"
+    }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockDeepSeekResponse(JSON.stringify({ shots }))));
+
+    const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy, {
+      requestedShotCount: 3,
+      shotDurationPlan: durations
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveLength(3);
+    expect(result.data?.map((shot) => shot.durationSec)).toEqual(durations);
+    expect(result.data?.map((shot) => shot.index)).toEqual([1, 2, 3]);
+  });
   it("does not fallback to mock when validation keeps failing", async () => {
     const invalidStrategy = { ...coldBrewDemo.strategy, cta: "" };
     const fetchMock = vi.fn().mockResolvedValue(mockDeepSeekResponse(JSON.stringify(invalidStrategy)));

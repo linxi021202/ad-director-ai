@@ -11,7 +11,10 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:validate": "prisma validate",
-    "diagnose:fonts": "node scripts/render-font-diagnostic.mjs"
+    "diagnose:fonts": "node scripts/render-font-diagnostic.mjs",
+    "migrate:private-assets": "node scripts/migrate-public-assets-to-private.mjs",
+    "local": "node scripts/start-local.mjs",
+    "local:prod": "npm run build && node scripts/start-production-local.mjs"
   },
   "dependencies": {
     "@better-auth/prisma-adapter": "1.6.23",

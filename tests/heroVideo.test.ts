@@ -1,8 +1,9 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import {
   DEFAULT_HERO_SHOT_ID,
   MAX_HERO_VIDEO_SIZE,
+  buildOptimizedVideoPrompt,
   createLocalDemoHeroVideo,
   getHeroVideoStatus,
   resolveHeroShot,
@@ -11,9 +12,9 @@ import {
 } from "../lib/heroVideo";
 
 describe("hero video state", () => {
-  it("defaults heroShotId to shot-3 and resolves Shot 3", () => {
+  it("defaults a new 40-second project to shot-5 and resolves Shot 5", () => {
     expect(coldBrewDemo.heroShotId).toBe(DEFAULT_HERO_SHOT_ID);
-    expect(resolveHeroShot(coldBrewDemo.shots, coldBrewDemo.heroShotId)?.index).toBe(3);
+    expect(resolveHeroShot(coldBrewDemo.shots, coldBrewDemo.heroShotId)?.index).toBe(5);
   });
 
   it("can switch Hero Shot", () => {
@@ -23,6 +24,17 @@ describe("hero video state", () => {
     expect(resolveHeroShot(next.shots, next.heroShotId)?.index).toBe(2);
   });
 
+  it("builds duration-aware HappyHorse timing for 5s and 8s Hero Shots", () => {
+    const fiveSecondPrompt = buildOptimizedVideoPrompt({ ...coldBrewDemo.shots[0], durationSec: 5 });
+    const eightSecondPrompt = buildOptimizedVideoPrompt({ ...coldBrewDemo.shots[0], durationSec: 8 });
+
+    expect(fiveSecondPrompt).toContain("0–1 秒");
+    expect(fiveSecondPrompt).toContain("1–3 秒");
+    expect(fiveSecondPrompt).toContain("3–5 秒");
+    expect(eightSecondPrompt).toContain("0–2 秒");
+    expect(eightSecondPrompt).toContain("2–5 秒");
+    expect(eightSecondPrompt).toContain("5–8 秒");
+  });
   it("accepts mp4 upload metadata", () => {
     expect(validateHeroVideoFile({ name: "hero.mp4", type: "video/mp4", size: 1024 })).toEqual({ success: true });
   });

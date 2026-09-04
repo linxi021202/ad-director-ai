@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 
+import { assertPrivateAssetReadable, requirePrivateAsset } from "../assets/assetStore";
 import type { ProductImage } from "../schemas/project";
 import { assertServerOnly } from "../server-only";
 
@@ -12,9 +12,12 @@ export type HappyHorseReferenceImage = {
 };
 
 const MAX_REFERENCE_IMAGES = 9;
+const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 
 export async function resolveHappyHorseReferenceImages(input: {
-  heroImageUrl: string;
+  sessionId: string;
+  projectId: string;
+  heroImageAssetId?: string;
   productImages?: ProductImage[];
 }): Promise<HappyHorseReferenceImage[]> {
   const productImages = [...(input.productImages ?? [])]
@@ -22,27 +25,22 @@ export async function resolveHappyHorseReferenceImages(input: {
     .sort((a, b) => Number(b.role === "main-product") - Number(a.role === "main-product"));
 
   if (productImages.length === 0) {
-    throw new Error("HappyHorse 多参考图生成需要至少一张真实产品图。请先在商品简报上传产品主图，再生成主镜头视频。");
+    throw new Error("HappyHorse 多参考图生成至少需要一张真实产品图。");
   }
 
   const references: HappyHorseReferenceImage[] = [];
   for (const image of productImages) {
-    const source = image.localUrl || image.remoteUrl || image.url;
-    if (!source || source.startsWith("blob:")) continue;
+    if (!image.assetId) continue;
     references.push({
-      url: await resolveImageInput(source, image.type),
+      url: await privateAssetDataUrl(input.sessionId, input.projectId, image.assetId, "product"),
       role: "product"
     });
   }
+  if (references.length === 0) throw new Error("产品图尚未保存为当前会话的私有资产。");
 
-  if (references.length === 0) {
-    throw new Error("上传的产品图尚未保存为可用素材。请等待产品图保存完成，或重新上传后再生成主镜头视频。");
-  }
-
-  const heroSource = input.heroImageUrl.trim();
-  if (heroSource) {
+  if (input.heroImageAssetId) {
     references.push({
-      url: await resolveImageInput(heroSource, inferMimeType(heroSource)),
+      url: await privateAssetDataUrl(input.sessionId, input.projectId, input.heroImageAssetId, "scene"),
       role: "scene"
     });
   }
@@ -50,31 +48,22 @@ export async function resolveHappyHorseReferenceImages(input: {
   return dedupeReferences(references).slice(0, MAX_REFERENCE_IMAGES);
 }
 
-async function resolveImageInput(source: string, mimeType: string): Promise<string> {
-  if (/^https?:\/\//i.test(source) || /^data:image\//i.test(source)) return source;
-  if (!source.startsWith("/")) {
-    throw new Error("参考图地址无效：仅支持项目本地图片、公开 HTTP 地址或图片 Data URL。");
-  }
-
-  const publicRoot = path.resolve(process.cwd(), "public");
-  const filePath = path.resolve(publicRoot, source.replace(/^\/+/, ""));
-  if (filePath !== publicRoot && !filePath.startsWith(publicRoot + path.sep)) {
-    throw new Error("参考图路径超出项目 public 目录，已阻止调用。");
-  }
-
+async function privateAssetDataUrl(
+  sessionId: string,
+  projectId: string,
+  assetId: string,
+  role: "product" | "scene"
+): Promise<string> {
+  const asset = await requirePrivateAsset(sessionId, projectId, assetId);
+  const allowedKinds = role === "product"
+    ? ["product-image", "reference-image", "logo"]
+    : ["keyframe"];
+  if (!allowedKinds.includes(asset.kind)) throw new Error("HappyHorse 参考资产类型不匹配。");
+  if (!asset.mimeType.startsWith("image/")) throw new Error("HappyHorse 参考资产不是图片。");
+  const filePath = await assertPrivateAssetReadable(asset);
   const buffer = await readFile(filePath);
-  if (buffer.byteLength > 20 * 1024 * 1024) {
-    throw new Error("HappyHorse 单张参考图不能超过 20MB。");
-  }
-
-  return `data:${mimeType};base64,${buffer.toString("base64")}`;
-}
-
-function inferMimeType(source: string): string {
-  const clean = source.split("?")[0]?.toLowerCase() ?? "";
-  if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
-  if (clean.endsWith(".webp")) return "image/webp";
-  return "image/png";
+  if (buffer.byteLength > MAX_REFERENCE_BYTES) throw new Error("HappyHorse 单张参考图不能超过 20MB。");
+  return `data:${asset.mimeType};base64,${buffer.toString("base64")}`;
 }
 
 function dedupeReferences(references: HappyHorseReferenceImage[]) {

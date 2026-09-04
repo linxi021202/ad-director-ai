@@ -86,8 +86,8 @@ function ProductReferenceStrip({ images }: { images: ProductImage[] }) {
 }
 
 function shotPlaceholderUrl(index: number) {
-  if (index === 2) return "/generated/images/coldbrew-demo-001/shot-2.png";
-  if (index === 3) return "/generated/images/coldbrew-demo-001/shot-3.png";
-  if (index === 4) return "/generated/images/coldbrew-demo-001/shot-4.png";
+  if (index === 2) return "/demo-keyframes/shot-2.png";
+  if (index === 3) return "/demo-keyframes/shot-3.png";
+  if (index === 4) return "/demo-keyframes/shot-4.png";
   return "/landing-cold-brew-hero.png";
 }

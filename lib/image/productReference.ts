@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 
+import { assertPrivateAssetReadable, requirePrivateAsset } from "../assets/assetStore";
 import type { ProductImage } from "../schemas/project";
 import { assertServerOnly } from "../server-only";
 
@@ -10,24 +10,26 @@ export function selectPrimaryProductImage(images?: ProductImage[]): ProductImage
   return images?.find((image) => image.role === "main-product") ?? images?.[0];
 }
 
-export async function readProductReferenceDataUrl(image?: ProductImage): Promise<string | undefined> {
-  if (!image?.localUrl) return undefined;
-
-  const publicUrl = decodeURIComponent((image.localUrl.split("?")[0] ?? "").trim());
-  if (!publicUrl.startsWith("/uploads/")) {
-    throw new Error("Product reference must use a persisted /uploads/ asset.");
+export async function readProductReferenceDataUrl(
+  image?: ProductImage,
+  context?: { sessionId?: string; projectId?: string }
+): Promise<string | undefined> {
+  assertServerOnly("product reference");
+  if (!image) return undefined;
+  if (!image.assetId || !context?.sessionId || !context.projectId) {
+    throw new Error("Product reference is not backed by a private project asset.");
   }
 
-  const publicRoot = path.resolve(process.cwd(), "public");
-  const filePath = path.resolve(publicRoot, `.${publicUrl}`);
-  if (!filePath.startsWith(`${publicRoot}${path.sep}`)) {
-    throw new Error("Product reference path is outside the public asset directory.");
+  const asset = await requirePrivateAsset(context.sessionId, context.projectId, image.assetId);
+  if (!["product-image", "logo", "reference-image"].includes(asset.kind)) {
+    throw new Error("Selected asset is not a product reference image.");
   }
-
+  if (asset.mimeType !== image.type) throw new Error("Product reference MIME metadata does not match.");
+  const filePath = await assertPrivateAssetReadable(asset);
   const bytes = await readFile(filePath);
   if (bytes.length === 0 || bytes.length > MAX_REFERENCE_BYTES) {
     throw new Error("Product reference is empty or exceeds the 5MB limit.");
   }
 
-  return `data:${image.type};base64,${bytes.toString("base64")}`;
+  return `data:${asset.mimeType};base64,${bytes.toString("base64")}`;
 }

@@ -1,0 +1,237 @@
+import "server-only";
+
+import { randomUUID } from "node:crypto";
+
+import { mutateOwnedAnonymousProject, requireOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
+import { setLastActiveProjectId } from "@/lib/projects/anonymousWorkspace";
+import {
+  generationEventSchema,
+  type GenerationEvent,
+  type GenerationEventStatus,
+  type GenerationProvider,
+  type GenerationStage
+} from "@/lib/schemas/project";
+
+const MAX_EVENTS = 200;
+const MAX_MESSAGE_LENGTH = 500;
+const ALLOWED_ERROR_CODES = new Set([
+  "PROVIDER_REQUEST_FAILED",
+  "PROVIDER_TIMEOUT",
+  "PROVIDER_INVALID_RESPONSE",
+  "SCHEMA_VALIDATION_FAILED",
+  "FALLBACK_USED",
+  "ASSET_VALIDATION_FAILED",
+  "ASSET_UPLOAD_FAILED",
+  "RENDER_FAILED",
+  "RENDER_CANCELLED",
+  "TASK_INTERRUPTED",
+  "NOT_CONFIGURED",
+  "RATE_LIMITED",
+  "QUOTA_EXHAUSTED"
+]);
+
+const STAGE_TIMEOUT_MS: Record<GenerationStage, number> = {
+  brief: 5 * 60_000,
+  strategy: 10 * 60_000,
+  storyboard: 15 * 60_000,
+  prompts: 15 * 60_000,
+  keyframes: 30 * 60_000,
+  "hero-shot": 45 * 60_000,
+  narration: 20 * 60_000,
+  composition: 60 * 60_000
+};
+
+type NewEventInput = {
+  stage: GenerationStage;
+  provider: GenerationProvider;
+  action: string;
+  status?: GenerationEventStatus;
+  message: string;
+  shotId?: string;
+  progressCurrent?: number;
+  progressTotal?: number;
+  errorCode?: string;
+  runId?: string;
+};
+
+export function sanitizeGenerationEvent(event: GenerationEvent): GenerationEvent {
+  return generationEventSchema.parse({
+    ...event,
+    action: sanitizeText(event.action, 120),
+    message: sanitizeText(event.message, MAX_MESSAGE_LENGTH),
+    ...(event.errorCode ? { errorCode: sanitizeErrorCode(event.errorCode) } : {})
+  });
+}
+
+export async function appendGenerationEvent(
+  sessionId: string,
+  projectId: string,
+  input: NewEventInput
+): Promise<GenerationEvent> {
+  const now = Date.now();
+  const event = sanitizeGenerationEvent({
+    id: randomUUID(),
+    runId: input.runId ?? randomUUID(),
+    projectId,
+    stage: input.stage,
+    provider: input.provider,
+    action: input.action,
+    status: input.status ?? "queued",
+    message: input.message,
+    ...(input.shotId ? { shotId: input.shotId } : {}),
+    ...(input.progressCurrent !== undefined ? { progressCurrent: input.progressCurrent } : {}),
+    ...(input.progressTotal !== undefined ? { progressTotal: input.progressTotal } : {}),
+    startedAt: now,
+    ...(isTerminal(input.status) ? { completedAt: now } : {}),
+    ...(input.errorCode ? { errorCode: input.errorCode } : {})
+  });
+
+  await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
+    ...project,
+    generationEvents: pruneEvents([...(project.generationEvents ?? []), event])
+  }));
+  await setLastActiveProjectId(sessionId, projectId);
+  return event;
+}
+
+export function startGenerationEvent(
+  sessionId: string,
+  projectId: string,
+  input: Omit<NewEventInput, "status">
+) {
+  return appendGenerationEvent(sessionId, projectId, { ...input, status: "running" });
+}
+
+export function completeGenerationEvent(
+  sessionId: string,
+  projectId: string,
+  eventId: string,
+  message: string,
+  details: { status?: "completed" | "fallback" | "cancelled"; latencyMs?: number; progressCurrent?: number; progressTotal?: number } = {}
+) {
+  return updateEvent(sessionId, projectId, eventId, {
+    status: details.status ?? "completed",
+    message,
+    completedAt: Date.now(),
+    ...(details.latencyMs !== undefined ? { latencyMs: Math.max(0, Math.round(details.latencyMs)) } : {}),
+    ...(details.progressCurrent !== undefined ? { progressCurrent: details.progressCurrent } : {}),
+    ...(details.progressTotal !== undefined ? { progressTotal: details.progressTotal } : {})
+  });
+}
+
+export function failGenerationEvent(
+  sessionId: string,
+  projectId: string,
+  eventId: string,
+  message: string,
+  errorCode = "PROVIDER_REQUEST_FAILED"
+) {
+  return updateEvent(sessionId, projectId, eventId, {
+    status: "failed",
+    message,
+    errorCode: sanitizeErrorCode(errorCode),
+    completedAt: Date.now()
+  });
+}
+
+export function updateGenerationEventProgress(
+  sessionId: string,
+  projectId: string,
+  eventId: string,
+  progressCurrent: number,
+  progressTotal: number,
+  message?: string
+) {
+  return updateEvent(sessionId, projectId, eventId, {
+    progressCurrent: Math.max(0, Math.round(progressCurrent)),
+    progressTotal: Math.max(1, Math.round(progressTotal)),
+    ...(message ? { message } : {})
+  });
+}
+
+export async function listGenerationEvents(
+  sessionId: string,
+  projectId: string,
+  options: { after?: number; limit?: number } = {}
+): Promise<GenerationEvent[]> {
+  await normalizeInterruptedEvents(sessionId, projectId);
+  const record = await requireOwnedAnonymousProject(sessionId, projectId);
+  const after = Math.max(0, options.after ?? 0);
+  const limit = Math.min(200, Math.max(1, options.limit ?? 200));
+  return (record.project.generationEvents ?? [])
+    .filter((event) => event.startedAt > after)
+    .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id))
+    .slice(-limit);
+}
+
+export async function normalizeInterruptedEvents(sessionId: string, projectId: string): Promise<void> {
+  const record = await requireOwnedAnonymousProject(sessionId, projectId);
+  const now = Date.now();
+  const hasStale = (record.project.generationEvents ?? []).some(
+    (event) => event.status === "running" && now - event.startedAt > STAGE_TIMEOUT_MS[event.stage]
+  );
+  if (!hasStale) return;
+
+  await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
+    ...project,
+    generationEvents: (project.generationEvents ?? []).map((event) => {
+      if (event.status !== "running" || now - event.startedAt <= STAGE_TIMEOUT_MS[event.stage]) return event;
+      return sanitizeGenerationEvent({
+        ...event,
+        status: "interrupted",
+        message: "任务因服务中断未能继续，请重新执行。",
+        completedAt: now,
+        errorCode: "TASK_INTERRUPTED"
+      });
+    })
+  }));
+}
+
+async function updateEvent(
+  sessionId: string,
+  projectId: string,
+  eventId: string,
+  patch: Partial<Pick<GenerationEvent, "status" | "message" | "completedAt" | "latencyMs" | "errorCode" | "progressCurrent" | "progressTotal">>
+): Promise<GenerationEvent> {
+  let updated: GenerationEvent | undefined;
+  await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
+    ...project,
+    generationEvents: (project.generationEvents ?? []).map((event) => {
+      if (event.id !== eventId) return event;
+      updated = sanitizeGenerationEvent({ ...event, ...patch });
+      return updated;
+    })
+  }));
+  if (!updated) throw new Error("GENERATION_EVENT_NOT_FOUND");
+  return updated;
+}
+
+function pruneEvents(events: GenerationEvent[]): GenerationEvent[] {
+  if (events.length <= MAX_EVENTS) return events;
+  const critical = events.filter((event) => event.status === "failed" || (event.stage === "composition" && event.status === "completed"));
+  const recent = events.slice(-(MAX_EVENTS - Math.min(20, critical.length)));
+  const merged = new Map<string, GenerationEvent>();
+  for (const event of [...critical.slice(-20), ...recent]) merged.set(event.id, event);
+  return [...merged.values()].sort((left, right) => left.startedAt - right.startedAt).slice(-MAX_EVENTS);
+}
+
+function sanitizeText(value: string, maxLength: number): string {
+  const cleaned = value
+    .replace(/Authorization\s*:\s*[^\r\n]*/gi, "Authorization: [已隐藏]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [已隐藏]")
+    .replace(/(?:sk|dashscope)[-_][A-Za-z0-9_-]{8,}/gi, "[密钥已隐藏]")
+    .replace(/(?:DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|HAPPYHORSE_API_KEY|DATABASE_URL)\s*[:=]\s*[^\s,;]+/gi, "$1=[已隐藏]")
+    .replace(/[A-Za-z]:\\[^\r\n]+/g, "[本地路径已隐藏]")
+    .replace(/\/(?:Users|home|var|tmp)\/[^\r\n]+/g, "[本地路径已隐藏]")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ")
+    .trim();
+  return (cleaned || "任务状态已更新。").slice(0, maxLength);
+}
+
+function sanitizeErrorCode(value: string): string {
+  return ALLOWED_ERROR_CODES.has(value) ? value : "PROVIDER_REQUEST_FAILED";
+}
+
+function isTerminal(status: GenerationEventStatus | undefined): boolean {
+  return Boolean(status && ["completed", "failed", "fallback", "cancelled", "blocked", "interrupted"].includes(status));
+}

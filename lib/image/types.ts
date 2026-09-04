@@ -16,6 +16,7 @@ export type QwenImageRequest = {
 export type QwenImageResult = {
   success: boolean;
   imageUrl?: string;
+  assetId?: string;
   localUrl?: string;
   requestId?: string;
   provider: "dashscope";
@@ -32,10 +33,12 @@ export type DownloadImageInput = {
   imageUrl: string;
   projectId: string;
   shotId: string;
+  sessionId?: string;
 };
 
 export type DownloadImageResult = {
   success: boolean;
+  assetId?: string;
   localUrl?: string;
   cacheStatus: QwenImageCacheStatus;
   error?: string;

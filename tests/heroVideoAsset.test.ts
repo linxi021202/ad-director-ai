@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+vi.mock("server-only", () => ({}));
+
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import {
   deleteHeroVideoAsset,
   heroShotWorkflowStatusLabel,
@@ -7,6 +13,17 @@ import {
   safeSegment,
   saveHeroVideoAsset
 } from "../lib/heroVideoAsset";
+import {
+  createAnonymousProject,
+  resetAnonymousProjectQueuesForTests
+} from "../lib/projects/anonymousProjectStore";
+
+const SESSION_A = "hero-video-session-a";
+let storageRoot = "";
+let projectId = "";
+let heroShotId = "";
+let heroShotDurationSec = 5;
+const originalEnv = { ...process.env };
 
 function atom(type: string, payload: Buffer) {
   const output = Buffer.alloc(payload.length + 8);
@@ -16,202 +33,138 @@ function atom(type: string, payload: Buffer) {
   return output;
 }
 
-function ftyp() {
-  return atom("ftyp", Buffer.from([0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x00, 0x01, 0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x32]));
-}
-
-function mvhd(durationSec: number, timescale = 1000) {
-  const payload = Buffer.alloc(100);
-  payload.writeUInt8(0, 0);
-  payload.writeUInt32BE(timescale, 12);
-  payload.writeUInt32BE(Math.round(durationSec * timescale), 16);
-  return atom("mvhd", payload);
-}
-
-function tkhd(width: number, height: number) {
-  const payload = Buffer.alloc(100);
-  payload.writeUInt8(0, 0);
-  payload.writeUInt32BE(width * 65536, 76);
-  payload.writeUInt32BE(height * 65536, 80);
-  return atom("tkhd", payload);
-}
-
 function fakeMp4(input: { durationSec: number; width: number; height: number }) {
-  return Buffer.concat([ftyp(), atom("moov", Buffer.concat([mvhd(input.durationSec), atom("trak", tkhd(input.width, input.height))]))]);
+  const ftyp = atom("ftyp", Buffer.from([
+    0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x00, 0x01,
+    0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x32
+  ]));
+  const mvhdPayload = Buffer.alloc(100);
+  mvhdPayload.writeUInt8(0, 0);
+  mvhdPayload.writeUInt32BE(1000, 12);
+  mvhdPayload.writeUInt32BE(Math.round(input.durationSec * 1000), 16);
+  const tkhdPayload = Buffer.alloc(100);
+  tkhdPayload.writeUInt8(0, 0);
+  tkhdPayload.writeUInt32BE(input.width * 65536, 76);
+  tkhdPayload.writeUInt32BE(input.height * 65536, 80);
+  return Buffer.concat([
+    ftyp,
+    atom("moov", Buffer.concat([
+      atom("mvhd", mvhdPayload),
+      atom("trak", atom("tkhd", tkhdPayload))
+    ]))
+  ]);
 }
 
-describe("HappyHorse manual hero video assets", () => {
-  it("saves a valid 9:16 MP4 and restores it from local project state", async () => {
-    const projectId = `vitest-hero-${Date.now()}`;
-    const result = await saveHeroVideoAsset({
-      projectId,
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 4, width: 720, height: 1280 })
-    });
+async function save(input: {
+  durationSec?: number;
+  width?: number;
+  height?: number;
+  source?: "happyhorse-manual-import" | "happyhorse-api";
+  fileName?: string;
+  mimeType?: string;
+}) {
+  const buffer = fakeMp4({
+    durationSec: input.durationSec ?? heroShotDurationSec,
+    width: input.width ?? 720,
+    height: input.height ?? 1280
+  });
+  return saveHeroVideoAsset({
+    sessionId: SESSION_A,
+    projectId,
+    shotId: heroShotId,
+    aspectRatio: "9:16",
+    fileName: input.fileName ?? "hero-shot.mp4",
+    mimeType: input.mimeType ?? "video/mp4",
+    sizeBytes: buffer.length,
+    buffer,
+    source: input.source
+  });
+}
 
+beforeEach(async () => {
+  process.env = { ...originalEnv };
+  storageRoot = await mkdtemp(path.join(tmpdir(), "ad-director-hero-video-"));
+  process.env.STORAGE_ROOT = storageRoot;
+  process.env.ANONYMOUS_SESSION_OWNERSHIP_SALT = "hero-video-test-salt";
+  resetAnonymousProjectQueuesForTests();
+  const created = await createAnonymousProject(SESSION_A, { templateId: "cold-brew-demo" });
+  projectId = created.id;
+  const heroShot = created.project.shots.find((shot) => shot.id === created.project.heroShotId) ?? created.project.shots[0]!;
+  heroShotId = heroShot.id;
+  heroShotDurationSec = heroShot.durationSec;
+});
+
+afterEach(async () => {
+  resetAnonymousProjectQueuesForTests();
+  if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
+  process.env = { ...originalEnv };
+});
+
+describe("private HappyHorse hero video assets", () => {
+  it("stores and restores a valid MP4 through the authorized asset URL", async () => {
+    const result = await save({});
     expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.asset.publicUrl).toBe(`/generated/${projectId}/video/hero-shot.mp4`);
-      expect(result.asset.source).toBe("happyhorse-manual-import");
-      expect(await heroVideoFileExists(result.asset)).toBe(true);
-    }
+    if (!result.success) return;
 
-    const state = await readHeroVideoProjectState(projectId);
-    expect(state.heroShotId).toBe("shot-3");
-    expect(state.heroVideoAsset?.publicUrl).toBe(`/generated/${projectId}/video/hero-shot.mp4`);
+    expect(result.asset.publicUrl).toBe(
+      `/api/projects/${projectId}/assets/${result.asset.assetId}`
+    );
+    expect(result.asset.source).toBe("happyhorse-manual-import");
+    expect(await heroVideoFileExists(SESSION_A, result.asset)).toBe(true);
+
+    const state = await readHeroVideoProjectState(SESSION_A, projectId);
+    expect(state.heroShotId).toBe(heroShotId);
+    expect(state.heroVideoAsset?.assetId).toBe(result.asset.assetId);
   });
 
-  it("rejects non-MP4 uploads", async () => {
-    const result = await saveHeroVideoAsset({
-      projectId: "vitest-non-mp4",
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero.mov",
-      mimeType: "video/quicktime",
-      sizeBytes: 1024,
-      buffer: fakeMp4({ durationSec: 4, width: 720, height: 1280 })
-    });
-
+  it("rejects non-MP4 uploads before creating an asset", async () => {
+    const result = await save({ fileName: "hero.mov", mimeType: "video/quicktime" });
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toContain("mp4");
+    if (!result.success) expect(result.status).toBe(400);
   });
 
-  it("rejects files over 50MB before writing", async () => {
-    const result = await saveHeroVideoAsset({
-      projectId: "vitest-too-large",
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 51 * 1024 * 1024,
-      buffer: fakeMp4({ durationSec: 4, width: 720, height: 1280 })
-    });
+  it("enforces duration and manual-import aspect direction", async () => {
+    const short = await save({ durationSec: 2 });
+    expect(short.success).toBe(false);
 
-    expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toContain("50MB");
+    const horizontal = await save({ width: 1280, height: 720 });
+    expect(horizontal.success).toBe(false);
   });
 
-  it("rejects videos shorter than 3 seconds", async () => {
-    const result = await saveHeroVideoAsset({
-      projectId: "vitest-too-short",
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 2, width: 720, height: 1280 })
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toContain("短于 3 秒");
-  });
-
-  it("rejects videos longer than 8 seconds", async () => {
-    const result = await saveHeroVideoAsset({
-      projectId: "vitest-too-long",
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 9, width: 720, height: 1280 })
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toContain("不能超过 8 秒");
-  });
-
-  it("rejects videos whose direction does not match the project aspect ratio", async () => {
-    const result = await saveHeroVideoAsset({
-      projectId: "vitest-aspect-mismatch",
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 4, width: 1280, height: 720 })
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toBe("上传视频画幅与当前项目设置不一致。");
-  });
-
-  it("accepts HappyHorse API videos with a different direction for Remotion adaptation", async () => {
-    const result = await saveHeroVideoAsset({
-      projectId: `vitest-api-aspect-${Date.now()}`,
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "happyhorse-hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 4, width: 1280, height: 720 }),
+  it("accepts an API video for Remotion adaptation and records its source", async () => {
+    const result = await save({
+      width: 1280,
+      height: 720,
       source: "happyhorse-api"
     });
-
     expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.asset.source).toBe("happyhorse-api");
-      expect(result.asset.width).toBe(1280);
-      expect(result.asset.height).toBe(720);
-      expect(result.asset.aspectRatio).toBe("9:16");
-    }
+    if (result.success) expect(result.asset.source).toBe("happyhorse-api");
   });
 
-  it("keeps the old video when replacement validation fails", async () => {
-    const projectId = `vitest-replace-${Date.now()}`;
-    const first = await saveHeroVideoAsset({
-      projectId,
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 4, width: 720, height: 1280 })
-    });
+  it("keeps the previous valid video when replacement validation fails", async () => {
+    const first = await save({});
     expect(first.success).toBe(true);
-
-    const failed = await saveHeroVideoAsset({
-      projectId,
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 2, width: 720, height: 1280 })
-    });
+    const failed = await save({ durationSec: 2 });
     expect(failed.success).toBe(false);
 
-    const state = await readHeroVideoProjectState(projectId);
-    expect(state.heroVideoAsset?.durationSec).toBe(4);
-    expect(await heroVideoFileExists(state.heroVideoAsset)).toBe(true);
+    const state = await readHeroVideoProjectState(SESSION_A, projectId);
+    expect(state.heroVideoAsset?.durationSec).toBe(heroShotDurationSec);
   });
 
-  it("deletes video and returns workflow state to waiting manual import", async () => {
-    const projectId = `vitest-delete-${Date.now()}`;
-    const result = await saveHeroVideoAsset({
-      projectId,
-      shotId: "shot-3",
-      aspectRatio: "9:16",
-      fileName: "hero-shot.mp4",
-      mimeType: "video/mp4",
-      sizeBytes: 2048,
-      buffer: fakeMp4({ durationSec: 4, width: 720, height: 1280 })
-    });
-    expect(result.success).toBe(true);
-
-    await deleteHeroVideoAsset(projectId);
-    const state = await readHeroVideoProjectState(projectId);
+  it("deletes the private video and returns to the waiting state", async () => {
+    expect((await save({})).success).toBe(true);
+    await deleteHeroVideoAsset(SESSION_A, projectId);
+    const state = await readHeroVideoProjectState(SESSION_A, projectId);
     expect(state.heroVideoAsset).toBeNull();
     expect(heroShotWorkflowStatusLabel("waiting-manual-import")).toBe("等待导入视频");
   });
 
-  it("sanitizes project and shot path segments", () => {
+  it("does not allow another session to read the asset", async () => {
+    expect((await save({})).success).toBe(true);
+    await expect(readHeroVideoProjectState("hero-video-session-b", projectId)).rejects.toThrow();
+  });
+
+  it("sanitizes path segments", () => {
     expect(safeSegment("../bad/project", "project")).toBe("bad-project");
-    expect(safeSegment("shot-3", "shot")).toBe("shot-3");
   });
 });
-

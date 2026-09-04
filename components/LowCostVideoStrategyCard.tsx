@@ -1,4 +1,4 @@
-﻿import type { AITraceStatus } from "@/components/AIModeBadge";
+import type { AITraceStatus } from "@/components/AIModeBadge";
 import type { HeroVideoStatus, HeroVideoSource } from "@/lib/heroVideo";
 import type { StoryboardShot } from "@/lib/schemas/project";
 
@@ -8,15 +8,16 @@ type LowCostVideoStrategyCardProps = {
   heroShot?: StoryboardShot | null;
   videoSource?: HeroVideoSource | "none";
   heroVideoStatus?: HeroVideoStatus;
+  projectDurationSec: number;
 };
 
-export function LowCostVideoStrategyCard({ status, compact = false, heroShot, videoSource = "none", heroVideoStatus = "prompt-ready" }: LowCostVideoStrategyCardProps) {
-  const currentHero = heroShot ? `镜头 ${heroShot.index} · ${heroShot.index === 3 ? "状态转变" : trimLabel(heroShot.subtitle)} · ${Math.min(heroShot.durationSec, status.limits.maxVideoSecondsPerShot)}秒视频` : "请先选择主镜头";
+export function LowCostVideoStrategyCard({ status, compact = false, heroShot, videoSource = "none", heroVideoStatus = "prompt-ready", projectDurationSec }: LowCostVideoStrategyCardProps) {
+  const currentHero = heroShot ? `镜头 ${heroShot.index} · ${trimLabel(heroShot.subtitle)} · ${heroShot.durationSec}秒视频` : "请先选择主镜头";
   const rows = [
     { label: "当前主镜头", value: currentHero },
     { label: "当前状态", value: heroVideoStatusLabel(heroVideoStatus) },
     { label: "辅助镜头", value: "Qwen-Image 关键帧 + Remotion 图片动效" },
-    { label: "成片合成", value: "Remotion 合成 25-30 秒完整广告片" }
+    { label: "成片合成", value: `Remotion 合成 ${projectDurationSec} 秒完整广告片` }
   ];
   return (
     <section className={`rounded-2xl border border-line bg-panel ${compact ? "p-4" : "p-5"}`}>
