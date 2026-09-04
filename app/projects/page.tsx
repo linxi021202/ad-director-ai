@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { DeleteAnonymousProjectButton } from "@/components/DeleteAnonymousProjectButton";
+import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { MAX_ANONYMOUS_PROJECTS, listAnonymousProjects } from "@/lib/projects/anonymousProjectStore";
 import { requireAnonymousSession } from "@/lib/session/anonymousSession";
 import { getEffectiveShotCount, getProjectDurationSec } from "@/lib/video/shotConfig";
@@ -19,25 +20,28 @@ export default async function ProjectsPage({ searchParams }: ProjectsPageProps) 
   const showLimitNotice = params?.notice === "project-limit" && atLimit;
 
   return (
-    <main className="account-page">
+    <main className="account-page projects-index-page">
+      <WorkspaceHeader active="项目" projectHref="/projects" />
       <section className="account-page__content">
-        <span>项目</span>
-        <h1>当前临时会话的项目</h1>
-        <p>项目仅在当前临时会话中保留，最多可创建 {MAX_ANONYMOUS_PROJECTS} 个。</p>
+        <header className="projects-index-hero">
+          <div>
+            <span>项目库 · {projects.length} / {MAX_ANONYMOUS_PROJECTS}</span>
+            <h1>你的广告项目</h1>
+            <p>继续制作、查看成片，或从一份新简报开始。</p>
+          </div>
+          {!atLimit ? <Link className="projects-index-create" href="/generate?new=1">新建项目</Link> : null}
+        </header>
         {showLimitNotice ? (
           <div className="project-limit-notice" role="alert">
             <strong>项目数量已达上限</strong>
             <p>删除一个不再需要的项目后，即可继续创建新项目。</p>
           </div>
         ) : null}
-        {!atLimit ? (
-          <div className="account-actions">
-            <Link href="/generate?new=1">新建项目</Link>
-          </div>
-        ) : null}
         {projects.length === 0 ? (
-          <div className="account-actions">
-            <p>当前临时会话中还没有项目。</p>
+          <div className="projects-index-empty">
+            <strong>还没有项目</strong>
+            <p>创建第一份商品简报，开始生成广告。</p>
+            <Link href="/generate?new=1">开始创作</Link>
           </div>
         ) : (
           <div className="project-list">

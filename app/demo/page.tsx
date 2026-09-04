@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 
 export default function DemoPage() {
   return (
-    <main className="account-page">
+    <main className="account-page demo-index-page">
+      <WorkspaceHeader active="工作台" projectHref="/demo/project" />
       <section className="account-page__content">
-        <span>AdDirector AI 静态演示</span>
+        <span>静态演示</span>
         <h1>低糖冷萃咖啡广告链路</h1>
         <p>这里仅展示静态产品流程，不调用真实模型、不上传素材，也不会启动视频渲染。</p>
         <div className="account-actions">

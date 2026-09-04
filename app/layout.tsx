@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 
+import { SiteVideoBackdrop } from "@/components/SiteVideoBackdrop";
 import "./globals.css";
 import "./auth.css";
 import "./workspace-v3.css";
+import "./cinema-system.css";
 
 export const metadata: Metadata = {
   title: "AdDirector AI",
@@ -16,7 +18,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <head>
+        <link rel="preconnect" href="https://api.fontshare.com" />
+        <link rel="preconnect" href="https://cdn.fontshare.com" crossOrigin="anonymous" />
+        <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&display=swap" rel="stylesheet" />
+      </head>
+      <body className="site-body">
+        <SiteVideoBackdrop />
+        {children}
+      </body>
     </html>
   );
 }

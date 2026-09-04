@@ -791,7 +791,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           <div className="project-header-v4__main">
             <div className="project-header-v4__copy">
               <h1>{displayProject.brief.productName}</h1>
-              <p>从关键帧精修、主镜头准备到 Remotion 成片的完整制作链路。</p>
+              <p>从关键帧到最终成片。</p>
             </div>
             <div className="project-header-v4__actions">
               <button
@@ -852,8 +852,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
           <article className="strategy-card-v4">
             <small>核心创意</small>
-            <h2>{displayProject.strategy.bigIdea}</h2>
-            <p>{displayProject.strategy.coreMessage}</p>
+            <h2>{displayProject.strategy.coreMessage}</h2>
             <div className="strategy-card-v4__facts">
               <InfoCard label="目标用户" value={displayProject.strategy.audienceInsight || displayProject.brief.targetAudience} />
               <InfoCard label="情绪钩子" value={displayProject.strategy.emotionalHook} />

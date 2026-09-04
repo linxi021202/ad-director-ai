@@ -8,17 +8,10 @@ import { useState } from "react";
 import { ModelSettingsSheet } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
-import { UnicornHeroBackground } from "@/components/UnicornHeroBackground";
 import "./home-final.css";
 import "./home-api-settings.css";
 
 const projectPath = "/demo/project";
-
-const features = [
-  { icon: "director", title: "AI 导演模式", description: "秒级生成分镜与提示词" },
-  { icon: "route", title: "透明模型路由", description: "每一步选择都有迹可循" },
-  { icon: "shield", title: "容灾降级引擎", description: "失败时自动回退备用方案" }
-] as const;
 
 export default function HomePage() {
   const router = useRouter();
@@ -41,8 +34,6 @@ export default function HomePage() {
 
   return (
     <main className="home-final">
-      <UnicornHeroBackground isNavigating={isNavigating} />
-
       <header className={`home-header ${exitClass}`}>
         <div className="home-header-inner">
           <Link href="/" className="home-brand" aria-label="AdDirector AI 首页">
@@ -95,12 +86,7 @@ export default function HomePage() {
 
       <section className="home-hero">
         <div className={`home-hero-copy ${exitClass}`}>
-          <div className="home-eyebrow"><span aria-hidden="true" />AI AD DIRECTOR</div>
-          <h1>
-            <span className="home-title-lead">从一份商品简报，</span>
-            <span className="home-title-main"><strong>生成</strong>一支完整广告片。</span>
-          </h1>
-          <p>从策略、分镜到关键帧与成片，一条可解释的 AI 广告生产链路。</p>
+          <h1>一份简报，直接成片。</h1>
 
           <div className="home-actions">
             <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)} className="home-primary-action">
@@ -114,15 +100,6 @@ export default function HomePage() {
               <span aria-hidden="true" />
             </Link>
           </div>
-        </div>
-
-        <div className={`home-features ${exitClass}`}>
-          {features.map((feature) => (
-            <article key={feature.title}>
-              <span className={`home-feature-icon home-feature-${feature.icon}`} aria-hidden="true"><i /></span>
-              <div><h2>{feature.title}</h2><p>{feature.description}</p></div>
-            </article>
-          ))}
         </div>
       </section>
       <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} />

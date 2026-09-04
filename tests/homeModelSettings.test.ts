@@ -2,20 +2,21 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const page = readFileSync("app/page.tsx", "utf8");
-const styles = readFileSync("app/home-api-settings.css", "utf8");
+const styles = readFileSync("app/home-final.css", "utf8");
 const sheet = readFileSync("components/ModelSettingsSheet.tsx", "utf8");
 
 describe("home hero and model settings", () => {
-  it("keeps the hero at the requested type scale and spacing", () => {
-    expect(styles).toContain("clamp(46px,4.4vw,68px)");
-    expect(styles).toContain("clamp(60px,5.7vw,88px)");
-    expect(styles).toContain("margin-top:76px");
+  it("keeps the single-line hero at the requested responsive scale", () => {
+    expect(page).toContain("一份简报，直接成片。");
+    expect(styles).toContain("clamp(48px, 5vw, 72px)");
+    expect(styles).toContain("gap: 40px");
   });
 
-  it("uses equal three-column CTA geometry", () => {
-    expect(styles).toContain("width:238px");
-    expect(styles).toContain("height:58px");
-    expect(styles).toContain("grid-template-columns:24px 1fr 24px");
+  it("uses compact layered pill CTAs", () => {
+    expect(styles).toContain("border-radius: 999px");
+    expect(styles).toContain("min-width: 188px");
+    expect(styles).toContain("min-height: 48px");
+    expect(styles).toContain(".home-primary-action::before");
   });
 
   it("places model settings in the header and never persists keys in browser storage", () => {
