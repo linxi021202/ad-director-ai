@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import {
   adStrategySchema,
+  creativeBibleSchema,
   generationProjectSchema,
   modelRouteSchema,
   productBriefSchema,
-  storyboardShotSchema
+  referencePackSchema,
+  storyboardShotSchema,
+  visualContinuityBibleSchema
 } from "../lib/schemas/project";
+import { ensureProjectContinuity } from "../lib/continuity/projectContinuity";
 
 describe("AIGC ad director schemas", () => {
   it("validates the coldBrewDemo generation project", () => {
@@ -20,6 +24,15 @@ describe("AIGC ad director schemas", () => {
     expect(adStrategySchema.safeParse(coldBrewDemo.strategy).success).toBe(true);
     expect(storyboardShotSchema.safeParse(coldBrewDemo.shots[0]).success).toBe(true);
     expect(modelRouteSchema.safeParse(coldBrewDemo.modelRoutes[0]).success).toBe(true);
+  });
+
+  it("validates the deterministic continuity upgrade for a legacy project", () => {
+    const architecture = ensureProjectContinuity(coldBrewDemo);
+
+    expect(creativeBibleSchema.safeParse(architecture.creativeBible).success).toBe(true);
+    expect(visualContinuityBibleSchema.safeParse(architecture.visualContinuityBible).success).toBe(true);
+    expect(referencePackSchema.safeParse(architecture.referencePack).success).toBe(true);
+    expect(architecture.shots.every((shot) => storyboardShotSchema.safeParse(shot).success)).toBe(true);
   });
 
   it("matches the required cold brew demo constraints", () => {

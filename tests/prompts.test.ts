@@ -44,6 +44,17 @@ describe("DeepSeek prompt pipeline", () => {
     }
   });
 
+  it("requires continuity state, separated constraints and verified claims", () => {
+    expect(strategyPrompt).toContain("verifiedClaims");
+    for (const prompt of [storyboardPrompt, generationPrompt]) {
+      expect(prompt).toContain("continuityGroupId");
+      expect(prompt).toContain("sceneStateBefore");
+      expect(prompt).toContain("continuityConstraints");
+      expect(prompt).toContain("shotDirection");
+      expect(prompt).toContain("verifiedClaims");
+    }
+  });
+
   it("keeps the fixed MVP provider chain", () => {
     const combined = [strategyPrompt, storyboardPrompt, generationPrompt, scorePrompt].join("\n");
     for (const model of ["deepseek-v4-flash", "qwen-image", "happyhorse-1.0-r2v", "remotion"]) {

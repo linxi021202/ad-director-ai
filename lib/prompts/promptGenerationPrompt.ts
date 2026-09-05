@@ -41,6 +41,8 @@ ${JSON.stringify(shots, null, 2)}
 
 硬性要求：
 - 必须原样返回 ${shots.length} 个镜头，不得新增、删除、重排镜头，也不得改变 id、index 和 durationSec。
+- 必须原样保留 continuityGroupId、sceneGroupId、sceneId、characterIds、productIds、sceneStateBefore、sceneStateAfter、generationMode、motionComplexityScore 与 textSafeZone。
+- continuityConstraints 只描述不可变化的 Master 规则；shotDirection 只描述本镜头允许发生的动作、表演、光线和摄影机变化，不得揉成同一段。
 - 镜头时长总和为 ${totalDurationSec} 秒，必须保持不变。
 - 当前画幅为 ${brief.aspectRatio}，平台为 ${brief.platform}。
 - 全片只允许 1 个主镜头使用 HappyHorse，主镜头优先为镜头 ${heroShot?.index ?? 1}，时长 ${heroShot?.durationSec ?? 5} 秒。
@@ -57,6 +59,7 @@ ${productImageReferenceNote(brief)}
 ${NO_READABLE_TEXT_CN}
 ${NO_READABLE_TEXT_EN}
 - 所有可读字幕、标题、卖点与 CTA 只由 Remotion 后期叠加，不得进入模型画面像素。
+- 价格、折扣、功效数字、认证、排名与百分比只能引用 verifiedClaims：${JSON.stringify(brief.verifiedClaims ?? [])}；不得自行发明。
 
 目标 JSON 示例：
 ${JSON.stringify(example, null, 2)}`;

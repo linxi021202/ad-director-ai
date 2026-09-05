@@ -49,17 +49,18 @@ export async function POST(request: Request) {
     const imageRoute = selectProviderModel({ taskType: "image", hasChineseText: true });
     const videoRoute = selectProviderModel({ taskType: "video", isHeroShot: true });
     const result = await generatePrompts(parsed.data.brief, parsed.data.strategy, parsed.data.shots, { sessionId: session.id });
-    const shots = result.data ?? [];
+    let shots = result.data ?? [];
 
     if (shots.length > 0) {
       await replaceOwnedProjectShots(session.id, projectId, shots);
       const current = await requireOwnedAnonymousProject(session.id, projectId);
-      await updateOwnedAnonymousProject(session.id, projectId, {
+      const updated = await updateOwnedAnonymousProject(session.id, projectId, {
         workflowSteps: {
           ...(current.project.workflowSteps ?? defaultWorkflow()),
           storyboard: result.fallbackUsed ? "fallback" : "completed"
         }
       });
+      shots = updated.project.shots;
     }
 
     if (!result.success && !result.fallbackUsed) {

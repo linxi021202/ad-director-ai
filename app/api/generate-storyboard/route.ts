@@ -60,6 +60,7 @@ export async function POST(request: Request) {
       targetDurationSec: timeline.targetDurationSec,
       shotDurationPlan: timeline.shotDurationPlan
     });
+    let responseShots = result.data ?? [];
     if (result.data) {
       const invalidatedAssetIds = parsed.data.regenerateExisting
         ? collectTimelineAssetIds(owned.project)
@@ -69,7 +70,7 @@ export async function POST(request: Request) {
       });
       await markPrivateAssetsLifecycle(session.id, projectId, invalidatedAssetIds, "orphaned");
       const current = await requireOwnedAnonymousProject(session.id, projectId);
-      await updateOwnedAnonymousProject(session.id, projectId, {
+      const updated = await updateOwnedAnonymousProject(session.id, projectId, {
         strategy: parsed.data.strategy,
         targetDurationSec: timeline.targetDurationSec,
         brief: { ...parsed.data.brief, durationSec: timeline.targetDurationSec },
@@ -78,9 +79,10 @@ export async function POST(request: Request) {
           brief: "completed", strategy: "completed", storyboard: result.fallbackUsed ? "fallback" : "completed"
         }
       });
+      responseShots = updated.project.shots;
       await completeGenerationEvent(session.id, projectId, eventId,
-        result.fallbackUsed ? "分镜生成失败，已使用本地模板继续。" : `分镜生成完成，共 ${result.data.length} 个镜头。`,
-        { status: result.fallbackUsed ? "fallback" : "completed", latencyMs: result.latencyMs, progressCurrent: result.data.length, progressTotal: result.data.length }
+        result.fallbackUsed ? "分镜生成失败，已使用本地模板继续。" : `分镜生成完成，共 ${responseShots.length} 个镜头。`,
+        { status: result.fallbackUsed ? "fallback" : "completed", latencyMs: result.latencyMs, progressCurrent: responseShots.length, progressTotal: responseShots.length }
       );
     } else {
       await failGenerationEvent(session.id, projectId, eventId, "分镜生成失败，请检查模型配置后重试。");
@@ -88,7 +90,7 @@ export async function POST(request: Request) {
 
     return apiJson({
       success: result.success,
-      data: result.data ? { shots: result.data } : null,
+      data: result.data ? { shots: responseShots } : null,
       trace: {
         route: "generate-storyboard", taskType: "storyboard", provider: result.provider, model: result.model,
         latencyMs: result.latencyMs, tokenUsage: result.tokenUsage, costEstimate: result.costEstimate,

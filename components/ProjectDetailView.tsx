@@ -9,6 +9,7 @@ import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ShotDetailsSheet, type ShotDetailsTab } from "@/components/ShotDetailsSheet";
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
+import { ensureProjectContinuity } from "@/lib/continuity/projectContinuity";
 import {
   buildOptimizedVideoPrompt,
   DEFAULT_HERO_SHOT_ID,
@@ -157,6 +158,7 @@ type NextProjectAction = {
 
 export function ProjectDetailView({ project, projectId, projectVersion, aiStatus }: ProjectDetailViewProps) {
   const [displayProject, setDisplayProject] = useState<GenerationProject>(() => normalizeProjectDuration(project));
+  const continuityArchitecture = useMemo(() => ensureProjectContinuity(displayProject), [displayProject]);
   const [currentVersion, setCurrentVersion] = useState(projectVersion);
   const [heroShotId, setHeroShotId] = useState<string | undefined>(project.heroShotId ?? undefined);
   const [keyframes, setKeyframes] = useState<Record<string, KeyframeResult>>(() => projectKeyframesRecord(project));
@@ -846,6 +848,35 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
               <span>{projectDurationSec} 秒</span>
             </div>
           </article>
+        </section>
+
+        <section className="visual-continuity-v5" aria-labelledby="visual-continuity-title">
+          <header>
+            <div>
+              <span>视觉一致性</span>
+              <h2 id="visual-continuity-title">强</h2>
+              <p>系统会在每个镜头中重复使用产品、人物和场景的长期约束，并继承上一镜的动作状态。</p>
+            </div>
+            <details>
+              <summary>查看一致性规划</summary>
+              <dl>
+                <div><dt>连续性分组</dt><dd>{continuityArchitecture.visualContinuityBible.continuityGroups.length} 组</dd></div>
+                <div><dt>产品参考</dt><dd>{continuityArchitecture.referencePack.productMasters.length > 0 ? `${continuityArchitecture.referencePack.productMasters.length} 个真实锚点` : "等待真实产品锚点"}</dd></div>
+                <div><dt>人物规范</dt><dd>{continuityArchitecture.visualContinuityBible.characters.length > 0 ? `${continuityArchitecture.visualContinuityBible.characters.length} 个身份` : "当前镜头无需人物"}</dd></div>
+                <div><dt>文字策略</dt><dd>统一由 Remotion 渲染</dd></div>
+              </dl>
+            </details>
+          </header>
+          <div className="visual-continuity-v5__locks" aria-label="已纳入一致性控制的内容">
+            {[
+              ["产品", "几何、比例与颜色"],
+              ["人物", "身份与外观"],
+              ["服装", "造型与配饰"],
+              ["场景", "结构与光线"],
+              ["主要道具", "位置与状态"],
+              ["色调", "同组视觉规则"]
+            ].map(([label, detail]) => <div key={label}><i aria-hidden="true" /><span><strong>{label}</strong><small>{detail}</small></span></div>)}
+          </div>
         </section>
 
         <section className="model-route-v4" aria-label="模型路由流程">

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { diagnoseProviderFallback } from "../../../lib/api/provider-diagnostics";
+import { buildCreativeBible } from "../../../lib/continuity/projectContinuity";
 import { apiJson, sanitizeApiError } from "../../../lib/api/response";
 import { projectNotFoundResponse, projectStoreErrorResponse } from "../../../lib/projects/api";
 import { completeGenerationEvent, failGenerationEvent, startGenerationEvent } from "../../../lib/projects/generationEvents";
@@ -55,10 +56,12 @@ export async function POST(request: Request) {
       shotDurationPlan: timeline.shotDurationPlan
     });
     if (result.data) {
+      const creativeBible = buildCreativeBible(parsed.data.brief, result.data);
       const current = await requireOwnedAnonymousProject(session.id, projectId);
       await updateOwnedAnonymousProject(session.id, projectId, {
         brief: parsed.data.brief,
         strategy: result.data,
+        creativeBible,
         aspectRatio: parsed.data.brief.aspectRatio,
         shotCount: timeline.shotCount,
         targetDurationSec: timeline.targetDurationSec,
@@ -81,7 +84,7 @@ export async function POST(request: Request) {
 
     return apiJson({
       success: result.success,
-      data: result.data ? { strategy: result.data } : null,
+      data: result.data ? { strategy: result.data, creativeBible: buildCreativeBible(parsed.data.brief, result.data) } : null,
       trace: {
         route: "generate-strategy", taskType: "strategy", provider: result.provider, model: result.model,
         latencyMs: result.latencyMs, tokenUsage: result.tokenUsage, costEstimate: result.costEstimate,

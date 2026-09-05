@@ -133,10 +133,27 @@ function TraceList({ shot, keyframe }: { shot: StoryboardShot; keyframe?: Keyfra
   return (
     <dl className="shot-details-sheet__trace">
       <div><dt>推荐模型</dt><dd>{shot.recommendedModel}</dd></div>
+      <div><dt>视频模式</dt><dd>{generationModeLabel(shot.generationMode)}</dd></div>
+      <div><dt>连续性分组</dt><dd>{shot.continuityGroupId || "项目主线"}</dd></div>
+      <div><dt>长期参考</dt><dd>{shot.referenceImageAssetIds?.length ? `${shot.referenceImageAssetIds.length} 个已选参考` : "使用项目身份规则"}</dd></div>
+      <div><dt>场景状态</dt><dd>{shot.sceneStateBefore ? "已继承上一镜状态" : "首镜状态"}</dd></div>
+      <div><dt>文字安全区</dt><dd>{textSafeZoneLabel(shot.textSafeZone)}</dd></div>
       <div><dt>服务商</dt><dd>{keyframe?.provider || "待调用"}</dd></div>
       <div><dt>请求编号</dt><dd>{keyframe?.requestId || "尚未生成"}</dd></div>
       <div><dt>本地缓存</dt><dd>{keyframe?.cacheStatus || "未请求"}</dd></div>
       <div><dt>降级状态</dt><dd>{keyframe?.fallbackUsed ? "已使用" : "未使用"}</dd></div>
     </dl>
   );
+}
+
+function generationModeLabel(mode: StoryboardShot["generationMode"]) {
+  if (mode === "continuation") return "连续动作";
+  if (mode === "first-last-frame") return "首尾帧过渡";
+  if (mode === "remotion-motion") return "关键帧动效";
+  return "参考生成";
+}
+
+function textSafeZoneLabel(zone: StoryboardShot["textSafeZone"]) {
+  const labels = { "top-left": "左上", "top-center": "顶部居中", "bottom-left": "左下", none: "无文字层" } as const;
+  return zone ? labels[zone] : "自动规划";
 }

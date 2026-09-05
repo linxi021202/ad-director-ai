@@ -170,6 +170,10 @@ describe("anonymous project ownership and persistence", () => {
     expect(three.project.shots).toHaveLength(3);
     expect(three.project.targetDurationSec).toBe(24);
     expect(three.project.shots.map((shot) => shot.durationSec)).toEqual([8, 8, 8]);
+    expect(three.project.creativeBible).toBeDefined();
+    expect(three.project.visualContinuityBible?.continuityGroups.length).toBeGreaterThan(0);
+    expect(three.project.referencePack).toBeDefined();
+    expect(three.project.shots.every((shot) => Boolean(shot.sceneStateBefore && shot.sceneStateAfter))).toBe(true);
     expect(twelve.project.shotCount).toBe(12);
     expect(twelve.project.shots).toHaveLength(12);
     expect(twelve.project.targetDurationSec).toBe(40);
@@ -270,7 +274,10 @@ describe("anonymous project ownership and persistence", () => {
     expect(restored?.project.status).toBe("ready");
     const raw = await readFile(resolveProjectJsonPath("session-a", record.id), "utf8");
     expect(raw).toContain("低糖冷萃测试");
+    expect(raw).toContain("visualContinuityBible");
+    expect(raw).toContain("referencePack");
     expect(raw).not.toContain("session-a");
+    expect(raw).not.toMatch(/(?:[A-Z]:\\|file:\/\/|blob:)/i);
   });
 
   it("does not expose an old project after the anonymous session changes", async () => {

@@ -6,11 +6,13 @@ import path from "node:path";
 import { z } from "zod";
 
 import { coldBrewDemo } from "@/lib/mock/coldBrewDemo";
+import { ensureProjectContinuity } from "@/lib/continuity/projectContinuity";
 import {
   adStrategySchema,
   aspectRatioSchema,
   assetSchema,
   finalVideoMetadataSchema,
+  creativeBibleSchema,
   generationEventSchema,
   generationProjectSchema,
   generationStatusSchema,
@@ -19,7 +21,9 @@ import {
   platformSchema,
   productBriefSchema,
   projectPromptSchema,
+  referencePackSchema,
   storyboardShotSchema,
+  visualContinuityBibleSchema,
   workflowStepsSchema,
   type GenerationProject,
   type StoryboardShot,
@@ -59,6 +63,9 @@ export const anonymousProjectPatchSchema = z.object({
   shotCount: z.number().int().min(MIN_SHOT_COUNT).max(MAX_SHOT_COUNT).optional(),
   targetDurationSec: z.number().int().positive().max(60).optional(),
   strategy: adStrategySchema.optional(),
+  creativeBible: creativeBibleSchema.optional(),
+  visualContinuityBible: visualContinuityBibleSchema.optional(),
+  referencePack: referencePackSchema.optional(),
   shots: z.array(storyboardShotSchema).min(1).max(12).optional(),
   prompts: z.array(projectPromptSchema).max(12).optional(),
   aspectRatio: aspectRatioSchema.optional(),
@@ -561,6 +568,14 @@ function buildProject(id: string, now: number, input: AnonymousProjectCreateInpu
   });
   const isTemplate = input.templateId === "cold-brew-demo";
   const heroShotId = shots[getDefaultHeroShotArrayIndex(shots.length)]!.id;
+  const continuity = ensureProjectContinuity({
+    ...template,
+    id,
+    brief,
+    shots,
+    createdAt: new Date(now).toISOString(),
+    updatedAt: new Date(now).toISOString()
+  });
   const project = generationProjectSchema.parse({
     ...template,
     id,
@@ -570,7 +585,10 @@ function buildProject(id: string, now: number, input: AnonymousProjectCreateInpu
     briefSavedAt: isTemplate ? now : undefined,
     briefRevision: isTemplate ? 1 : 0,
     brief,
-    shots,
+    shots: continuity.shots,
+    creativeBible: continuity.creativeBible,
+    visualContinuityBible: continuity.visualContinuityBible,
+    referencePack: continuity.referencePack,
     heroShotId,
     aspectRatio: brief.aspectRatio,
     durationSec: totalDurationSec,
@@ -605,8 +623,13 @@ function normalizeProjectTimeline(project: GenerationProject): GenerationProject
   const totalDurationSec = getProjectDurationSec(project);
   const shotCount = project.shotCount ?? project.shots.length;
   const targetDurationSec = clampTargetDuration(shotCount, project.targetDurationSec ?? project.brief.durationSec ?? totalDurationSec);
+  const continuity = ensureProjectContinuity(project);
   return {
     ...project,
+    shots: continuity.shots,
+    creativeBible: continuity.creativeBible,
+    visualContinuityBible: continuity.visualContinuityBible,
+    referencePack: continuity.referencePack,
     shotCount,
     targetDurationSec,
     briefStatus: project.briefStatus ?? (project.status === "draft" ? "draft" : "saved"),
