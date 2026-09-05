@@ -14,7 +14,7 @@ import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ProductImageUploader } from "@/components/ProductImageUploader";
 import { buildOptimizedVideoPrompt, resolveHeroShot } from "@/lib/heroVideo";
-import type { AdStrategy, AspectRatio, GenerationEvent, GenerationProject, Platform, ProductBrief, StoryboardShot } from "@/lib/schemas/project";
+import type { AdStrategy, AspectRatio, GenerationEvent, GenerationProject, ProductBrief, StoryboardShot } from "@/lib/schemas/project";
 import { normalizeProjectDuration } from "@/lib/projectDuration";
 import {
   DEFAULT_SHOT_DURATION_SEC,
@@ -741,8 +741,7 @@ function EditableBriefForm({ brief, shotCount, targetDurationSec, shotCountSavin
         <header className="form-section__header"><h3>广告设置</h3></header>
         <div className="form-section__fields">
           <div className="ad-brief-form-grid">
-            <label><span>平台</span><select value={brief.platform} disabled={disabled} onChange={(event) => onChange({ platform: event.target.value as Platform })}><option value="douyin">抖音</option><option value="xiaohongshu">小红书</option><option value="ecommerce">电商</option></select></label>
-            <label><span>画幅</span><select value={brief.aspectRatio} disabled={disabled} onChange={(event) => onChange({ aspectRatio: event.target.value as AspectRatio })}><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="16:9">16:9</option></select></label>
+            <label className="ad-brief-aspect-field"><span>画幅</span><select value={brief.aspectRatio} disabled={disabled} onChange={(event) => onChange({ aspectRatio: event.target.value as AspectRatio })}><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="16:9">16:9</option></select></label>
             {shotCountLocked ? (
               <div className="shot-count-field">
                 <span>分镜数量</span>

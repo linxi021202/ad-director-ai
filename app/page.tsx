@@ -11,15 +11,12 @@ import { useModelSettingsStatus } from "@/components/model-settings/useModelSett
 import "./home-final.css";
 import "./home-api-settings.css";
 
-const projectPath = "/demo/project";
-
 export default function HomePage() {
   const router = useRouter();
   const [isNavigating, setIsNavigating] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const workspaceTarget = "/generate";
-  const projectTarget = projectPath;
   const { status: modelStatus, setStatus: setModelStatus } = useModelSettingsStatus();
 
   const handleTransition = (target: string) => (event: MouseEvent<HTMLAnchorElement>) => {
@@ -44,7 +41,6 @@ export default function HomePage() {
           <nav className="home-desktop-nav" aria-label="主要导航">
             <Link href="/" className="is-current">首页</Link>
             <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)}>工作台</Link>
-            <Link href={projectTarget} onClick={handleTransition(projectTarget)}>项目</Link>
           </nav>
 
           <div className="home-header-actions">
@@ -78,7 +74,6 @@ export default function HomePage() {
           <nav className="home-mobile-nav" aria-label="移动端导航">
             <Link href="/" onClick={() => setMenuOpen(false)}>首页</Link>
             <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)}>工作台</Link>
-            <Link href={projectTarget} onClick={handleTransition(projectTarget)}>项目</Link>
             <button type="button" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>模型设置</button>
           </nav>
         ) : null}
@@ -93,11 +88,6 @@ export default function HomePage() {
               <span className="home-action-brand" aria-hidden="true"><i /></span>
               <span>开始生成广告</span>
               <span className="home-action-arrow" aria-hidden="true"><i /></span>
-            </Link>
-            <Link href={projectTarget} onClick={handleTransition(projectTarget)} className="home-secondary-action">
-              <span className="home-play-icon" aria-hidden="true" />
-              <span>查看演示项目</span>
-              <span aria-hidden="true" />
             </Link>
           </div>
         </div>

@@ -10,8 +10,9 @@ const cinemaStyles = readFileSync("app/cinema-system.css", "utf8");
 describe("homepage final hero", () => {
   it("routes anonymous visitors directly to public product pages", () => {
     expect(page).toContain('const workspaceTarget = "/generate"');
-    expect(page).toContain('const projectPath = "/demo/project"');
-    expect(page).toContain('href={projectTarget}');
+    expect(page).not.toContain('const projectPath = "/demo/project"');
+    expect(page).not.toContain("查看演示项目");
+    expect(page).not.toContain(">项目</Link>");
     expect(page).not.toContain("/sign-in");
     expect(page).not.toContain("/sign-up");
   });

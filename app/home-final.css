@@ -148,7 +148,7 @@
   width: min(100%, 1120px);
   display: grid;
   justify-items: center;
-  gap: 32px;
+  gap: 38px;
   transition: opacity .55s cubic-bezier(.25, 1, .5, 1), transform .55s cubic-bezier(.25, 1, .5, 1);
 }
 
@@ -166,10 +166,9 @@
 }
 
 .home-actions {
-  display: flex;
+  display: grid;
   align-items: center;
   justify-content: center;
-  gap: 12px;
 }
 
 .home-primary-action,
@@ -267,7 +266,7 @@
   .home-header-inner { min-height: 72px; }
   .home-header-inner { padding-block: 15px; padding-inline: 20px; }
   .home-hero { padding: 184px 20px 72px; align-items: start; }
-  .home-hero-copy { gap: 30px; }
+  .home-hero-copy { gap: 34px; }
   .home-hero h1 { font-size: clamp(28px, 8.35vw, 42px); line-height: 1.18; }
   .home-actions { width: min(100%, 340px); flex-direction: column; }
   .home-primary-action,

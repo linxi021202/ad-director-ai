@@ -33,6 +33,12 @@ describe("generate workflow shot count interaction", () => {
     expect(workflow).toContain("可设置总时长");
   });
 
+  it("keeps platform implicit and gives aspect ratio a full-width row", () => {
+    expect(workflow).not.toContain("<span>平台</span>");
+    expect(workflow).toContain('className="ad-brief-aspect-field"');
+    expect(workspaceCss).toContain(".brief-panel-v3 .ad-brief-aspect-field { grid-column: 1 / -1; }");
+  });
+
   it("keeps the number between the stepper buttons readable", () => {
     expect(workspaceCss).toContain('.shot-count-stepper input[type="number"]');
     expect(workspaceCss).toContain("-webkit-text-fill-color: #f8fafc");

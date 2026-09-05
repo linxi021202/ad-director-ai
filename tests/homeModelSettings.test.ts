@@ -17,6 +17,7 @@ describe("home hero and model settings", () => {
     expect(styles).toContain("min-width: 168px");
     expect(styles).toContain("min-height: 44px");
     expect(styles).toContain(".home-primary-action::before");
+    expect(page).not.toContain("home-secondary-action");
   });
 
   it("places model settings in the header and never persists keys in browser storage", () => {

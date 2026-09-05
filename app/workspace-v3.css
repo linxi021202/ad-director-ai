@@ -1663,6 +1663,7 @@
   gap: 12px;
 }
 .brief-panel-v3 .ad-brief-form-grid > * { min-width: 0; width: 100%; }
+.brief-panel-v3 .ad-brief-aspect-field { grid-column: 1 / -1; }
 .brief-save-footer { display: grid; gap: 8px; }
 .brief-save-footer > small { color: var(--ws-faint); font-size: 11px; line-height: 17px; }
 .brief-save-footer .button-primary-v3 { width: 100%; min-height: 44px; }
