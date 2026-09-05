@@ -6,7 +6,7 @@ const css = readFileSync("app/workspace-v3.css", "utf8");
 
 describe("generate right status rail", () => {
   it("uses short truthful model statuses", () => {
-    expect(workflow).toContain('detail: "手动导入"');
+    expect(workflow).toContain('status?.happyHorse.apiAvailable ? "已启用" : "未就绪"');
     expect(workflow).toContain('name: "Remotion"');
     expect(workflow).not.toContain("HappyHorse 当前未配置");
   });

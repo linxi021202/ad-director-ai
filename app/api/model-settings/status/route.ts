@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { getAIConfig } from "@/lib/config/ai";
 import { getProviderSecretStatus } from "@/lib/secrets/resolver";
 import { getAnonymousApiSession } from "@/lib/session/api";
 
@@ -12,13 +13,15 @@ export async function GET() {
     getProviderSecretStatus("deepseek", session.id),
     getProviderSecretStatus("qwen-image", session.id)
   ]);
+  const happyHorseApiAvailable = getAIConfig({ allowSessionSecrets: true }).realVideoEnabled
+    && qwenImage.configured;
 
   return NextResponse.json({
     deepseek,
     qwenImage,
     happyHorse: {
-      capability: "manual-import" as const,
-      apiAvailable: false
+      capability: happyHorseApiAvailable ? "api-available" as const : "not-configured" as const,
+      apiAvailable: happyHorseApiAvailable
     },
     remotion: {
       source: "local" as const

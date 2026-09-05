@@ -18,7 +18,7 @@ type SecretStatus = {
 export type ModelSettingsStatus = {
   deepseek: SecretStatus;
   qwenImage: SecretStatus;
-  happyHorse: { capability: "manual-import"; apiAvailable: false };
+  happyHorse: { capability: "api-available" | "not-configured"; apiAvailable: boolean };
   remotion: { source: "local" };
 };
 
@@ -236,8 +236,8 @@ export function ModelSettingsSheet({
           })}
 
           <section className="model-provider-card model-provider-local">
-            <div className="model-provider-title"><div><h3>HappyHorse</h3><p>完整广告视频导入</p></div><span className="model-status-dot is-configured" /></div>
-            <div className="model-local-status">手动导入模式 · 无需 API Key</div>
+            <div className="model-provider-title"><div><h3>HappyHorse</h3><p>真实产品参考图生成视频</p></div><span className={`model-status-dot${status?.happyHorse.apiAvailable ? " is-configured" : ""}`} /></div>
+            <div className="model-local-status">{status?.happyHorse.apiAvailable ? "已启用 · 共享百炼 API Key" : "共享百炼 API Key · 当前未就绪"}</div>
           </section>
 
           <section className="model-provider-card model-provider-local">

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ModelSettingsSheet, type ProviderId } from "@/components/ModelSettingsSheet";
+import { ModelSettingsSheet, type ModelSettingsStatus, type ProviderId } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
 import { AIModeBadge, type AITraceStatus } from "@/components/AIModeBadge";
@@ -127,6 +127,14 @@ function formatQwenImageTrace(data: GenerateImagesData) {
   return `Qwen-Image｜${data.images.length} 张请求｜${failedImages.length} 张回退占位图｜${firstDiagnostic.title}｜${firstDiagnostic.hint}`;
 }
 
+function selectedProvidersReady(selection: CallSelection, status: ModelSettingsStatus | null) {
+  if (!status) return false;
+  if (selection.deepseek && !status.deepseek.configured) return false;
+  if (selection.qwenImage && !status.qwenImage.configured) return false;
+  if (selection.happyHorse && !status.happyHorse.apiAvailable) return false;
+  return selection.deepseek || selection.qwenImage || selection.happyHorse;
+}
+
 export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateProject }: GenerateWorkflowProps) {
   const router = useRouter();
   const initialProject = normalizeProjectDuration(project);
@@ -149,7 +157,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [requestedShotCount, setRequestedShotCount] = useState(() => initialShotCount);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepState>(() => workflowFromProject(initialProject));
   const [mode, setMode] = useState<GenerationMode>("template");
-  const [selection, setSelection] = useState<CallSelection>({ deepseek: true, qwenImage: true, happyHorse: false });
+  const [selection, setSelection] = useState<CallSelection>({ deepseek: true, qwenImage: true, happyHorse: true });
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [traceLabel, setTraceLabel] = useState(() => initialTraceLabel(initialProject.generationEvents));
@@ -346,6 +354,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     if (mode !== "custom") return null;
     if (selection.deepseek && !modelStatus?.deepseek.configured) return { provider: "deepseek" as const, guidance: "生成策略与分镜前需要配置 DeepSeek。" };
     if (selection.qwenImage && !modelStatus?.qwenImage.configured) return { provider: "qwen-image" as const, guidance: "生成关键帧前需要配置 Qwen-Image。" };
+    if (selection.happyHorse && !modelStatus?.happyHorse.apiAvailable) return { provider: "qwen-image" as const, guidance: "调用 HappyHorse 前需要配置百炼 API Key，并在服务端启用真实视频生成。" };
 
     return null;
   }
@@ -588,7 +597,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
                 <span className="workspace-kicker">生成链路</span>
                 <div className="generation-title-row">
                   <h1>{generated ? "生成完成" : isGenerating ? "生成中" : "准备生成"}</h1>
-                  <span className={mode === "template" || (modelStatus?.deepseek.configured && (!selection.qwenImage || modelStatus.qwenImage.configured)) ? "is-success" : "is-warning"}><i />{mode === "template" ? "本地模板已就绪" : modelStatus?.deepseek.configured && (!selection.qwenImage || modelStatus.qwenImage.configured) ? "所选模型已配置" : "需补充模型配置"}</span>
+                  <span className={mode === "template" || selectedProvidersReady(selection, modelStatus) ? "is-success" : "is-warning"}><i />{mode === "template" ? "本地模板已就绪" : selectedProvidersReady(selection, modelStatus) ? "所选模型已配置" : "需补充模型配置"}</span>
                 </div>
               </div>
               <div className="generation-stage-v3__actions">
@@ -612,7 +621,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <div className="generation-call-picker-v3">
                 <CallToggle active={selection.deepseek} title="DeepSeek 文本" desc="策略、分镜与提示词" onClick={() => toggleSelection("deepseek")} disabled={isGenerating} />
                 <CallToggle active={selection.qwenImage} title="Qwen-Image 关键帧" desc={`生成${briefDraft.shotCount}张关键帧`} onClick={() => toggleSelection("qwenImage")} disabled={isGenerating} />
-                <CallToggle active={false} badge="项目页操作" title="完整广告视频导入" desc="在项目页上传已完成的视频" onClick={() => undefined} disabled />
+                <CallToggle active={selection.happyHorse} title="HappyHorse 视频" desc="参考真实产品图生成主镜头" onClick={() => toggleSelection("happyHorse")} disabled={isGenerating} />
               </div>
             ) : null}
 
@@ -630,7 +639,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <div className="trace-flow-v3__head"><span>模型 Trace</span><small>{traceLabel}</small></div>
               <TraceNode name="DeepSeek" task="策略与提示词" active={selection.deepseek || mode === "template"} tone="blue" />
               <TraceNode name="Qwen-Image" task="关键帧生成" active={selection.qwenImage} tone="violet" />
-              <TraceNode name="HappyHorse" task="完整视频导入" active={selection.happyHorse} tone="yellow" />
+              <TraceNode name="HappyHorse" task="主镜头视频生成" active={selection.happyHorse} tone="yellow" />
               <TraceNode name="Remotion" task="成片合成" active={generated} tone="green" last />
               <details className="trace-footer-v3"><summary>查看执行日志</summary>{callTrace.length ? callTrace.map((item, index) => <TraceLogLine key={`${index}-${item}`} item={item} />) : <p>生成后可查看完整调用记录。</p>}</details>
             </section>
@@ -664,7 +673,7 @@ function ModelConfigurationCard({ status }: { status: import("@/components/Model
   const rows = [
     { name: "DeepSeek", detail: status?.deepseek.configured ? "已配置" : "未配置", ready: Boolean(status?.deepseek.configured) },
     { name: "Qwen-Image", detail: status?.qwenImage.configured ? "已配置" : "未配置", ready: Boolean(status?.qwenImage.configured) },
-    { name: "HappyHorse", detail: "手动导入", ready: true },
+    { name: "HappyHorse", detail: status?.happyHorse.apiAvailable ? "已启用" : "未就绪", ready: Boolean(status?.happyHorse.apiAvailable) },
     { name: "Remotion", detail: "本地未启用", ready: false, title: "Remotion 本地合成功能尚未启用。" }
   ];
   return (

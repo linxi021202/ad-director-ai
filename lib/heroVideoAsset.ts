@@ -7,7 +7,8 @@ import {
   createPrivateAsset,
   deletePrivateAsset,
   getPrivateAsset,
-  getProjectAssetUrl
+  getProjectAssetUrl,
+  markPrivateAssetsLifecycle
 } from "./assets/assetStore";
 import { hasMp4Signature } from "./assets/media";
 import { MAX_HERO_VIDEO_DURATION_SEC, MAX_HERO_VIDEO_SIZE, MIN_HERO_VIDEO_DURATION_SEC } from "./heroVideo";
@@ -194,7 +195,7 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
       throw error;
     }
     if (previousAssetId && previousAssetId !== stored.id) {
-      await deletePrivateAsset(input.sessionId, input.projectId, previousAssetId).catch(() => undefined);
+      await markPrivateAssetsLifecycle(input.sessionId, input.projectId, [previousAssetId], "orphaned").catch(() => undefined);
     }
     return { success: true, asset };
   } catch {
@@ -213,7 +214,7 @@ export async function deleteHeroVideoAsset(sessionId: string, projectId: string)
       render: "pending"
     }
   });
-  if (assetId) await deletePrivateAsset(sessionId, projectId, assetId);
+  if (assetId) await markPrivateAssetsLifecycle(sessionId, projectId, [assetId], "orphaned");
 }
 
 export async function heroVideoFileExists(sessionId: string, asset: HeroVideoAsset | null) {

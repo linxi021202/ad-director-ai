@@ -61,12 +61,13 @@ export async function resolveSessionProviderSecret(input: {
 
 export async function resolveProviderSecret(provider: SecretProvider, sessionId: string): Promise<ResolvedSecret> {
   if (provider === "happyhorse") {
-    return {
-      value: null,
-      source: "none",
-      code: "PROVIDER_NOT_CONFIGURED",
-      message: "HappyHorse 当前使用手动导入模式。"
-    };
+    const resolved = await resolveSessionProviderSecret({ sessionId, provider: "qwen-image" });
+    return resolved.value
+      ? resolved
+      : {
+          ...resolved,
+          message: "请先配置百炼 DashScope API Key；Qwen-Image 与 HappyHorse 共用该密钥。"
+        };
   }
   return resolveSessionProviderSecret({ sessionId, provider });
 }

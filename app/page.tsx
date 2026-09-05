@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { MouseEvent } from "react";
+import type { CSSProperties, MouseEvent } from "react";
 import { useState } from "react";
 
 import { ModelSettingsSheet } from "@/components/ModelSettingsSheet";
@@ -10,6 +10,13 @@ import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsT
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
 import "./home-final.css";
 import "./home-api-settings.css";
+
+const transitionParticles = Array.from({ length: 30 }, (_, index) => ({
+  angle: `${index * 12 + (index % 3) * 3}deg`,
+  distance: `${150 + (index % 7) * 42}px`,
+  delay: `${(index % 6) * 24}ms`,
+  size: `${2 + (index % 3)}px`
+}));
 
 export default function HomePage() {
   const router = useRouter();
@@ -24,7 +31,8 @@ export default function HomePage() {
     if (isNavigating) return;
     setMenuOpen(false);
     setIsNavigating(true);
-    window.setTimeout(() => router.push(target), 800);
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.setTimeout(() => router.push(target), reducedMotion ? 180 : 820);
   };
 
   const exitClass = isNavigating ? "home-is-exiting" : "";
@@ -37,11 +45,6 @@ export default function HomePage() {
             <span className="home-brand-mark" aria-hidden="true"><i /></span>
             <span>AdDirector AI</span>
           </Link>
-
-          <nav className="home-desktop-nav" aria-label="主要导航">
-            <Link href="/" className="is-current">首页</Link>
-            <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)}>工作台</Link>
-          </nav>
 
           <div className="home-header-actions">
             <ModelSettingsTrigger
@@ -92,6 +95,20 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+      <div className={`home-route-transition${isNavigating ? " is-active" : ""}`} aria-hidden="true">
+        <div className="home-route-transition__core" />
+        {transitionParticles.map((particle, index) => (
+          <i
+            key={index}
+            style={{
+              "--particle-angle": particle.angle,
+              "--particle-distance": particle.distance,
+              "--particle-delay": particle.delay,
+              "--particle-size": particle.size
+            } as CSSProperties}
+          />
+        ))}
+      </div>
       <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} />
     </main>
   );

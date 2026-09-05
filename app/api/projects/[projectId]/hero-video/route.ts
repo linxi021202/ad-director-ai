@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 
+import { getAIConfig } from "@/lib/config/ai";
 import {
   deleteHeroVideoAsset,
   heroVideoFileExists,
@@ -19,6 +20,7 @@ import {
 } from "@/lib/projects/generationEvents";
 import { getHappyHorseCapability } from "@/lib/providers/happyHorseCapability";
 import { aspectRatioSchema } from "@/lib/schemas/project";
+import { resolveProviderSecret } from "@/lib/secrets/resolver";
 import { getAnonymousApiSession } from "@/lib/session/api";
 
 type RouteContext = { params: Promise<{ projectId: string }> };
@@ -32,6 +34,7 @@ export async function GET(_request: Request, context: RouteContext) {
 
   const state = await readHeroVideoProjectState(session.id, authorization.projectId);
   const exists = await heroVideoFileExists(session.id, state.heroVideoAsset);
+  const capability = await getSessionHappyHorseCapability(session.id);
   return NextResponse.json({
     success: true,
     data: {
@@ -39,7 +42,7 @@ export async function GET(_request: Request, context: RouteContext) {
       asset: exists ? sanitizeHeroVideoAssetForClient(state.heroVideoAsset) : null,
       publicUrl: exists ? state.heroVideoAsset?.publicUrl ?? null : null,
       shotId: state.heroShotId,
-      capability: getHappyHorseCapability(true).capability
+      capability
     },
     trace: null,
     fallbackUsed: false,
@@ -133,7 +136,18 @@ export async function DELETE(_request: Request, context: RouteContext) {
     status: "blocked",
     message: "广告视频已移除，等待重新生成或手动导入。"
   });
-  return response(true, { deleted: true, capability: getHappyHorseCapability(true).capability }, null, 200);
+  return response(
+    true,
+    { deleted: true, capability: await getSessionHappyHorseCapability(session.id) },
+    null,
+    200
+  );
+}
+
+async function getSessionHappyHorseCapability(sessionId: string) {
+  const config = getAIConfig({ allowSessionSecrets: true });
+  const secret = await resolveProviderSecret("happyhorse", sessionId);
+  return getHappyHorseCapability(true, config.realVideoEnabled && Boolean(secret.value)).capability;
 }
 
 function response(success: boolean, data: unknown, error: string | null, status: number) {

@@ -116,9 +116,9 @@ export function selectProviderModel(input: ProviderRouterInput): ProviderModelSe
         provider: "happyhorse",
         model: process.env.HAPPYHORSE_MODEL || "happyhorse-1.0-r2v",
         backupModel: "qwen-image + remotion-motion",
-        reason: "HappyHorse当前仅提供手动导入能力，不调用未经文档确认的远程API。",
+        reason: "HappyHorse 通过百炼真实生成主镜头视频，并与 Qwen-Image 共用当前会话的 DashScope API Key。",
         costEstimate: 12,
-        latencyEstimate: "manual-import",
+        latencyEstimate: "provider-async",
         fallbackMode: "If HappyHorse video is unavailable, use Qwen-Image keyframes plus Remotion image motion."
       };
     }

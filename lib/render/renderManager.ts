@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { open, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { deletePrivateAsset, getProjectAssetUrl, importPrivateAssetFile } from "../assets/assetStore";
+import { deletePrivateAsset, getProjectAssetUrl, importPrivateAssetFile, markPrivateAssetsLifecycle } from "../assets/assetStore";
 import { hasMp4Signature } from "../assets/media";
 import { revokeRenderAssetToken } from "../assets/renderAccess";
 import { ensureAutoNarration } from "../audio/cosyVoiceClient";
@@ -533,7 +533,7 @@ async function persistFinalVideo(
   }
 
   if (previousAssetId && previousAssetId !== asset.id) {
-    await deletePrivateAsset(sessionId, projectId, previousAssetId).catch(() => undefined);
+    await markPrivateAssetsLifecycle(sessionId, projectId, [previousAssetId], "orphaned").catch(() => undefined);
   }
   return { assetId: asset.id, url, sizeBytes: asset.sizeBytes };
 }

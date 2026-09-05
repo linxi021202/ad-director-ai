@@ -19,12 +19,16 @@ describe("workspace reliability fixes", () => {
     expect(generateWorkflow).toContain("<ResultBoard project={previewProject}");
   });
 
-  it("describes manual uploads as complete advertising videos", () => {
-    expect(generateWorkflow).toContain('title="完整广告视频导入"');
-    expect(generateWorkflow).toContain('badge="项目页操作"');
+  it("keeps HappyHorse selectable and moves complete-video upload into the project library", () => {
+    expect(generateWorkflow).toContain('title="HappyHorse 视频"');
+    expect(generateWorkflow).toContain('toggleSelection("happyHorse")');
+    expect(generateWorkflow).not.toContain('badge="项目页操作"');
     expect(generateWorkflow).not.toContain("项目页上传主镜头视频");
     expect(projectDetail).toContain("不限制原视频时长和比例");
     expect(projectDetail).toContain("导入完整广告视频");
+    expect(projectDetail).toContain('id="video-library-title"');
+    expect(projectDetail).not.toContain("使用本地演示视频");
+    expect(projectDetail).not.toContain("旁白音轨");
   });
 
   it("removes platform metadata and centers the project workflow", () => {

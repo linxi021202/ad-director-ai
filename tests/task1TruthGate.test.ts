@@ -12,11 +12,10 @@ import { NextRequest } from "next/server";
 import { POST as validateProviderPOST } from "../app/api/model-settings/[provider]/validate/route";
 import { GET as modelStatusGET } from "../app/api/model-settings/status/route";
 import { redactProviderError, sanitizeProviderError } from "../lib/api/provider-error";
-import { createHappyHorseValidationResponse } from "../lib/api/happyhorse-validation";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
 import { getHappyHorseCapability } from "../lib/providers/happyHorseCapability";
-import { resolveSessionProviderSecret } from "../lib/secrets/resolver";
+import { resolveProviderApiKey, resolveSessionProviderSecret } from "../lib/secrets/resolver";
 import { secretStore } from "../lib/secrets/store";
 
 const originalEnv = { ...process.env };
@@ -98,21 +97,18 @@ describe("anonymous truth and capability gate", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("keeps HappyHorse manual import as the truthful capability", async () => {
-    expect(getHappyHorseCapability(true)).toMatchObject({
-      capability: "manual-import",
-      apiAvailable: false,
+  it("reuses the session DashScope key for HappyHorse without adding another key provider", async () => {
+    await secretStore.set("truth-session", "qwen-image", "shared-dashscope-session-key");
+    expect(await resolveProviderApiKey("happyhorse", "truth-session")).toBe("shared-dashscope-session-key");
+    expect(getHappyHorseCapability(true, true)).toMatchObject({
+      capability: "api-available",
+      apiAvailable: true,
       manualImportAvailable: true
-    });
-    const response = await createHappyHorseValidationResponse(true);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      valid: true,
-      capability: "manual-import"
     });
   });
 
   it("publishes only minimal anonymous model status fields", async () => {
+    process.env.ENABLE_REAL_VIDEO = "false";
     await secretStore.set("truth-session", "deepseek", "session-secret-last-1234");
     const response = await modelStatusGET();
     const body = await response.json();
@@ -125,12 +121,21 @@ describe("anonymous truth and capability gate", () => {
     });
     expect(body.qwenImage).toEqual({ configured: false, source: "none" });
     expect(body.happyHorse).toEqual({
-      capability: "manual-import",
+      capability: "not-configured",
       apiAvailable: false
     });
     expect(body.remotion).toEqual({ source: "local" });
     expect(serialized).not.toContain("session-secret");
     expect(serialized).not.toContain("updatedAt");
+  });
+
+  it("publishes HappyHorse availability when real video and the shared DashScope key are ready", async () => {
+    process.env.ENABLE_REAL_VIDEO = "true";
+    await secretStore.set("truth-session", "qwen-image", "shared-dashscope-session-key");
+    const response = await modelStatusGET();
+    const body = await response.json();
+
+    expect(body.happyHorse).toEqual({ capability: "api-available", apiAvailable: true });
   });
 
   it("redacts tokens and returns provider-safe public messages", () => {

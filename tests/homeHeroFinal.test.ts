@@ -21,6 +21,8 @@ describe("homepage final hero", () => {
     expect(page).toContain("ModelSettingsTrigger");
     expect(page).toContain("模型设置");
     expect(page).toContain("打开工作台");
+    expect(page.match(/打开工作台/g)).toHaveLength(1);
+    expect(page).not.toContain('className="home-desktop-nav"');
   });
 
   it("includes responsive navigation and reduced-motion support", () => {
@@ -28,6 +30,9 @@ describe("homepage final hero", () => {
     expect(styles).toContain("@media (max-width: 767px)");
     expect(styles).toContain("prefers-reduced-motion: reduce");
     expect(styles).toContain("min-height: 100dvh");
+    expect(page).toContain("home-route-transition");
+    expect(page).toContain("transitionParticles.map");
+    expect(styles).toContain("home-particle-collapse");
   });
 
   it("keeps the cover copy to one short sentence", () => {
@@ -50,7 +55,7 @@ describe("homepage final hero", () => {
 
   it("keeps the short cover line unbroken without affecting product pages", () => {
     expect(styles).toContain("white-space: nowrap");
-    expect(styles).toContain("clamp(28px, 8.35vw, 42px)");
+    expect(styles).toContain("clamp(22px, 7vw, 34px)");
     expect(cinemaStyles).toContain(".site-video-backdrop.is-home");
   });
 });
