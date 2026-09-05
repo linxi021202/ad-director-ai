@@ -74,7 +74,13 @@ type HeroVideoAssetResponse = {
 
 type GenerateImagesResponse = {
   success: boolean;
-  data?: { images: Array<Omit<KeyframeResult, "status">> } | null;
+  data?: {
+    status: "running" | "completed";
+    eventId: string;
+    generatedShots?: number;
+    requestedShots?: number;
+    images: Array<Omit<KeyframeResult, "status">>;
+  } | null;
   error?: string | null;
 };
 
@@ -291,6 +297,48 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     return () => {
       cancelled = true;
     };
+  }, [project.id]);
+  useEffect(() => {
+    const event = [...(project.generationEvents ?? [])].reverse().find((item) =>
+      item.provider === "qwen-image" &&
+      item.action === "生成关键帧批次" &&
+      ["queued", "running"].includes(item.status)
+    );
+    if (!event) return;
+
+    let cancelled = false;
+    const shotIds = new Set((project.generationEvents ?? [])
+      .filter((item) => item.runId === event.runId && item.shotId)
+      .map((item) => item.shotId!));
+    const shots = project.shots.filter((shot) => shotIds.has(shot.id));
+    setActiveBatch(shots.length === 1 ? "hero-only" : "all-shots");
+    markShotsLoading(shots);
+    void pollProjectQwenImages(project.id, event.id, async () => {
+      if (!cancelled) await fetchProjectSnapshot().catch(() => undefined);
+    }).then(async (completed) => {
+      if (cancelled) return;
+      setKeyframes((current) => {
+        const next = { ...current };
+        completed.images.forEach((image) => {
+          next[image.shotId] = { ...image, status: image.fallbackUsed ? "failed" : "ready" };
+        });
+        return next;
+      });
+      await fetchProjectSnapshot().catch(() => undefined);
+    }).catch((resumeError) => {
+      if (cancelled) return;
+      const message = resumeError instanceof Error ? resumeError.message : "关键帧任务恢复失败。";
+      setImageBatchError(message);
+      markShotsFailed(shots, message);
+    }).finally(() => {
+      if (!cancelled) setActiveBatch(null);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Resume only the task that was present in the server-rendered project snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
   useEffect(() => {
     let cancelled = false;
@@ -515,16 +563,23 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           productImages: displayProject.brief.productImages ?? []
         })
       });
-      const payload = (await response.json()) as GenerateImagesResponse;
+      const payload = await readClientApiResponse<NonNullable<GenerateImagesResponse["data"]>>(response);
       if (!response.ok || !payload.success || !payload.data) throw new Error(payload.error || "关键帧生成失败。");
+
+      const completed = payload.data.status === "running"
+        ? await pollProjectQwenImages(displayProject.id, payload.data.eventId, async () => {
+            await fetchProjectSnapshot().catch(() => undefined);
+          })
+        : payload.data;
 
       setKeyframes((current) => {
         const next = { ...current };
-        payload.data?.images.forEach((image) => {
+        completed.images.forEach((image) => {
           next[image.shotId] = { ...image, status: image.fallbackUsed ? "failed" : "ready" };
         });
         return next;
       });
+      await fetchProjectSnapshot().catch(() => undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : "关键帧生成失败。";
       setImageBatchError(message);
@@ -1138,6 +1193,46 @@ async function pollProjectWanVideoUntilComplete(
   }
 
   throw new Error("Wan 2.7 已等待 10 分钟仍未完成。任务可能仍在百炼处理中，请稍后刷新项目继续查看。");
+}
+
+async function pollProjectQwenImages(
+  projectId: string,
+  eventId: string,
+  onProgress: () => void | Promise<void>
+): Promise<NonNullable<GenerateImagesResponse["data"]>> {
+  const intervalMs = 3_000;
+  const maxAttempts = 300;
+  let consecutiveTransportErrors = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    let response: Response;
+    try {
+      response = await fetch(
+        `/api/generate-images?projectId=${encodeURIComponent(projectId)}&eventId=${encodeURIComponent(eventId)}`,
+        { cache: "no-store" }
+      );
+    } catch (error) {
+      consecutiveTransportErrors += 1;
+      if (consecutiveTransportErrors < 12) continue;
+      throw error;
+    }
+
+    const result = await readClientApiResponse<NonNullable<GenerateImagesResponse["data"]>>(response);
+    await onProgress();
+    if (result.success && result.data?.status === "completed") return result.data;
+    if (result.success && result.data?.status === "running") {
+      consecutiveTransportErrors = 0;
+      continue;
+    }
+    if ([502, 503, 504].includes(response.status) && consecutiveTransportErrors < 12) {
+      consecutiveTransportErrors += 1;
+      continue;
+    }
+    throw new Error(result.error || "Qwen-Image 关键帧任务状态查询失败。");
+  }
+
+  throw new Error("Qwen-Image 已等待 15 分钟仍未完成。请刷新项目查看保留的任务日志。");
 }
 function InfoCard({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;

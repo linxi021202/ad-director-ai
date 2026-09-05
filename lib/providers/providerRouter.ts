@@ -343,13 +343,22 @@ export async function generateShotImage(
 export async function generateBatchShotImages(
   projectId: string,
   shots: StoryboardShot[],
-  options: ImageGenerationOptions = { aspectRatio: "9:16", hasChineseText: true }
+  options: ImageGenerationOptions = { aspectRatio: "9:16", hasChineseText: true },
+  onResult?: (result: ShotImageGenerationResult) => void | Promise<void>
 ): Promise<ShotImageGenerationResult[]> {
-  const results: ShotImageGenerationResult[] = [];
+  const results = new Array<ShotImageGenerationResult>(shots.length);
+  let cursor = 0;
+  const workerCount = shouldUseRealImage() ? Math.min(2, shots.length) : shots.length;
 
-  for (const shot of shots) {
-    results.push(await generateShotImage(projectId, shot, options));
-  }
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (cursor < shots.length) {
+      const index = cursor;
+      cursor += 1;
+      const result = await generateShotImage(projectId, shots[index]!, options);
+      results[index] = result;
+      await onResult?.(result);
+    }
+  }));
 
   return results;
 }

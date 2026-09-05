@@ -9,13 +9,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as generateAssetsPOST } from "../app/api/generate-assets/route";
-import { POST as generateImagesPOST } from "../app/api/generate-images/route";
+import { GET as generateImagesGET, POST as generateImagesPOST } from "../app/api/generate-images/route";
 import { POST as generateStoryboardPOST } from "../app/api/generate-storyboard/route";
 import { POST as generateStrategyPOST } from "../app/api/generate-strategy/route";
 import { POST as renderVideoPOST } from "../app/api/render-video/route";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
-import { createAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
+import {
+  createAnonymousProject,
+  requireOwnedAnonymousProject,
+  resetAnonymousProjectQueuesForTests
+} from "../lib/projects/anonymousProjectStore";
 
 const originalEnv = { ...process.env };
 let storageRoot = "";
@@ -40,6 +44,23 @@ function jsonRequest(body: unknown) {
 
 async function responseJson(response: Response) {
   return (await response.json()) as Record<string, unknown>;
+}
+
+async function completedImageResponse(response: Response) {
+  let body = await responseJson(response);
+  const initial = body.data as { status?: string; eventId?: string } | undefined;
+  if (initial?.status !== "running" || !initial.eventId) return body;
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const statusResponse = await generateImagesGET(new Request(
+      `http://localhost/api/generate-images?projectId=${encodeURIComponent(testProjectId)}&eventId=${encodeURIComponent(initial.eventId!)}`
+    ));
+    body = await responseJson(statusResponse);
+    if ((body.data as { status?: string } | undefined)?.status === "completed" || body.success === false) return body;
+  }
+
+  throw new Error("Timed out waiting for the image batch test job.");
 }
 
 describe("second-stage API routes", () => {
@@ -194,24 +215,23 @@ describe("second-stage API routes", () => {
     process.env.DASHSCOPE_API_KEY = "sk-dashscope-secret-test-key";
     process.env.MAX_IMAGES_PER_RUN = "2";
 
-    let callCount = 0;
+    let submissionCount = 0;
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation(async () => {
-        callCount += 1;
-
-        if (callCount === 1) {
-          return new Response(
-            JSON.stringify({ request_id: "req-shot-1", output: { results: [{ url: "https://example.com/shot-1.png" }] } }),
-            { status: 200, headers: { "Content-Type": "application/json" } }
-          );
-        }
-
-        if (callCount === 2) {
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url === "https://example.com/shot-1.png") {
           return new Response(VALID_PNG_BYTES, {
             status: 200,
             headers: { "Content-Type": "image/png" }
           });
+        }
+
+        submissionCount += 1;
+        if (submissionCount === 1) {
+          return new Response(
+            JSON.stringify({ request_id: "req-shot-1", output: { results: [{ url: "https://example.com/shot-1.png" }] } }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
         }
 
         return new Response(JSON.stringify({ code: "ImageFailed", message: "provider failed" }), {
@@ -224,7 +244,8 @@ describe("second-stage API routes", () => {
     const response = await generateImagesPOST(
       jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 2), mode: "all-shots" })
     );
-    const body = await responseJson(response);
+    expect(response.status).toBe(202);
+    const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ fallbackUsed: boolean; localUrl?: string }>; failedShots: unknown[] };
 
     expect(body.success).toBe(true);
@@ -236,6 +257,10 @@ describe("second-stage API routes", () => {
     expect(data.images[1].fallbackUsed).toBe(true);
     expect(data.failedShots).toHaveLength(1);
     expect(JSON.stringify(body)).not.toContain("sk-dashscope-secret-test-key");
+    const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
+    const imageEvents = saved.project.generationEvents?.filter((event) => event.provider === "qwen-image") ?? [];
+    expect(imageEvents.some((event) => event.status === "running")).toBe(false);
+    expect(imageEvents.some((event) => event.status === "fallback" && event.message.includes("provider failed"))).toBe(true);
   });
 
 

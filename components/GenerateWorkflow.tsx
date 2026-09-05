@@ -75,6 +75,10 @@ type WanVideoData = {
 };
 
 type GenerateImagesData = {
+  status: "running" | "completed";
+  eventId: string;
+  generatedShots?: number;
+  requestedShots?: number;
   images: Array<{
     shotId: string;
     imageUrl?: string;
@@ -431,6 +435,51 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     void refreshServerEvents(activeProject.id);
   }, [activeProject.id, refreshServerEvents]);
 
+  useEffect(() => {
+    const event = [...(project.generationEvents ?? [])].reverse().find((item) =>
+      item.provider === "qwen-image" &&
+      item.action === "生成关键帧批次" &&
+      ["queued", "running"].includes(item.status)
+    );
+    if (!event) return;
+
+    let cancelled = false;
+    setIsGenerating(true);
+    updateWorkflowState({ keyframes: "running" });
+    setTraceLabel("正在恢复 Qwen-Image 关键帧任务");
+    void pollQwenImagesUntilComplete(project.id, event.id, (elapsedSeconds, completed, total) => {
+      if (cancelled) return;
+      setTraceLabel(`Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
+      void refreshServerEvents(project.id);
+    }).then(async (completed) => {
+      if (cancelled) return;
+      setLiveKeyframes(completed.images);
+      updateWorkflowState({ keyframes: completed.images.some((image) => image.fallbackUsed) ? "fallback" : "completed" });
+      const snapshot = await fetchServerProject(project.id);
+      if (!cancelled) {
+        trackServerVersion(snapshot.version);
+        setActiveProject(normalizeProjectDuration(snapshot.project));
+        setGenerated(true);
+      }
+    }).catch((resumeError) => {
+      if (!cancelled) {
+        setError(resumeError instanceof Error ? resumeError.message : "关键帧任务恢复失败。");
+        updateWorkflowState({ keyframes: "failed" });
+      }
+    }).finally(() => {
+      if (!cancelled) {
+        setIsGenerating(false);
+        void refreshServerEvents(project.id);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Resume only the task that was present in the server-rendered project snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
   async function handleGenerate() {
     const requestedShotCount = getEffectiveShotCount(activeProject);
     const targetDurationSec = activeProject.targetDurationSec ?? activeProject.brief.durationSec;
@@ -540,10 +589,20 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
           aspectRatio: workingProject.brief.aspectRatio,
           productImages: workingProject.brief.productImages ?? []
         });
-        if (!imageResponse.success || !imageResponse.data?.images) {
+        if (!imageResponse.success || !imageResponse.data) {
           throw new Error(imageResponse.error || "Qwen-Image 关键帧生成失败，请检查百炼配置。");
         }
-        generatedImages = imageResponse.data.images;
+        const completedImages = imageResponse.data.status === "running"
+          ? await pollQwenImagesUntilComplete(
+              workingProject.id,
+              imageResponse.data.eventId,
+              (elapsedSeconds, completed, total) => {
+                setTraceLabel(`Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
+                void refreshServerEvents(workingProject.id);
+              }
+            )
+          : imageResponse.data;
+        generatedImages = completedImages.images;
         patchWorkflow({ keyframes: generatedImages.some((image) => image.fallbackUsed) ? "fallback" : "completed", heroShot: selection.wan ? "running" : "pending" });
         setLiveKeyframes(generatedImages);
       }
@@ -826,6 +885,48 @@ async function pollWanVideoUntilComplete(
   }
 
   throw new Error("Wan 2.7 已等待 10 分钟仍未完成。任务可能仍在百炼处理中，请稍后重试。");
+}
+
+async function pollQwenImagesUntilComplete(
+  projectId: string,
+  eventId: string,
+  onProgress: (elapsedSeconds: number, completed: number, total: number) => void
+): Promise<GenerateImagesData> {
+  const intervalMs = 3_000;
+  const maxAttempts = 300;
+  let consecutiveTransportErrors = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await delay(intervalMs);
+    let response: Response;
+    try {
+      response = await fetch(
+        `/api/generate-images?projectId=${encodeURIComponent(projectId)}&eventId=${encodeURIComponent(eventId)}`,
+        { cache: "no-store" }
+      );
+    } catch (error) {
+      consecutiveTransportErrors += 1;
+      if (consecutiveTransportErrors < 12) continue;
+      throw error;
+    }
+
+    const result = await readClientApiResponse<GenerateImagesData>(response);
+    const completed = result.data?.generatedShots ?? 0;
+    const total = result.data?.requestedShots ?? 1;
+    onProgress(Math.round((attempt * intervalMs) / 1_000), completed, total);
+    if (result.success && result.data?.status === "completed") return result.data;
+    if (result.success && result.data?.status === "running") {
+      consecutiveTransportErrors = 0;
+      continue;
+    }
+    if ([502, 503, 504].includes(response.status) && consecutiveTransportErrors < 12) {
+      consecutiveTransportErrors += 1;
+      continue;
+    }
+    throw new Error(result.error || "Qwen-Image 关键帧任务状态查询失败。");
+  }
+
+  throw new Error("Qwen-Image 已等待 15 分钟仍未完成。日志会保留具体任务状态，请稍后重试。");
 }
 
 function delay(ms: number) {
