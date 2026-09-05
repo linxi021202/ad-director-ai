@@ -36,7 +36,7 @@ export class InMemorySecretStore implements SecretStore {
     const record: SecretRecord = {
       value,
       lastFour: value.slice(-4),
-      validated: false,
+      validated: undefined,
       updatedAt: now
     };
     sessionSecrets.set(sessionId, {

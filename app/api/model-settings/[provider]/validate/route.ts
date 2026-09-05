@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { sanitizeProviderError } from "@/lib/api/provider-error";
 import { getAIConfig, getDeepSeekRuntimeConfig } from "@/lib/config/ai";
+import { validateProviderConnection } from "@/lib/secrets/providerValidation";
 import { resolveSessionProviderSecret } from "@/lib/secrets/resolver";
 import { isPlausibleApiKey, isRateLimited, isSameOrigin } from "@/lib/secrets/security";
 import { secretStore } from "@/lib/secrets/store";
@@ -29,8 +29,13 @@ export async function POST(
     return NextResponse.json({ valid: false, message: "未知模型服务。" }, { status: 400 });
   }
 
-  if (isRateLimited(`${session.id}:validate`, 6)) {
-    return NextResponse.json({ valid: false, message: "验证过于频繁，请稍后重试。" }, { status: 429 });
+  if (isRateLimited(`${session.id}:validate:${provider.data}`, 8)) {
+    return NextResponse.json({
+      valid: false,
+      usable: false,
+      code: "LOCAL_RATE_LIMITED",
+      message: "测试连接过于频繁，请等待一分钟后重试。"
+    }, { status: 429 });
   }
 
   const body = bodySchema.safeParse(await request.json().catch(() => undefined));
@@ -54,28 +59,20 @@ export async function POST(
   const deepSeekRuntime = getDeepSeekRuntimeConfig();
   const imageConfig = getAIConfig({ allowSessionSecrets: true }).qwenImage;
   const baseUrl = provider.data === "deepseek" ? deepSeekRuntime.baseUrl : imageConfig.baseUrl;
-  const path = provider.data === "deepseek" ? "/models" : "/api/v1/models";
-  let valid = false;
+  const validation = await validateProviderConnection({
+    provider: provider.data,
+    apiKey,
+    baseUrl
+  });
 
-  try {
-    const response = await fetch(`${baseUrl.replace(/\/+$/, "")}${path}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(8_000)
-    });
-    valid = response.ok;
-  } catch (error) {
-    sanitizeProviderError(error, provider.data);
+  if (!submittedKey && saved.source === "session" && validation.conclusive) {
+    await secretStore.setValidated(session.id, provider.data, validation.valid);
   }
 
-  if (!submittedKey && saved.source === "session") {
-    await secretStore.setValidated(session.id, provider.data, valid);
-  }
-
-  const message = valid
-    ? "连接验证成功。"
-    : provider.data === "deepseek"
-      ? "DeepSeek 验证失败，请检查密钥、额度或服务状态。"
-      : "Qwen-Image 验证失败，请检查密钥、工作空间或服务状态。";
-
-  return NextResponse.json({ valid, message });
+  return NextResponse.json({
+    valid: validation.valid,
+    usable: validation.usable,
+    code: validation.code,
+    message: validation.message
+  });
 }

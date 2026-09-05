@@ -52,7 +52,7 @@ describe("generate workflow shot count interaction", () => {
     expect(workflow).toContain("requestGeneratedShotCountChange");
     expect(workflow).toContain("重新生成完整分镜");
     expect(workflow).toContain("regenerateExisting: true");
-    expect(workflow).toContain("现有关键帧、主镜头视频和最终成片会失效");
+    expect(workflow).toContain("现有关键帧、导入广告视频和最终成片会失效");
   });
 
   it("refreshes the server-owned project after rebuilding the storyboard", () => {

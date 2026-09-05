@@ -1311,12 +1311,12 @@
   scrollbar-width: thin;
 }
 .project-workflow-v4 ol { display: grid; min-width: 780px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; }
-.project-workflow-v4 li { min-width: 0; }
-.project-workflow-v4__rail { display: flex; height: 26px; align-items: center; }
+.project-workflow-v4 li { display: grid; min-width: 0; justify-items: center; text-align: center; }
+.project-workflow-v4__rail { position: relative; display: flex; width: 100%; height: 26px; align-items: center; justify-content: center; }
 .project-workflow-v4__node { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border: 1px solid var(--project-border-strong); border-radius: 50%; background: #07111c; color: var(--project-text-tertiary); font-size: 12px; font-weight: 700; }
-.project-workflow-v4__rail i { display: block; width: calc(100% - 24px); height: 1px; background: var(--project-border-strong); }
-.project-workflow-v4 li > strong { display: block; margin-top: 10px; color: var(--project-text-primary); font-size: 14px; line-height: 20px; }
-.project-workflow-v4 li > small { display: block; margin-top: 3px; padding-right: 16px; color: var(--project-text-tertiary); font-size: 12px; line-height: 18px; }
+.project-workflow-v4__rail i { position: absolute; top: 50%; left: calc(50% + 12px); display: block; width: calc(100% - 24px); height: 1px; background: var(--project-border-strong); transform: translateY(-50%); }
+.project-workflow-v4 li > strong { display: block; margin-top: 9px; color: var(--project-text-primary); font-size: 13px; line-height: 19px; }
+.project-workflow-v4 li > small { display: block; max-width: 150px; margin-top: 3px; color: var(--project-text-tertiary); font-size: 11px; line-height: 17px; overflow-wrap: anywhere; }
 .project-workflow-v4 li.is-completed .project-workflow-v4__node { border-color: rgba(79, 209, 161, .45); background: rgba(79, 209, 161, .12); color: var(--project-success); }
 .project-workflow-v4 li.is-completed .project-workflow-v4__rail i { background: rgba(79, 209, 161, .35); }
 .project-workflow-v4 li.is-running .project-workflow-v4__node { border-color: rgba(57, 213, 231, .62); background: var(--project-accent-ai-soft); color: var(--project-accent-ai); animation: project-node-pulse 1.8s ease-in-out infinite; }

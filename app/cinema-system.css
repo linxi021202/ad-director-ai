@@ -218,9 +218,13 @@ html { background: #000; }
 }
 .site-body .generation-mode-v3 button { border-radius: 999px; color: var(--cinema-text-3); }
 .site-body .generation-mode-v3 button.is-active { background: #fff; color: #050505; }
-.site-body .ad-call-toggle { text-align: left; }
-.site-body .ad-call-toggle.is-active { border-color: rgba(255, 255, 255, .44) !important; background: rgba(255, 255, 255, .1) !important; }
-.site-body .ad-call-toggle > span { border-color: var(--cinema-line); background: transparent; color: var(--cinema-text-2); }
+.site-body .ad-call-toggle { text-align: left; color: var(--cinema-text-2); }
+.site-body .ad-call-toggle.is-active { border-color: rgba(217, 247, 242, .42) !important; background: rgba(24, 68, 67, .38) !important; }
+.site-body .ad-call-toggle > span { border-color: var(--cinema-line); background: rgba(255, 255, 255, .04); color: var(--cinema-text-2); }
+.site-body .ad-call-toggle strong { color: #fff !important; }
+.site-body .ad-call-toggle small { color: rgba(255, 255, 255, .62) !important; }
+.site-body .ad-call-toggle.is-active > span { border-color: rgba(217, 247, 242, .34); background: rgba(217, 247, 242, .1); color: #d9f7f2; }
+.site-body .ad-call-toggle:disabled:not(.is-active) { opacity: .68; }
 .site-body .workflow-flow-rail { border-color: transparent; background: transparent; }
 .site-body .workflow-flow-step__node { border-color: var(--cinema-line-strong); background: #050505; }
 .site-body .workflow-flow-rail__track > span { background: rgba(255, 255, 255, .12); }

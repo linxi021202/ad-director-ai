@@ -30,8 +30,8 @@ const providers = [
 function statusText(status: SecretStatus) {
   if (!status.configured) return "未配置";
   if (status.validated === true) return "验证成功 · 末四位 " + status.lastFour;
-  if (status.validated === false) return "尚未验证 · 末四位 " + status.lastFour;
-  return "已配置 · 末四位 " + status.lastFour;
+  if (status.validated === false) return "验证失败 · 末四位 " + status.lastFour;
+  return "待验证 · 末四位 " + status.lastFour;
 }
 
 function readMessage(payload: unknown, fallback: string) {
@@ -132,8 +132,8 @@ export function ModelSettingsSheet({
       setDraftKeys((current) => ({ ...current, [providerConfig.draftKey]: "" }));
       setMessage("密钥已保存到当前临时会话。");
       await refresh();
-    } catch {
-      setMessage("保存失败，请检查密钥格式或稍后重试。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存失败，请检查密钥格式或稍后重试。");
     } finally {
       setBusy(null);
     }
@@ -148,7 +148,7 @@ export function ModelSettingsSheet({
       setMessage(readMessage(result, "验证完成。"));
       await refresh();
     } catch {
-      setMessage("密钥验证失败，请检查密钥或模型权限。");
+      setMessage("连接测试请求失败，已保存的密钥不会被删除，请稍后重试。");
     } finally {
       setBusy(null);
     }
@@ -236,7 +236,7 @@ export function ModelSettingsSheet({
           })}
 
           <section className="model-provider-card model-provider-local">
-            <div className="model-provider-title"><div><h3>HappyHorse</h3><p>主镜头视频</p></div><span className="model-status-dot is-configured" /></div>
+            <div className="model-provider-title"><div><h3>HappyHorse</h3><p>完整广告视频导入</p></div><span className="model-status-dot is-configured" /></div>
             <div className="model-local-status">手动导入模式 · 无需 API Key</div>
           </section>
 

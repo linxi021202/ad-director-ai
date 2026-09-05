@@ -22,6 +22,7 @@ import { POST as saveSettings } from "../app/api/model-settings/route";
 import { GET as getSettingsStatus } from "../app/api/model-settings/status/route";
 import { DELETE as deleteSetting } from "../app/api/model-settings/[provider]/route";
 import { secretStore } from "../lib/secrets/store";
+import { isSameOrigin } from "../lib/secrets/security";
 import {
   SESSION_INITIALIZATION_FAILED_BODY,
   sessionInitializationFailedResponse
@@ -116,5 +117,30 @@ describe("anonymous model settings API isolation", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(response.headers.get("content-type")).toContain("charset=utf-8");
     expect(await response.json()).toEqual(SESSION_INITIALIZATION_FAILED_BODY);
+  });
+
+  it("accepts the public origin forwarded by Railway and rejects cross-site requests", () => {
+    const railwayRequest = new NextRequest("http://internal:8080/api/model-settings", {
+      method: "POST",
+      headers: {
+        host: "internal:8080",
+        origin: "https://ad-director-ai-production.up.railway.app",
+        "sec-fetch-site": "same-origin",
+        "x-forwarded-host": "ad-director-ai-production.up.railway.app",
+        "x-forwarded-proto": "https"
+      }
+    });
+    expect(isSameOrigin(railwayRequest)).toBe(true);
+
+    const crossSiteRequest = new NextRequest("http://internal:8080/api/model-settings", {
+      method: "POST",
+      headers: {
+        origin: "https://attacker.example",
+        "sec-fetch-site": "cross-site",
+        "x-forwarded-host": "ad-director-ai-production.up.railway.app",
+        "x-forwarded-proto": "https"
+      }
+    });
+    expect(isSameOrigin(crossSiteRequest)).toBe(false);
   });
 });

@@ -6,7 +6,32 @@ export function isSameOrigin(request: NextRequest) {
   const fetchSite = request.headers.get("sec-fetch-site");
   if (fetchSite === "cross-site") return false;
   const origin = request.headers.get("origin");
-  return !origin || origin === request.nextUrl.origin;
+  if (!origin) return true;
+
+  const allowedOrigins = new Set([normalizeOrigin(request.nextUrl.origin)]);
+  const forwardedHost = firstForwardedValue(request.headers.get("x-forwarded-host"));
+  const forwardedProto = firstForwardedValue(request.headers.get("x-forwarded-proto"));
+  const requestHost = firstForwardedValue(request.headers.get("host"));
+  const host = forwardedHost || requestHost;
+  const protocol = forwardedProto || request.nextUrl.protocol.replace(/:$/, "");
+
+  if (host && (protocol === "http" || protocol === "https")) {
+    allowedOrigins.add(normalizeOrigin(`${protocol}://${host}`));
+  }
+
+  return allowedOrigins.has(normalizeOrigin(origin));
+}
+
+function firstForwardedValue(value: string | null) {
+  return value?.split(",", 1)[0]?.trim() || null;
+}
+
+function normalizeOrigin(value: string) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
 }
 
 export function isRateLimited(key: string, limit: number, windowMs = 60_000) {

@@ -61,14 +61,14 @@ export async function POST(request: Request, context: RouteContext) {
     const file = formData.get("file");
     const shotId = safeSegment(String(formData.get("shotId") ?? ""), "shot");
     const aspectRatioInput = aspectRatioSchema.safeParse(String(formData.get("aspectRatio") ?? "9:16"));
-    if (!(file instanceof File)) return response(false, null, "未收到主镜头视频文件。", 400);
+    if (!(file instanceof File)) return response(false, null, "未收到广告视频文件。", 400);
     if (!aspectRatioInput.success) return response(false, null, "项目画幅参数无效。", 400);
 
     const event = await startGenerationEvent(session.id, authorization.projectId, {
       stage: "hero-shot",
       provider: "happyhorse",
       action: "manual-import",
-      message: "HappyHorse 主镜头视频开始手动导入。",
+      message: "完整广告视频开始手动导入。",
       shotId,
       progressCurrent: 0,
       progressTotal: 1
@@ -90,7 +90,7 @@ export async function POST(request: Request, context: RouteContext) {
         session.id,
         authorization.projectId,
         eventId,
-        "主镜头视频校验失败：" + result.error,
+        "广告视频校验失败：" + result.error,
         "ASSET_VALIDATION_FAILED"
       );
       return response(false, null, result.error, result.status);
@@ -100,7 +100,7 @@ export async function POST(request: Request, context: RouteContext) {
       session.id,
       authorization.projectId,
       eventId,
-      "HappyHorse 主镜头视频已导入并保存到项目私有资产。",
+      "完整广告视频已导入并保存到项目私有资产。",
       { progressCurrent: 1, progressTotal: 1 }
     );
     return response(true, { asset: sanitizeHeroVideoAssetForClient(result.asset) }, null, 201);
@@ -110,11 +110,11 @@ export async function POST(request: Request, context: RouteContext) {
         session.id,
         authorization.projectId,
         eventId,
-        "主镜头视频上传失败，请重新选择 MP4 文件。",
+        "广告视频上传失败，请重新选择 MP4 文件。",
         "ASSET_UPLOAD_FAILED"
       ).catch(() => undefined);
     }
-    return response(false, null, "主镜头视频上传失败，请重新选择 MP4 文件。", 500);
+    return response(false, null, "广告视频上传失败，请重新选择 MP4 文件。", 500);
   }
 }
 
@@ -131,7 +131,7 @@ export async function DELETE(_request: Request, context: RouteContext) {
     provider: "happyhorse",
     action: "await-manual-import",
     status: "blocked",
-    message: "主镜头视频已移除，等待重新生成或手动导入。"
+    message: "广告视频已移除，等待重新生成或手动导入。"
   });
   return response(true, { deleted: true, capability: getHappyHorseCapability(true).capability }, null, 200);
 }

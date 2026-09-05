@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ModelSettingsSheet, type ProviderId } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
@@ -160,6 +160,13 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [settingsProvider, setSettingsProvider] = useState<ProviderId | undefined>();
   const [settingsGuidance, setSettingsGuidance] = useState<string | null>(null);
   const { status: modelStatus, setStatus: setModelStatus } = useModelSettingsStatus();
+  const previewProject = useMemo<GenerationProject>(() => ({
+    ...activeProject,
+    brief: {
+      ...activeProject.brief,
+      aspectRatio: briefDraft.brief.aspectRatio
+    }
+  }), [activeProject, briefDraft.brief.aspectRatio]);
 
   function commitWorkflow(next: WorkflowStepState) {
     setWorkflowSteps(next);
@@ -604,15 +611,15 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             {mode === "custom" ? (
               <div className="generation-call-picker-v3">
                 <CallToggle active={selection.deepseek} title="DeepSeek 文本" desc="策略、分镜与提示词" onClick={() => toggleSelection("deepseek")} disabled={isGenerating} />
-                <CallToggle active={selection.qwenImage} title="Qwen-Image 关键帧" desc={`生成${activeProject.shots.length}张关键帧`} onClick={() => toggleSelection("qwenImage")} disabled={isGenerating} />
-                <CallToggle active={false} title="HappyHorse 手动导入" desc="项目页上传主镜头视频" onClick={() => undefined} disabled />
+                <CallToggle active={selection.qwenImage} title="Qwen-Image 关键帧" desc={`生成${briefDraft.shotCount}张关键帧`} onClick={() => toggleSelection("qwenImage")} disabled={isGenerating} />
+                <CallToggle active={false} badge="项目页操作" title="完整广告视频导入" desc="在项目页上传已完成的视频" onClick={() => undefined} disabled />
               </div>
             ) : null}
 
             {briefSaveStatus !== "saved" ? <p className="generation-save-gate">请先保存商品简报。</p> : null}
             <WorkflowFlowRail state={{ ...workflowSteps, brief: briefWorkflowStatus(briefSaveStatus) }} briefSaveStatus={briefSaveStatus} onRetry={handleGenerate} />
             {error ? <div className="inline-generation-error">{error}</div> : null}
-            <ResultBoard project={activeProject} keyframes={liveKeyframes} callTrace={callTrace} projectId={activeProject.id} generated={generated} isGenerating={isGenerating} />
+            <ResultBoard project={previewProject} keyframes={liveKeyframes} callTrace={callTrace} projectId={activeProject.id} generated={generated} isGenerating={isGenerating} />
           </section>
 
           <aside className="status-rail-v3 status-rail-shell" aria-label="生成状态">
@@ -623,7 +630,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <div className="trace-flow-v3__head"><span>模型 Trace</span><small>{traceLabel}</small></div>
               <TraceNode name="DeepSeek" task="策略与提示词" active={selection.deepseek || mode === "template"} tone="blue" />
               <TraceNode name="Qwen-Image" task="关键帧生成" active={selection.qwenImage} tone="violet" />
-              <TraceNode name="HappyHorse" task="主镜头视频" active={selection.happyHorse} tone="yellow" />
+              <TraceNode name="HappyHorse" task="完整视频导入" active={selection.happyHorse} tone="yellow" />
               <TraceNode name="Remotion" task="成片合成" active={generated} tone="green" last />
               <details className="trace-footer-v3"><summary>查看执行日志</summary>{callTrace.length ? callTrace.map((item, index) => <TraceLogLine key={`${index}-${item}`} item={item} />) : <p>生成后可查看完整调用记录。</p>}</details>
             </section>
@@ -641,7 +648,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             </header>
             <div className="shot-count-dialog-v4__summary"><span>当前分镜</span><strong>{getEffectiveShotCount(activeProject)} 个</strong></div>
             <ShotCountDialogControl value={requestedShotCount} disabled={shotCountSaving} onChange={setRequestedShotCount} />
-            <p>调整后将重新生成完整分镜，现有关键帧、主镜头视频和最终成片会失效。商品简报与核心策略保持不变。</p>
+            <p>调整后将重新生成完整分镜，现有关键帧、导入广告视频和最终成片会失效。商品简报与核心策略保持不变。</p>
             <footer>
               <button type="button" className="button-secondary-v3" disabled={shotCountSaving} onClick={() => setShotCountDialogOpen(false)}>取消</button>
               <button type="button" className="button-primary-v3" disabled={shotCountSaving || requestedShotCount === getEffectiveShotCount(activeProject)} onClick={() => void regenerateShotCount()}>{shotCountSaving ? "重新生成中" : "确认并重新生成"}</button>
@@ -704,10 +711,10 @@ async function postApi<T>(url: string, body: unknown): Promise<ApiResponse<T>> {
   return payload;
 }
 
-function CallToggle({ active, title, desc, onClick, disabled, muted = false }: { active: boolean; title: string; desc: string; onClick: () => void; disabled: boolean; muted?: boolean }) {
+function CallToggle({ active, badge, title, desc, onClick, disabled, muted = false }: { active: boolean; badge?: string; title: string; desc: string; onClick: () => void; disabled: boolean; muted?: boolean }) {
   return (
     <button type="button" className={`ad-call-toggle ${active ? "is-active" : ""} ${muted ? "is-muted" : ""}`} onClick={onClick} disabled={disabled}>
-      <span>{active ? "已选择" : "可选择"}</span>
+      <span>{badge ?? (active ? "已选择" : "可选择")}</span>
       <strong>{title}</strong>
       <small>{desc}</small>
     </button>

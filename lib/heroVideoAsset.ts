@@ -10,11 +10,7 @@ import {
   getProjectAssetUrl
 } from "./assets/assetStore";
 import { hasMp4Signature } from "./assets/media";
-import {
-  MAX_HERO_VIDEO_DURATION_SEC,
-  MAX_HERO_VIDEO_SIZE,
-  MIN_HERO_VIDEO_DURATION_SEC
-} from "./heroVideo";
+import { MAX_HERO_VIDEO_DURATION_SEC, MAX_HERO_VIDEO_SIZE, MIN_HERO_VIDEO_DURATION_SEC } from "./heroVideo";
 import {
   requireOwnedAnonymousProject,
   updateOwnedAnonymousProject
@@ -120,11 +116,12 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
 
   const metadata = parseMp4Metadata(input.buffer);
   if (!metadata) return fail("无法读取 MP4 视频元数据。", 400);
-  if (metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC) return fail(`主镜头视频时长不能短于 ${MIN_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
-  if (metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC) return fail(`主镜头视频时长不能超过 ${MAX_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
   const source = input.source ?? "happyhorse-manual-import";
-  if (source === "happyhorse-manual-import" && !matchesAspectDirection(metadata.width, metadata.height, input.aspectRatio)) {
-    return fail("上传视频画幅与当前项目设置不一致。", 400);
+  if (source === "happyhorse-api" && metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC) {
+    return fail(`HappyHorse 视频时长不能短于 ${MIN_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
+  }
+  if (source === "happyhorse-api" && metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC) {
+    return fail(`HappyHorse 视频时长不能超过 ${MAX_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
   }
 
   try {
@@ -133,7 +130,7 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
     if (!configuredHeroShot) {
       return fail("HERO_VIDEO_DURATION_MISMATCH：当前视频对应的主镜头已失效，请重新选择主镜头。", 409);
     }
-    if (Math.abs(metadata.durationSec - configuredHeroShot.durationSec) > 0.75) {
+    if (source === "happyhorse-api" && Math.abs(metadata.durationSec - configuredHeroShot.durationSec) > 0.75) {
       return fail(
         "HERO_VIDEO_DURATION_MISMATCH：当前视频时长与主镜头设定不一致。主镜头需要 "
           + configuredHeroShot.durationSec
@@ -201,7 +198,7 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
     }
     return { success: true, asset };
   } catch {
-    return fail("主镜头视频私有保存失败，原视频未被覆盖。", 500);
+    return fail("广告视频私有保存失败，原视频未被覆盖。", 500);
   }
 }
 
@@ -324,13 +321,6 @@ function readTkhdDimensions(buffer: Buffer, contentOffset: number, contentSize: 
     width: Math.round(buffer.readUInt32BE(dimensionOffset) / 65536),
     height: Math.round(buffer.readUInt32BE(dimensionOffset + 4) / 65536)
   };
-}
-
-function matchesAspectDirection(width: number, height: number, aspectRatio: AspectRatio) {
-  if (aspectRatio === "9:16") return height > width;
-  if (aspectRatio === "16:9") return width > height;
-  const ratio = width / height;
-  return ratio >= 0.9 && ratio <= 1.1;
 }
 
 function defaultWorkflow() {

@@ -123,12 +123,20 @@ describe("private HappyHorse hero video assets", () => {
     if (!result.success) expect(result.status).toBe(400);
   });
 
-  it("enforces duration and manual-import aspect direction", async () => {
+  it("accepts complete manual-import videos without duration or aspect restrictions", async () => {
     const short = await save({ durationSec: 2 });
-    expect(short.success).toBe(false);
+    expect(short.success).toBe(true);
 
     const horizontal = await save({ width: 1280, height: 720 });
-    expect(horizontal.success).toBe(false);
+    expect(horizontal.success).toBe(true);
+  });
+
+  it("keeps HappyHorse API output constrained to the selected shot duration", async () => {
+    const short = await save({ durationSec: 2, source: "happyhorse-api" });
+    expect(short.success).toBe(false);
+
+    const mismatch = await save({ durationSec: heroShotDurationSec + 2, source: "happyhorse-api" });
+    expect(mismatch.success).toBe(false);
   });
 
   it("accepts an API video for Remotion adaptation and records its source", async () => {
@@ -144,7 +152,7 @@ describe("private HappyHorse hero video assets", () => {
   it("keeps the previous valid video when replacement validation fails", async () => {
     const first = await save({});
     expect(first.success).toBe(true);
-    const failed = await save({ durationSec: 2 });
+    const failed = await save({ fileName: "replacement.mov", mimeType: "video/quicktime" });
     expect(failed.success).toBe(false);
 
     const state = await readHeroVideoProjectState(SESSION_A, projectId);

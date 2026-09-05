@@ -303,7 +303,7 @@ export async function saveOwnedProjectBrief(
     const targetChanged = targetDurationSec !== previousTarget;
     const heroShot = shots.find((shot) => shot.id === project.heroShotId);
     const heroDurationMismatch = Boolean(
-      targetChanged && heroShot && project.heroVideo?.durationSec
+      targetChanged && heroShot && project.heroVideo?.source === "happyhorse-api" && project.heroVideo.durationSec
       && Math.abs(project.heroVideo.durationSec - heroShot.durationSec) > 0.75
     );
     const next: GenerationProject = {
@@ -464,7 +464,8 @@ export async function updateOwnedShotDurations(
     const heroShot = shots.find((shot) => shot.id === project.heroShotId);
     const heroDurationMismatch = Boolean(
       heroShot
-      && project.heroVideo?.durationSec
+      && project.heroVideo?.source === "happyhorse-api"
+      && project.heroVideo.durationSec
       && Math.abs(project.heroVideo.durationSec - heroShot.durationSec) > 0.75
     );
     const changeSummary = updates.map((item) => {
