@@ -243,7 +243,7 @@ export async function runTextTask(input: RunTextTaskInput, context?: ProviderReq
 
   const resolvedKey = await resolveProviderApiKey("deepseek", context?.sessionId);
   if (!resolvedKey) {
-    return runMockTextTask(input, "DeepSeek real text route is unavailable because AI config is invalid: DEEPSEEK_API_KEY is required.", context);
+    return runMockTextTask(input, "DeepSeek 真实文本调用不可用：未配置 DEEPSEEK_API_KEY。", context);
   }
 
   try {
@@ -251,7 +251,7 @@ export async function runTextTask(input: RunTextTaskInput, context?: ProviderReq
   } catch (error) {
     return runMockTextTask(
       input,
-      `DeepSeek real text route is unavailable because AI config is invalid: ${
+      `DeepSeek 真实文本调用不可用，AI 配置无效：${
         error instanceof Error ? error.message : "unknown config error"
       }`
     , context);
@@ -265,8 +265,12 @@ export async function runTextTask(input: RunTextTaskInput, context?: ProviderReq
 
   return runMockTextTask(
     input,
-    `DeepSeek ${input.taskType} failed: ${primary.error ?? "unknown error"}. Used mockTextProvider coldBrewDemo fallback.`
+    `DeepSeek ${textTaskLabel(input.taskType)}失败：${primary.error ?? "原因未知"}。已使用与当前商品简报和时间轴一致的本地模板继续。`
   , context);
+}
+
+function textTaskLabel(taskType: RunTextTaskInput["taskType"]) {
+  return ({ strategy: "广告策略", storyboard: "分镜脚本", prompt: "提示词", scoring: "广告评分" } as const)[taskType];
 }
 
 function mockShotImageResult(shot: StoryboardShot, response: ProviderResponse<{ imageUrl: string; prompt: string }>): ShotImageGenerationResult {

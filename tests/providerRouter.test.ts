@@ -166,9 +166,9 @@ describe("providerRouter", () => {
     expect(result.success).toBe(true);
     expect(result.provider).toBe("mockTextProvider");
     expect(result.fallbackUsed).toBe(true);
-    expect(result.fallbackReason).toContain("DeepSeek strategy failed");
+    expect(result.fallbackReason).toContain("DeepSeek 广告策略失败");
     expect(result.fallbackReason).toContain("json validation failed");
-    expect(result.fallbackReason).toContain("mockTextProvider");
+    expect(result.fallbackReason).toContain("本地模板继续");
   });
 
   it("keeps the requested shot count and duration plan when DeepSeek storyboard falls back", async () => {
@@ -205,7 +205,7 @@ describe("providerRouter", () => {
     expect(result.success).toBe(true);
     expect(result.provider).toBe("mockTextProvider");
     expect(result.fallbackUsed).toBe(true);
-    expect(result.fallbackReason).toContain("AI config is invalid");
+    expect(result.fallbackReason).toContain("未配置");
     expect(result.fallbackReason).toContain("DEEPSEEK_API_KEY");
     expect(spy).not.toHaveBeenCalled();
   });

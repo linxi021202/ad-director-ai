@@ -56,6 +56,9 @@ export async function POST(request: Request) {
       shotDurationPlan: timeline.shotDurationPlan
     });
     if (result.data) {
+      const diagnostic = result.fallbackUsed || result.error
+        ? diagnoseProviderFallback(result.fallbackReason ?? result.error)
+        : null;
       const creativeBible = buildCreativeBible(parsed.data.brief, result.data);
       const current = await requireOwnedAnonymousProject(session.id, projectId);
       await updateOwnedAnonymousProject(session.id, projectId, {
@@ -75,7 +78,9 @@ export async function POST(request: Request) {
         }
       });
       await completeGenerationEvent(session.id, projectId, eventId,
-        result.fallbackUsed ? "策略生成失败，已使用本地模板继续。" : "广告策略生成完成。",
+        result.fallbackUsed
+          ? `${diagnostic?.title ?? "DeepSeek 调用失败"}：${diagnostic?.detail ?? "已使用本地模板继续。"}`
+          : "广告策略生成完成。",
         { status: result.fallbackUsed ? "fallback" : "completed", latencyMs: result.latencyMs }
       );
     } else {
@@ -96,11 +101,12 @@ export async function POST(request: Request) {
       error: result.error
     });
   } catch (error) {
-    if (eventId && projectId) await failGenerationEvent(session.id, projectId, eventId, "广告策略生成失败，请稍后重试。").catch(() => undefined);
+    const detail = sanitizeApiError(error);
+    if (eventId && projectId) await failGenerationEvent(session.id, projectId, eventId, `广告策略生成或保存失败：${detail}`).catch(() => undefined);
     const projectError = projectStoreErrorResponse(error);
     if (projectError) return projectError;
     if (error instanceof Error && error.message === "PROJECT_NOT_FOUND") return projectNotFoundResponse();
-    return apiJson({ success: false, data: null, trace: { route: "generate-strategy", stage: "exception" }, fallbackUsed: false, error: sanitizeApiError(error) }, 500);
+    return apiJson({ success: false, data: null, trace: { route: "generate-strategy", stage: "exception" }, fallbackUsed: false, error: detail }, 500);
   }
 }
 

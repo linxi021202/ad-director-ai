@@ -10,6 +10,7 @@ function resetEnv() {
   process.env.DEEPSEEK_API_KEY = "test-deepseek-key";
   process.env.DEEPSEEK_BASE_URL = "https://api.deepseek.com";
   process.env.DEEPSEEK_MODEL = "deepseek-v4-flash";
+  process.env.DEEPSEEK_TIMEOUT_MS = "90000";
 }
 
 function mockResponse(content: string | null, status = 200) {
@@ -57,6 +58,7 @@ describe("deepseekClient", () => {
     expect(JSON.parse(request.body)).toMatchObject({
       model: "deepseek-v4-flash",
       response_format: { type: "json_object" },
+      thinking: { type: "disabled" },
       temperature: 0.2,
       max_tokens: 128
     });
@@ -108,6 +110,6 @@ describe("deepseekClient", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("DEEPSEEK_TIMEOUT");
-    expect(result.error).toContain("30 秒");
+    expect(result.error).toContain("90 秒");
   });
 });

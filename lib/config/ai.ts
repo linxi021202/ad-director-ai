@@ -52,7 +52,7 @@ const envSchema = z.object({
   DEEPSEEK_API_KEY: optionalSecretSchema,
   DEEPSEEK_BASE_URL: z.string().url().default("https://api.deepseek.com"),
   DEEPSEEK_MODEL: z.string().min(1).default("deepseek-v4-flash"),
-  DEEPSEEK_TIMEOUT_MS: positiveIntEnvSchema(30_000),
+  DEEPSEEK_TIMEOUT_MS: positiveIntEnvSchema(90_000),
   DEEPSEEK_MAX_RETRIES: positiveIntEnvSchema(1),
 
   DASHSCOPE_API_KEY: optionalSecretSchema,

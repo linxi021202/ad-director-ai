@@ -51,7 +51,7 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
       const startedAt = Date.now();
       const model = input.model ?? config.model;
       const messages = input.responseFormat === "json" ? ensureJsonPromptHint(input.messages) : input.messages;
-      const timeoutMs = config.timeoutMs ?? 30_000;
+      const timeoutMs = config.timeoutMs ?? 90_000;
       try {
         const response = await fetch(`${baseUrl}${CHAT_COMPLETIONS_PATH}`, {
           method: "POST",
@@ -61,7 +61,10 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
             messages,
             temperature: input.temperature ?? 0.7,
             max_tokens: input.maxTokens,
-            ...(input.responseFormat === "json" ? { response_format: { type: "json_object" } } : {})
+            ...(input.responseFormat === "json" ? {
+              response_format: { type: "json_object" },
+              thinking: { type: "disabled" }
+            } : {})
           }),
           signal: AbortSignal.timeout(timeoutMs)
         });
