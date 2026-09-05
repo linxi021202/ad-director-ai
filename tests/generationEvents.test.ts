@@ -13,6 +13,7 @@ import {
 } from "../lib/projects/anonymousProjectStore";
 import {
   appendGenerationEvent,
+  attachGenerationEventProviderTask,
   completeGenerationEvent,
   listGenerationEvents,
   normalizeInterruptedEvents,
@@ -62,6 +63,28 @@ describe("server generation event persistence", () => {
       status: "completed",
       latencyMs: 120,
       message: "策略生成完成。"
+    });
+  });
+
+  it("persists provider task identifiers for asynchronous polling", async () => {
+    const event = await startGenerationEvent(SESSION_A, projectId, {
+      stage: "hero-shot",
+      provider: "wan",
+      action: "generate-hero-video",
+      message: "Wan 任务提交中。"
+    });
+    await attachGenerationEventProviderTask(SESSION_A, projectId, event.id, {
+      taskId: "wan-task-123",
+      requestId: "wan-request-456",
+      message: "Wan 任务已提交。"
+    });
+
+    resetAnonymousProjectQueuesForTests();
+    const [restored] = await listGenerationEvents(SESSION_A, projectId);
+    expect(restored).toMatchObject({
+      providerTaskId: "wan-task-123",
+      providerRequestId: "wan-request-456",
+      status: "running"
     });
   });
 

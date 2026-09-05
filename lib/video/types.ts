@@ -48,6 +48,11 @@ export type WanVideoResult = {
   error?: string;
 };
 
+export type WanVideoTaskResult = WanVideoResult & {
+  status: "running" | "completed" | "failed";
+  retryable?: boolean;
+};
+
 export type DownloadVideoResult = {
   success: boolean;
   buffer?: Buffer;

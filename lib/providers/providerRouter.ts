@@ -291,13 +291,8 @@ function mockShotImageResult(shot: StoryboardShot, response: ProviderResponse<{ 
 function mockShotPlaceholder(shot: StoryboardShot): string {
   const colors = ["#1d4ed8", "#0891b2", "#7c3aed", "#0f766e"];
   const color = colors[(shot.index - 1) % colors.length];
-  const subtitle = (shot.subtitle || shot.goal).slice(0, 16);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1600" viewBox="0 0 900 1600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#06101f"/><stop offset="0.48" stop-color="${color}"/><stop offset="1" stop-color="#171225"/></linearGradient></defs><rect width="900" height="1600" fill="url(#g)"/><circle cx="680" cy="360" r="240" fill="#ffffff" opacity="0.1"/><circle cx="190" cy="1180" r="220" fill="#67e8f9" opacity="0.14"/><rect x="84" y="1040" width="732" height="270" rx="48" fill="#030712" opacity="0.58"/><text x="114" y="1134" fill="#8ee7ff" font-size="42" font-family="Arial, sans-serif" font-weight="700">Mock Keyframe · Shot ${shot.index}</text><text x="114" y="1224" fill="#ffffff" font-size="58" font-family="Arial, sans-serif" font-weight="800">${escapeSvg(subtitle)}</text><text x="114" y="1294" fill="#cbd5e1" font-size="28" font-family="Arial, sans-serif">Use real Qwen-Image for final keyframe</text></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1600" viewBox="0 0 900 1600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#06101f"/><stop offset="0.48" stop-color="${color}"/><stop offset="1" stop-color="#171225"/></linearGradient></defs><rect width="900" height="1600" fill="url(#g)"/><circle cx="680" cy="360" r="240" fill="#ffffff" opacity="0.1"/><circle cx="190" cy="1180" r="220" fill="#67e8f9" opacity="0.14"/><rect x="84" y="1040" width="732" height="270" rx="48" fill="#030712" opacity="0.42"/></svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function escapeSvg(value: string) {
-  return value.replace(/[&<>"'']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "''": "&apos;" }[char] ?? char));
 }
 function imageFallbackResult(shot: StoryboardShot, fallbackReason: string): ShotImageGenerationResult {
   return {

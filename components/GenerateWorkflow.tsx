@@ -7,6 +7,7 @@ import { ModelSettingsSheet, type ModelSettingsStatus, type ProviderId } from "@
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
 import { AIModeBadge, type AITraceStatus } from "@/components/AIModeBadge";
+import { readClientApiResponse, type ClientApiResponse } from "@/lib/api/clientResponse";
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
 import { CreativeDirectorFlow } from "@/components/CreativeDirectorFlow";
 import { WorkflowFlowRail, idleWorkflowSteps, type WorkflowStepKey, type WorkflowStepState, type WorkflowStepStatus } from "@/components/WorkflowFlowRail";
@@ -62,16 +63,15 @@ type ProviderDiagnostic = {
   hint: string;
 };
 
-type ApiResponse<T> = {
-  success: boolean;
-  data: T | null;
-  trace?: unknown;
-  fallbackUsed?: boolean;
-  fallbackReason?: string;
-  error?: string;
-};
+type ApiResponse<T> = ClientApiResponse<T>;
 
-type WanVideoData = { asset: { publicUrl: string; shotId: string; source: "wan-api" } };
+type WanVideoAsset = { publicUrl: string; shotId: string; source: "wan-api" };
+type WanVideoData = {
+  status: "running" | "completed";
+  eventId: string;
+  taskId?: string;
+  asset?: WanVideoAsset;
+};
 
 type GenerateImagesData = {
   images: Array<{
@@ -544,8 +544,18 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
           aspectRatio: workingProject.brief.aspectRatio,
           durationSec: Math.min(MAX_SHOT_DURATION_SEC, Math.max(MIN_SHOT_DURATION_SEC, Math.round(selectedHeroShot.durationSec || DEFAULT_SHOT_DURATION_SEC)))
         });
-        if (!videoResponse.success || !videoResponse.data?.asset) {
+        if (!videoResponse.success || !videoResponse.data) {
           throw new Error(videoResponse.error || "Wan 2.7 广告视频生成失败，请检查百炼 Key、模型权限和账户状态。");
+        }
+        const completedVideo = videoResponse.data.asset
+          ? videoResponse.data
+          : await pollWanVideoUntilComplete(
+              workingProject.id,
+              videoResponse.data.eventId,
+              (elapsedSeconds) => setTraceLabel(`Wan 2.7 正在生成视频（已等待 ${elapsedSeconds} 秒）`)
+            );
+        if (!completedVideo.asset) {
+          throw new Error("Wan 2.7 任务已结束，但没有取得项目视频资产。");
         }
         setStep("heroShot", "completed");
       }
@@ -746,11 +756,54 @@ async function postApi<T>(url: string, body: unknown): Promise<ApiResponse<T>> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
-  const payload = await response.json() as ApiResponse<T>;
-  if (!response.ok) {
-    return { ...payload, success: false };
+  return readClientApiResponse<T>(response);
+}
+
+async function pollWanVideoUntilComplete(
+  projectId: string,
+  eventId: string,
+  onProgress: (elapsedSeconds: number) => void
+): Promise<WanVideoData> {
+  const intervalMs = 5_000;
+  const maxAttempts = 120;
+  let consecutiveTransportErrors = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await delay(intervalMs);
+    onProgress(Math.round((attempt * intervalMs) / 1_000));
+
+    let response: Response;
+    try {
+      response = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/wan-video?eventId=${encodeURIComponent(eventId)}`,
+        { cache: "no-store" }
+      );
+    } catch (error) {
+      consecutiveTransportErrors += 1;
+      if (consecutiveTransportErrors < 8) continue;
+      throw error;
+    }
+
+    const result = await readClientApiResponse<WanVideoData>(response);
+    if (result.success && result.data?.asset) return result.data;
+    if (result.success && result.data?.status === "running") {
+      consecutiveTransportErrors = 0;
+      continue;
+    }
+
+    const retryable = [502, 503, 504].includes(response.status) || result.data?.status === "running";
+    if (retryable && consecutiveTransportErrors < 8) {
+      consecutiveTransportErrors += 1;
+      continue;
+    }
+    throw new Error(result.error || "Wan 2.7 任务状态查询失败。");
   }
-  return payload;
+
+  throw new Error("Wan 2.7 已等待 10 分钟仍未完成。任务可能仍在百炼处理中，请稍后重试。");
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function CallToggle({ active, badge, title, desc, onClick, disabled, muted = false }: { active: boolean; badge?: string; title: string; desc: string; onClick: () => void; disabled: boolean; muted?: boolean }) {

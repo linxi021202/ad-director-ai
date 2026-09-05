@@ -1,21 +1,19 @@
 import { getAIConfig } from "../config/ai";
 import {
-  appendNoReadableTextRules,
   NO_READABLE_TEXT_NEGATIVE
 } from "../prompts/noReadableText";
 import { assertServerOnly } from "../server-only";
 import { resolveProviderApiKey } from "../secrets/resolver";
 import { sanitizeVideoError } from "./downloadVideo";
-import type { WanVideoRequest, WanVideoResult } from "./types";
+import type { WanVideoRequest, WanVideoResult, WanVideoTaskResult } from "./types";
 
 assertServerOnly("Wan 2.7 video client");
 
 const GENERATION_PATH = "/api/v1/services/aigc/video-generation/video-synthesis";
 const TASK_PATH = "/api/v1/tasks";
-const POLL_INTERVAL_MS = 5_000;
-const POLL_MAX_ATTEMPTS = 60;
+const PROVIDER_REQUEST_TIMEOUT_MS = 25_000;
 
-export async function generateWanVideo(input: WanVideoRequest): Promise<WanVideoResult> {
+export async function submitWanVideo(input: WanVideoRequest): Promise<WanVideoResult> {
   const startedAt = Date.now();
   const config = getAIConfig({ allowSessionSecrets: true });
   const model = input.model ?? config.video.model;
@@ -47,6 +45,7 @@ export async function generateWanVideo(input: WanVideoRequest): Promise<WanVideo
         "X-DashScope-Async": "enable"
       },
       body: JSON.stringify(buildWanRequestBody(input, model, config.video.resolution)),
+      signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
       cache: "no-store"
     });
     const createJson = await readJson(createResponse);
@@ -72,18 +71,22 @@ export async function generateWanVideo(input: WanVideoRequest): Promise<WanVideo
       return fail(model, startedAt, `Wan 2.7 未返回 task_id 或视频地址：${safeJsonPreview(createJson)}`);
     }
 
-    return pollWanTask({
-      baseUrl: config.video.baseUrl,
-      apiKey,
+    return {
+      success: true,
+      provider: "dashscope",
       model,
       taskId,
       requestId,
-      startedAt
-    });
+      latencyMs: Date.now() - startedAt
+    };
   } catch (error) {
     return fail(model, startedAt, sanitizeVideoError(error));
   }
 }
+
+// Kept as a compatibility entry point for provider callers. Generation is asynchronous:
+// callers must poll getWanVideoTaskStatus() when a taskId is returned.
+export const generateWanVideo = submitWanVideo;
 
 export function buildWanRequestBody(
   input: WanVideoRequest,
@@ -94,20 +97,25 @@ export function buildWanRequestBody(
   const referenceGuide = input.referenceImages
     .map((image) => image.role === "scene"
       ? "首帧是当前主镜头关键帧，用于锁定场景构图、主体位置、机位和光线"
-      : `图${productReferenceIndex += 1}是用户上传的真实产品图，用于锁定包装结构、颜色、材质、几何和比例；不得重绘可读包装文字或 Logo 文字`)
+      : `图${productReferenceIndex += 1}是用户上传的真实产品图，用于锁定包装结构、颜色、材质、几何和比例；原有瓶身或包装标签作为不可修改的源图纹理保留，不得重新书写、翻译或补全`)
     .join("；");
 
   return {
     model,
     input: {
-      prompt: appendNoReadableTextRules([
+      prompt: [
         `参考素材规则：${referenceGuide}。`,
         "产品外观必须以真实产品参考图为准，不得虚构、替换或改变产品结构。",
         "保持首帧主体构图稳定，不新增人物，不生成额外产品。真实广告标题、卖点、字幕和 CTA 全部由 Remotion 后期叠加。",
+        "除真实产品参考图原本存在的瓶身或包装标签外，画面其他位置不得出现任何可读文字、字母、数字、字幕、标题、水印、招牌、伪文字或随机字符。",
+        "本条禁字要求优先级最高：忽略镜头要求中任何生成标题、卖点、字幕、数字、标语、CTA 或背景文字的指令。",
+        "原有产品标签只能作为参考图像素纹理保留，不得由模型重写；无法准确保留时让该区域自然柔化，禁止生成乱码。",
+        "no added readable text outside the supplied real product label, no subtitles, no typography, no watermark, no pseudo-text, no random symbols, no distorted words; preserve original product-label pixels without retyping them",
         `镜头要求：${input.prompt}`
-      ].join("\n")),
+      ].join("\n"),
       negative_prompt: [
-        NO_READABLE_TEXT_NEGATIVE,
+        NO_READABLE_TEXT_NEGATIVE.replace(/Logo文字|包装文字/gi, ""),
+        "新增文字，背景文字，字幕，标题，CTA，水印，伪文字，乱码，随机字符，扭曲单词，重绘品牌文字",
         "虚构产品，替换产品，包装结构改变，产品颜色改变，多余产品，主体变形，低清晰度"
       ].join("，"),
       media: input.referenceImages.map((image) => ({
@@ -125,50 +133,73 @@ export function buildWanRequestBody(
   };
 }
 
-async function pollWanTask(input: {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
+export async function getWanVideoTaskStatus(input: {
   taskId: string;
-  requestId?: string;
-  startedAt: number;
-}): Promise<WanVideoResult> {
-  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt += 1) {
-    await delay(POLL_INTERVAL_MS);
-    const response = await fetch(buildUrl(input.baseUrl, `${TASK_PATH}/${encodeURIComponent(input.taskId)}`), {
-      headers: { Authorization: `Bearer ${input.apiKey}` },
+  sessionId?: string;
+  model?: string;
+}): Promise<WanVideoTaskResult> {
+  const startedAt = Date.now();
+  const config = getAIConfig({ allowSessionSecrets: true });
+  const model = input.model ?? config.video.model;
+  const apiKey = await resolveProviderApiKey("wan", input.sessionId);
+  if (!apiKey) {
+    return taskFail(model, startedAt, "Wan 2.7 任务查询缺少百炼 Key，请重新保存并验证 DashScope API Key。", input.taskId, false);
+  }
+
+  try {
+    const response = await fetch(buildUrl(config.video.baseUrl, `${TASK_PATH}/${encodeURIComponent(input.taskId)}`), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
       cache: "no-store"
     });
     const json = await readJson(response);
     if (!response.ok) {
-      return fail(input.model, input.startedAt, extractApiError(json, response.status), input.taskId, input.requestId);
+      return taskFail(
+        model,
+        startedAt,
+        extractApiError(json, response.status),
+        input.taskId,
+        response.status === 408 || response.status === 429 || response.status >= 500,
+        findStringByKeys(json, ["request_id", "requestId"])
+      );
     }
 
     const status = (findStringByKeys(json, ["task_status", "taskStatus", "status"]) ?? "").toUpperCase();
     const videoUrl = extractVideoUrl(json);
-    if (videoUrl && ["SUCCEEDED", "SUCCESS", "COMPLETED", "FINISHED"].includes(status)) {
+    if (["SUCCEEDED", "SUCCESS", "COMPLETED", "FINISHED"].includes(status)) {
       return {
         success: true,
+        status: "completed",
         provider: "dashscope",
-        model: input.model,
+        model,
         taskId: input.taskId,
-        requestId: findStringByKeys(json, ["request_id", "requestId"]) ?? input.requestId,
-        remoteVideoUrl: videoUrl,
-        latencyMs: Date.now() - input.startedAt
+        requestId: findStringByKeys(json, ["request_id", "requestId"]),
+        ...(videoUrl ? { remoteVideoUrl: videoUrl } : {}),
+        latencyMs: Date.now() - startedAt
       };
     }
     if (["FAILED", "ERROR", "CANCELED", "CANCELLED"].includes(status)) {
-      return fail(input.model, input.startedAt, extractApiError(json, 502), input.taskId, input.requestId);
+      return taskFail(
+        model,
+        startedAt,
+        extractApiError(json, 502),
+        input.taskId,
+        false,
+        findStringByKeys(json, ["request_id", "requestId"])
+      );
     }
+    return {
+      success: true,
+      status: "running",
+      provider: "dashscope",
+      model,
+      taskId: input.taskId,
+      requestId: findStringByKeys(json, ["request_id", "requestId"]),
+      latencyMs: Date.now() - startedAt
+    };
+  } catch (error) {
+    return taskFail(model, startedAt, sanitizeVideoError(error), input.taskId, true);
   }
-
-  return fail(
-    input.model,
-    input.startedAt,
-    "Wan 2.7 视频任务轮询超过 5 分钟。任务可能仍在百炼处理中，请稍后重试或在百炼控制台查看任务状态。",
-    input.taskId,
-    input.requestId
-  );
 }
 
 function buildUrl(baseUrl: string, pathValue: string) {
@@ -227,10 +258,6 @@ function safeJsonPreview(value: unknown) {
   return sanitizeVideoError(JSON.stringify(value ?? {}).slice(0, 500));
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function fail(
   model: string,
   startedAt: number,
@@ -246,5 +273,20 @@ function fail(
     requestId,
     latencyMs: Date.now() - startedAt,
     error: sanitizeVideoError(error)
+  };
+}
+
+function taskFail(
+  model: string,
+  startedAt: number,
+  error: string,
+  taskId: string,
+  retryable: boolean,
+  requestId?: string
+): WanVideoTaskResult {
+  return {
+    ...fail(model, startedAt, error, taskId, requestId),
+    status: "failed",
+    retryable
   };
 }

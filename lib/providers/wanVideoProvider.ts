@@ -1,6 +1,6 @@
 import { getAIConfig } from "../config/ai";
 import { resolveProviderApiKey } from "../secrets/resolver";
-import { generateWanVideo } from "../video/wanVideoClient";
+import { submitWanVideo } from "../video/wanVideoClient";
 import { resolveWanReferenceImages } from "../video/referenceImages";
 import type { VideoProvider } from "./types";
 import { getWanVideoCapability } from "./wanVideoCapability";
@@ -44,7 +44,7 @@ export const wanVideoProvider: VideoProvider = {
         productImages: input.productImages
       });
 
-      return await generateWanVideo({
+      return await submitWanVideo({
         projectId: input.projectId,
         shotId: input.shotId,
         referenceImages,

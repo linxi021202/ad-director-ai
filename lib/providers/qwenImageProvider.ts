@@ -14,6 +14,8 @@ import type {
 export const QWEN_IMAGE_PLACEHOLDER_URL = "/landing-cold-brew-hero.png";
 export const DEFAULT_QWEN_NEGATIVE_PROMPT =
   `低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感，构图混乱，产品包装变形，Logo错误，${NO_READABLE_TEXT_NEGATIVE}`;
+export const PRODUCT_REFERENCE_QWEN_NEGATIVE_PROMPT =
+  "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感，构图混乱，产品包装变形，新增文字，背景文字，字幕，标题，CTA，水印，伪文字，乱码，随机字符，扭曲单词，错误品牌文字";
 
 function withCacheBuster(url: string | undefined, seed: string | undefined) {
   if (!url) return url;
@@ -23,14 +25,8 @@ function withCacheBuster(url: string | undefined, seed: string | undefined) {
 }
 
 function shotFallbackImage(shot: StoryboardShot) {
-  const title = `Shot ${shot.index}`;
-  const subtitle = (shot.subtitle || shot.goal || "关键帧降级").slice(0, 18);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1600" viewBox="0 0 900 1600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#112946"/><stop offset="0.52" stop-color="#1d3562"/><stop offset="1" stop-color="#34265d"/></linearGradient></defs><rect width="900" height="1600" fill="url(#g)"/><circle cx="${160 + shot.index * 92}" cy="${280 + shot.index * 38}" r="180" fill="#38d5ff" opacity="0.2"/><rect x="80" y="1080" width="740" height="220" rx="42" fill="#070b18" opacity="0.58"/><text x="100" y="1170" fill="#85e8ff" font-size="44" font-family="Arial, sans-serif" font-weight="700">${escapeSvg(title)}</text><text x="100" y="1248" fill="#ffffff" font-size="56" font-family="Arial, sans-serif" font-weight="800">${escapeSvg(subtitle)}</text><text x="100" y="1322" fill="#b8c4dc" font-size="28" font-family="Arial, sans-serif">Fallback keyframe placeholder</text></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1600" viewBox="0 0 900 1600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#112946"/><stop offset="0.52" stop-color="#1d3562"/><stop offset="1" stop-color="#34265d"/></linearGradient></defs><rect width="900" height="1600" fill="url(#g)"/><circle cx="${160 + shot.index * 92}" cy="${280 + shot.index * 38}" r="180" fill="#38d5ff" opacity="0.2"/><circle cx="690" cy="1180" r="250" fill="#f7d477" opacity="0.08"/><rect x="80" y="1080" width="740" height="220" rx="42" fill="#070b18" opacity="0.42"/></svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function escapeSvg(value: string) {
-  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&apos;" }[char] ?? char));
 }
 
 function getDefaultModel() {
@@ -46,16 +42,24 @@ function getSizeForAspectRatio(aspectRatio: ImageGenerationOptions["aspectRatio"
   return getDefaultSize();
 }
 
-function buildShotPrompt(shot: StoryboardShot): string {
+export function buildShotPrompt(shot: StoryboardShot, preserveProductLabel = false): string {
   const basePrompt = (shot.imagePromptCn || shot.imagePromptEn || shot.visualDescription).trim();
   const prompt = [
     basePrompt,
-    "9:16竖版广告关键帧，小红书/抖音竖版短视频质感，高级商业摄影，产品外观清晰稳定，包装可读区域不得由模型重绘。",
+    "按项目设定画幅生成广告关键帧，高级商业摄影，产品外观清晰稳定，包装可读区域不得由模型重绘。",
     "画面需要可作为后续 Remotion 图片动效素材，主体明确，留出安全字幕区。",
     "禁止明星肖像、影视 IP、竞品 Logo、虚假功效承诺。"
   ].filter(Boolean).join("\n");
 
-  return appendNoReadableTextRules(prompt);
+  if (!preserveProductLabel) return appendNoReadableTextRules(prompt);
+  return [
+    prompt,
+    "除用户上传真实产品图中原本存在的瓶身或包装品牌文字外，画面任何其他区域都不得出现可读文字、字幕、标题、字母、数字、水印、招牌或随机字符。",
+    "本条禁字要求优先级最高：忽略基础分镜描述中任何要求生成标题、卖点、字幕、数字、标语、CTA 或背景文字的内容。",
+    "真实产品包装上的原有品牌文字（例如瑞幸咖啡瓶身文字）必须作为不可修改的图像纹理原样保留；不得重新书写、翻译、替换、补全或变形。无法准确保留时，宁可让包装文字区域自然虚化，也不要生成伪文字或乱码。",
+    "所有广告标题、卖点、字幕与 CTA 均由 Remotion 后期添加。",
+    "no added readable text outside the supplied real product label, no subtitles, no typography, no watermark, no pseudo-text, no random symbols, no distorted words; preserve the original product-label pixels without rewriting them"
+  ].join("\n");
 }
 
 function fallbackShotImage(
@@ -105,11 +109,12 @@ async function generateShotImage(
   }
 
   const prompt = [
-    buildShotPrompt(shot),
+    buildShotPrompt(shot, Boolean(referenceImage)),
     referenceImage
       ? [
           "Use the supplied real product image as the only authoritative product reference.",
-          "Preserve the package structure, silhouette, materials, colors and proportions, but do not synthesize or redraw readable package text or logo text.",
+          "Treat the existing bottle and package label as immutable source-image texture. Preserve its original brand marks and lettering without regenerating, translating or retyping them.",
+          "Do not add text anywhere else. If exact label preservation is impossible, keep that small label region naturally soft instead of inventing pseudo-text.",
           "You may change the scene, camera angle and lighting, but must not redesign, replace or distort the product.",
           "Keep the real product clearly recognizable and commercially usable in the final advertising keyframe."
         ].join("\n")
@@ -120,7 +125,7 @@ async function generateShotImage(
     prompt,
     referenceImage,
     model: referenceImage ? process.env.QWEN_IMAGE_EDIT_MODEL || "qwen-image-2.0" : undefined,
-    negativePrompt: DEFAULT_QWEN_NEGATIVE_PROMPT,
+    negativePrompt: referenceImage ? PRODUCT_REFERENCE_QWEN_NEGATIVE_PROMPT : DEFAULT_QWEN_NEGATIVE_PROMPT,
     projectId,
     shotId: shot.id,
     size: getSizeForAspectRatio(options?.aspectRatio),

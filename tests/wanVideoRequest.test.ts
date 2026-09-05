@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { NO_READABLE_TEXT_CN, NO_READABLE_TEXT_EN } from "../lib/prompts/noReadableText";
 import { buildWanRequestBody } from "../lib/video/wanVideoClient";
 
 const request = {
@@ -26,10 +25,13 @@ describe("Wan 2.7 reference-to-video request", () => {
     ]);
     expect(body.input.prompt).toContain("真实产品图");
     expect(body.input.prompt).toContain("图1是用户上传的真实产品图");
-    expect(body.input.prompt).toContain(NO_READABLE_TEXT_CN);
-    expect(body.input.prompt).toContain(NO_READABLE_TEXT_EN);
+    expect(body.input.prompt).toContain("画面其他位置不得出现任何可读文字");
+    expect(body.input.prompt).toContain("preserve original product-label pixels");
+    expect(body.input.prompt).toContain("不得由模型重写");
+    expect(body.input.prompt).toContain("禁字要求优先级最高");
     expect(body.input.prompt).toContain("Remotion 后期叠加");
     expect(body.input.negative_prompt).toContain("伪文字");
+    expect(body.input.negative_prompt).not.toContain("包装文字");
     expect(body.input.negative_prompt).toContain("虚构产品");
     expect(body.parameters).toEqual({
       resolution: "720P",

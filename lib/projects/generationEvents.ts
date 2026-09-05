@@ -149,6 +149,19 @@ export function updateGenerationEventProgress(
   });
 }
 
+export function attachGenerationEventProviderTask(
+  sessionId: string,
+  projectId: string,
+  eventId: string,
+  details: { taskId: string; requestId?: string; message?: string }
+) {
+  return updateEvent(sessionId, projectId, eventId, {
+    providerTaskId: sanitizeText(details.taskId, 200),
+    ...(details.requestId ? { providerRequestId: sanitizeText(details.requestId, 200) } : {}),
+    ...(details.message ? { message: details.message } : {})
+  });
+}
+
 export async function listGenerationEvents(
   sessionId: string,
   projectId: string,
@@ -191,7 +204,7 @@ async function updateEvent(
   sessionId: string,
   projectId: string,
   eventId: string,
-  patch: Partial<Pick<GenerationEvent, "status" | "message" | "completedAt" | "latencyMs" | "errorCode" | "progressCurrent" | "progressTotal">>
+  patch: Partial<Pick<GenerationEvent, "status" | "message" | "completedAt" | "latencyMs" | "errorCode" | "progressCurrent" | "progressTotal" | "providerTaskId" | "providerRequestId">>
 ): Promise<GenerationEvent> {
   let updated: GenerationEvent | undefined;
   await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({

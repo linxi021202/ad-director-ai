@@ -337,6 +337,8 @@ export const generationEventSchema = z.object({
   status: generationEventStatusSchema,
   message: z.string().trim().min(1).max(500),
   shotId: z.string().min(1).optional(),
+  providerTaskId: z.string().trim().min(1).max(200).optional(),
+  providerRequestId: z.string().trim().min(1).max(200).optional(),
   progressCurrent: z.number().int().nonnegative().optional(),
   progressTotal: z.number().int().positive().optional(),
   startedAt: z.number().int().nonnegative(),
