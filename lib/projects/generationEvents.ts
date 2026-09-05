@@ -180,6 +180,18 @@ export async function listGenerationEvents(
     .slice(-limit);
 }
 
+export async function clearGenerationEvents(
+  sessionId: string,
+  projectId: string
+): Promise<{ clearedCount: number; version: number }> {
+  let clearedCount = 0;
+  const record = await mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
+    clearedCount = project.generationEvents?.length ?? 0;
+    return { ...project, generationEvents: [] };
+  });
+  return { clearedCount, version: record.version };
+}
+
 export async function normalizeInterruptedEvents(sessionId: string, projectId: string): Promise<void> {
   const record = await requireOwnedAnonymousProject(sessionId, projectId);
   const now = Date.now();

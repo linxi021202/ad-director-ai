@@ -14,6 +14,7 @@ import {
 import {
   appendGenerationEvent,
   attachGenerationEventProviderTask,
+  clearGenerationEvents,
   completeGenerationEvent,
   listGenerationEvents,
   normalizeInterruptedEvents,
@@ -132,6 +133,23 @@ describe("server generation event persistence", () => {
     await expect(listGenerationEvents(SESSION_B, projectId)).rejects.toThrow();
     expect(await getLastActiveProjectId(SESSION_A)).toBe(projectId);
     expect(await getLastActiveProjectId(SESSION_B)).toBeUndefined();
+  });
+
+  it("clears persisted events only when a new run explicitly requests it", async () => {
+    await appendGenerationEvent(SESSION_A, projectId, {
+      stage: "strategy",
+      provider: "deepseek",
+      action: "old-run",
+      status: "completed",
+      message: "上一轮调用。"
+    });
+
+    expect(await listGenerationEvents(SESSION_A, projectId)).toHaveLength(1);
+    const result = await clearGenerationEvents(SESSION_A, projectId);
+    expect(result.clearedCount).toBe(1);
+    expect(result.version).toBeGreaterThan(1);
+    expect(await listGenerationEvents(SESSION_A, projectId)).toEqual([]);
+    await expect(clearGenerationEvents(SESSION_B, projectId)).rejects.toThrow();
   });
 
   it("marks stale running events as interrupted", async () => {

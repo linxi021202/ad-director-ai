@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { listGenerationEvents } from "@/lib/projects/generationEvents";
+import { clearGenerationEvents, listGenerationEvents } from "@/lib/projects/generationEvents";
 import { parseOwnedProjectId, projectNotFoundResponse, projectStoreErrorResponse } from "@/lib/projects/api";
 import { getAnonymousApiSession } from "@/lib/session/api";
 
@@ -23,6 +23,22 @@ export async function GET(request: Request, context: RouteContext) {
       limit: Number.isFinite(limit) ? limit : 200
     });
     return NextResponse.json({ success: true, data: { events } }, {
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+    });
+  } catch (error) {
+    return projectStoreErrorResponse(error) ?? projectNotFoundResponse();
+  }
+}
+
+export async function DELETE(_request: Request, context: RouteContext) {
+  const sessionResult = await getAnonymousApiSession();
+  if (!sessionResult.initialized) return sessionResult.response;
+  const projectId = parseOwnedProjectId((await context.params).projectId);
+  if (!projectId) return projectNotFoundResponse();
+
+  try {
+    const result = await clearGenerationEvents(sessionResult.session.id, projectId);
+    return NextResponse.json({ success: true, data: result }, {
       headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
     });
   } catch (error) {

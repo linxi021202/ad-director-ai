@@ -20,6 +20,7 @@ import {
   type HeroVideoSource
 } from "@/lib/heroVideo";
 import { formatFileSize, resolveProductImageUrl } from "@/lib/productImages";
+import { clearProjectGenerationEvents } from "@/lib/projects/clientGenerationEvents";
 import type { AspectRatio, GenerationProject, StoryboardShot } from "@/lib/schemas/project";
 import {
   DEFAULT_SHOT_DURATION_SEC,
@@ -266,6 +267,12 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     }
   }, []);
 
+  async function resetGenerationLogForNewRun() {
+    const result = await clearProjectGenerationEvents(displayProject.id);
+    setCurrentVersion((current) => Math.max(current, result.version));
+    setDisplayProject((current) => ({ ...current, generationEvents: [] }));
+  }
+
 
   useEffect(() => {
     let cancelled = false;
@@ -452,6 +459,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     }, 1_000);
     setTimelineError(null);
     try {
+      await resetGenerationLogForNewRun();
       const targetDurationSec = clampTargetDuration(
         shotCount,
         displayProject.targetDurationSec ?? displayProject.brief.durationSec
@@ -495,6 +503,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     markShotsLoading(targetShots);
 
     try {
+      await resetGenerationLogForNewRun();
       const response = await fetch("/api/generate-images", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -595,6 +604,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       if (!(displayProject.brief.productImages ?? []).some((image) => image.role !== "logo" && (image.localUrl || image.remoteUrl || image.url))) {
         throw new Error("Wan 2.7 多参考生成需要至少一张已保存的真实产品图。请先返回生成页上传产品主图。");
       }
+      await resetGenerationLogForNewRun();
       const response = await fetch(`/api/projects/${encodeURIComponent(displayProject.id)}/wan-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -676,6 +686,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
     setRenderStatus({ status: "validating", progress: 0.02, stage: "正在校验成片素材", outputUrl: null, errorMessage: null });
     try {
+      await resetGenerationLogForNewRun();
       const response = await fetch(`/api/projects/${encodeURIComponent(displayProject.id)}/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

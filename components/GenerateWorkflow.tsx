@@ -21,6 +21,7 @@ import {
   saveProjectBriefWithConflictRetry,
   type ProjectPatchData
 } from "@/lib/projects/clientMutations";
+import { clearProjectGenerationEvents } from "@/lib/projects/clientGenerationEvents";
 import {
   DEFAULT_SHOT_DURATION_SEC,
   DEFAULT_TARGET_DURATION_SEC,
@@ -334,6 +335,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setError(null);
     setTraceLabel(`正在重新生成 ${shotCount} 个分镜`);
     try {
+      await resetGenerationLogForNewRun(activeProject.id);
       const targetDurationSec = clampTargetDuration(shotCount, briefDraft.targetDurationSec);
       const shotDurationPlan = allocateShotDurations(shotCount, targetDurationSec);
       const response = await postApi<{ shots: StoryboardShot[] }>("/api/generate-storyboard", {
@@ -417,6 +419,14 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }, []);
 
+  async function resetGenerationLogForNewRun(projectId: string) {
+    await projectWriteQueueRef.current;
+    const result = await clearProjectGenerationEvents(projectId);
+    trackServerVersion(result.version);
+    setCallTrace([]);
+    setActiveProject((current) => current.id === projectId ? { ...current, generationEvents: [] } : current);
+  }
+
   useEffect(() => {
     void refreshServerEvents(activeProject.id);
   }, [activeProject.id, refreshServerEvents]);
@@ -480,9 +490,11 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
 
     setIsGenerating(true);
-    setTraceLabel("真实调用中");
+    setTraceLabel("正在开始新一轮调用");
 
     try {
+      await resetGenerationLogForNewRun(activeProject.id);
+      setTraceLabel("真实调用中");
       let workingProject = activeProject;
       let generatedImages: GenerateImagesData["images"] = liveKeyframes;
       if (selection.deepseek) {
