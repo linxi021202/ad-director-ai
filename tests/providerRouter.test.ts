@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
 import { qwenImageProvider, QWEN_IMAGE_PLACEHOLDER_URL } from "../lib/providers/qwenImageProvider";
-import { happyHorseVideoProvider } from "../lib/providers/happyHorseVideoProvider";
+import { wanVideoProvider } from "../lib/providers/wanVideoProvider";
 import { generatePrompts, generateShotImage, runTextTask, scoreAdPlan, selectProviderModel } from "../lib/providers/providerRouter";
 
 const qwenProviderWithShotImage = qwenImageProvider as typeof qwenImageProvider & { generateShotImage: NonNullable<typeof qwenImageProvider.generateShotImage> };
@@ -15,7 +15,7 @@ function resetEnv() {
   delete process.env.ENABLE_REAL_TEXT;
   delete process.env.ENABLE_REAL_IMAGE;
   delete process.env.ENABLE_REAL_VIDEO;
-  delete process.env.HAPPYHORSE_MODEL;
+  delete process.env.WAN_VIDEO_MODEL;
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.DEEPSEEK_MODEL;
   delete process.env.DASHSCOPE_API_KEY;
@@ -130,7 +130,7 @@ describe("providerRouter", () => {
       fixSuggestions: ["继续压缩字幕。"],
       modelRouteCheck: {
         allowedOnly: true,
-        usedModels: ["deepseek-v4-flash" as const, "qwen-image" as const, "happyhorse-1.0-r2v" as const, "remotion" as const],
+        usedModels: ["deepseek-v4-flash" as const, "qwen-image" as const, "wan2.7-r2v" as const, "remotion" as const],
         forbiddenModelsFound: []
       },
       videoGenerationStrategyCheck: {
@@ -258,14 +258,14 @@ describe("providerRouter", () => {
     expect(result.fallbackReason).toContain("Qwen-Image route failed unexpectedly");
   });
 
-  it("returns planned HappyHorse video node", () => {
-    process.env.HAPPYHORSE_MODEL = "happyhorse-1.0-r2v";
+  it("routes new video generation to Wan 2.7 R2V", () => {
+    process.env.WAN_VIDEO_MODEL = "wan2.7-r2v";
 
     const route = selectProviderModel({ taskType: "video", costMode: "lowCost" });
 
-    expect(route.provider).toBe("happyhorse");
-    expect(route.model).toBe("happyhorse-1.0-r2v");
-    expect(route.reason).toContain("HappyHorse");
+    expect(route.provider).toBe("wan");
+    expect(route.model).toBe("wan2.7-r2v");
+    expect(route.reason).toContain("Wan 2.7");
   });
 
   it("returns planned remotion render node", () => {
@@ -277,8 +277,8 @@ describe("providerRouter", () => {
   });
 
 
-  it("keeps HappyHorse provider reserved without real API calls", async () => {
-    const result = await happyHorseVideoProvider.generateHeroVideoFromImage?.({
+  it("keeps Wan provider blocked until session key and project references are ready", async () => {
+    const result = await wanVideoProvider.generateHeroVideoFromImage?.({
       imageUrl: "/generated/images/coldbrew-demo-001/shot-3.png",
       prompt: coldBrewDemo.shots[2].videoPromptCn,
       durationSec: 5,
@@ -287,15 +287,15 @@ describe("providerRouter", () => {
 
     expect(result).toEqual({
       success: false,
-      provider: "happyhorse",
+      provider: "wan",
       capability: "manual-import",
       apiAvailable: false,
       manualImportAvailable: true,
       status: "waiting-manual-import",
-      error: "HappyHorse 真实调用当前不可用，可改用手动导入视频作为备用路径。"
+      error: "Wan 2.7 真实调用当前不可用，可从视频库导入完整广告视频作为备用路径。"
     });
-  });  it("does not return legacy video vendors in the MVP main route", () => {
-    const forbidden = /Wan|Kling|Hailuo|fal\\.ai|wan|kling|hailuo/;
+  });  it("does not return legacy video vendors in the primary route", () => {
+    const forbidden = /HappyHorse|Kling|Hailuo|fal\\.ai|happyhorse|kling|hailuo/;
     const routes = [
       selectProviderModel({ taskType: "strategy" }),
       selectProviderModel({ taskType: "storyboard" }),

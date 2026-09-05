@@ -21,6 +21,8 @@ export type HeroVideoStatus =
   | "fallback-to-keyframe";
 
 export type HeroVideoSource =
+  | "user-upload"
+  | "wan-api"
   | "happyhorse-manual-import"
   | "happyhorse-api"
   | "happyhorse"
@@ -72,7 +74,9 @@ export function getHeroVideoStatus(input: HeroVideoStateInput): HeroVideoStatus 
   if (input.fallbackToKeyframe) return "fallback-to-keyframe";
   if (input.videoSource === "local-demo-asset") return "using-demo-asset";
   if (
-    input.videoSource === "happyhorse"
+    input.videoSource === "user-upload"
+    || input.videoSource === "wan-api"
+    || input.videoSource === "happyhorse"
     || input.videoSource === "happyhorse-api"
     || input.videoSource === "happyhorse-manual-import"
   ) {

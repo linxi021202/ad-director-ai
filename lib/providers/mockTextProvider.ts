@@ -39,7 +39,7 @@ function mockShotsForBrief(brief: ProductBrief, context?: ProviderRequestContext
         ? `基于主镜头关键帧和真实产品参考图生成 ${durationSec} 秒广告视频；保持包装、主体构图与画面一致，不生成任何文字。`
         : `该 ${durationSec} 秒镜头使用 Qwen-Image 关键帧与 Remotion 动效完成。`,
       recommendedModel: zeroBasedIndex === heroIndex
-        ? "happyhorse-1.0-r2v"
+        ? "wan2.7-r2v"
         : zeroBasedIndex === timeline.shotCount - 1
           ? "remotion"
           : "qwen-image"

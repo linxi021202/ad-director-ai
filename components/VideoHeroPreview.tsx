@@ -21,7 +21,7 @@ export function VideoHeroPreview({ preview, videoUrl, fallbackUrl, prominent = f
       </div>
       <div className="video-cinema-foot">
         <span>降级就绪</span>
-        <span>{fallbackUrl ? "图片动效" : "HappyHorse"}</span>
+        <span>{fallbackUrl ? "图片动效" : "Wan 2.7"}</span>
       </div>
     </section>
   );

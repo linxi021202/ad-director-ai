@@ -108,7 +108,7 @@ export type HeroVideoFromImageInput = {
 
 export type ReservedVideoProviderResponse = {
   success: false;
-  provider: "happyhorse";
+  provider: "happyhorse" | "wan";
   capability: "api-available" | "manual-import" | "not-configured";
   apiAvailable: boolean;
   manualImportAvailable: boolean;
@@ -205,7 +205,11 @@ export type VideoProvider = {
     imageUrl: string,
     options: VideoGenerationOptions
   ) => Promise<ProviderResponse<VideoGenerationResult>>;
-  generateHeroVideoFromImage?: (input: HeroVideoFromImageInput) => Promise<ReservedVideoProviderResponse | import("../video/types").HappyHorseVideoResult>;
+  generateHeroVideoFromImage?: (input: HeroVideoFromImageInput) => Promise<
+    ReservedVideoProviderResponse
+    | import("../video/types").HappyHorseVideoResult
+    | import("../video/types").WanVideoResult
+  >;
 };
 
 export type TTSProvider = {

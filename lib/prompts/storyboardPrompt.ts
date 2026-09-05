@@ -3,7 +3,7 @@ import { NO_READABLE_TEXT_CN, NO_READABLE_TEXT_EN } from "./noReadableText";
 import type { AdStrategy, ProductBrief } from "../schemas/project";
 import { createShotPromptTimeSegments, getDefaultHeroShotArrayIndex, resolveShotPlan } from "../video/shotConfig";
 
-const allowedModels = ["deepseek-v4-flash", "qwen-image", "happyhorse-1.0-r2v", "remotion"];
+const allowedModels = ["deepseek-v4-flash", "qwen-image", "wan2.7-r2v", "remotion"];
 type ShotPlanInput = { requestedShotCount?: number; targetDurationSec?: number; shotDurationPlan?: number[] };
 
 export function buildStoryboardPrompt(brief: ProductBrief, strategy: AdStrategy, input: ShotPlanInput = {}): string {
@@ -37,7 +37,7 @@ export function buildStoryboardPrompt(brief: ProductBrief, strategy: AdStrategy,
         videoPromptCn: isHero
           ? `基于主镜头关键帧和真实产品参考图生成 ${durationSec} 秒视频：${opening.startSec}–${opening.endSec} 秒建立产品，${development.startSec}–${development.endSec} 秒缓慢推进或轻微横移，${closing.startSec}–${closing.endSec} 秒稳定主体并完成光线变化；保持包装结构、材质、颜色和比例，不新增人物，不生成文字。`
           : `该 ${durationSec} 秒镜头使用关键帧配合 Remotion 动效，不要求生成独立视频。`,
-        recommendedModel: isHero ? "happyhorse-1.0-r2v" : isClosing ? "remotion" : "qwen-image",
+        recommendedModel: isHero ? "wan2.7-r2v" : isClosing ? "remotion" : "qwen-image",
         fallbackPlan: "模型不可用时使用关键帧与 Remotion 图片动效完成。",
         continuityGroupId,
         sceneGroupId: continuityGroupId,
@@ -98,7 +98,7 @@ ${JSON.stringify(strategy, null, 2)}
 - generationMode 是系统规划元数据，不改变当前 Provider：主镜头使用 r2v，静态产品、结尾和低风险镜头使用 remotion-motion。
 - motionComplexityScore 必须为 0–6；每镜最多一个主要人物、一个主要产品、一个核心动作、一个镜头运动和一个状态变化。
 - textSafeZone 只能是 top-left、top-center、bottom-left、none，并在画面中保留干净低细节区域。
-- 默认主镜头为第 ${heroIndex + 1} 镜，主镜头时长 ${durations[heroIndex]} 秒；全片只规划 1 个 HappyHorse 视频镜头。
+- 默认主镜头为第 ${heroIndex + 1} 镜，主镜头时长 ${durations[heroIndex]} 秒；全片只规划 1 个 Wan 2.7 R2V 视频镜头。
 - 最后一个镜头承担 CTA，停留 ${durations.at(-1)} 秒。
 - 每条字幕不超过 16 个中文字符。
 - 每个 imagePromptCn、imagePromptEn 和 videoPromptCn 都必须具体、详细、可执行。
@@ -109,7 +109,7 @@ ${productImageReferenceNote(brief)}
 - 每个图片与视频提示词都必须包含以下无文字约束：
 ${NO_READABLE_TEXT_CN}
 ${NO_READABLE_TEXT_EN}
-- 字幕、标题、卖点和 CTA 只作为 Remotion 后期叠加元数据，不得进入 Qwen-Image 或 HappyHorse 的画面像素。
+- 字幕、标题、卖点和 CTA 只作为 Remotion 后期叠加元数据，不得进入 Qwen-Image 或 Wan 的画面像素。
 - 价格、折扣、功效数字、认证、排名与百分比只能引用 verifiedClaims：${JSON.stringify(brief.verifiedClaims ?? [])}；不得自行发明。
 
 目标 JSON 示例：

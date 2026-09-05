@@ -14,19 +14,19 @@ describe("anonymous workspace model settings", () => {
     expect(generate).toContain("<ModelSettingsSheet");
   });
 
-  it("checks DeepSeek, Qwen-Image and HappyHorse before real generation", () => {
+  it("checks DeepSeek, Qwen-Image and Wan before real generation", () => {
     expect(generate).toContain("missingRequiredProvider");
     expect(generate).toContain("生成策略与分镜前需要配置 DeepSeek");
     expect(generate).toContain("生成关键帧前需要配置 Qwen-Image");
-    expect(generate).toContain("调用 HappyHorse 前需要配置百炼 API Key");
+    expect(generate).toContain("调用 Wan 2.7 前需要配置百炼 API Key");
     expect(sheet).toContain("initialProvider");
   });
 
-  it("shares the DashScope key with HappyHorse and keeps Remotion local execution truthful", () => {
+  it("shares the DashScope key with Wan and keeps Remotion local execution truthful", () => {
     expect(sheet).toContain("共享百炼 API Key");
     expect(sheet).toContain("本地执行 · 无需 API Key");
-    expect(generate).toContain('title="HappyHorse 视频"');
-    expect(generate).toContain('toggleSelection("happyHorse")');
+    expect(generate).toContain('title="Wan 2.7 视频"');
+    expect(generate).toContain('toggleSelection("wan")');
     expect(generate).not.toContain('provider: "happyhorse" as const');
   });
 

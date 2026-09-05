@@ -59,7 +59,7 @@ async function save(input: {
   durationSec?: number;
   width?: number;
   height?: number;
-  source?: "happyhorse-manual-import" | "happyhorse-api";
+  source?: "user-upload" | "wan-api" | "happyhorse-manual-import" | "happyhorse-api";
   fileName?: string;
   mimeType?: string;
 }) {
@@ -100,7 +100,7 @@ afterEach(async () => {
   process.env = { ...originalEnv };
 });
 
-describe("private HappyHorse hero video assets", () => {
+describe("private advertising video assets", () => {
   it("stores and restores a valid MP4 through the authorized asset URL", async () => {
     const result = await save({});
     expect(result.success).toBe(true);
@@ -109,7 +109,7 @@ describe("private HappyHorse hero video assets", () => {
     expect(result.asset.publicUrl).toBe(
       `/api/projects/${projectId}/assets/${result.asset.assetId}`
     );
-    expect(result.asset.source).toBe("happyhorse-manual-import");
+    expect(result.asset.source).toBe("user-upload");
     expect(await heroVideoFileExists(SESSION_A, result.asset)).toBe(true);
 
     const state = await readHeroVideoProjectState(SESSION_A, projectId);
@@ -131,11 +131,11 @@ describe("private HappyHorse hero video assets", () => {
     expect(horizontal.success).toBe(true);
   });
 
-  it("keeps HappyHorse API output constrained to the selected shot duration", async () => {
-    const short = await save({ durationSec: 2, source: "happyhorse-api" });
+  it("keeps Wan API output constrained to the selected shot duration", async () => {
+    const short = await save({ durationSec: 2, source: "wan-api" });
     expect(short.success).toBe(false);
 
-    const mismatch = await save({ durationSec: heroShotDurationSec + 2, source: "happyhorse-api" });
+    const mismatch = await save({ durationSec: heroShotDurationSec + 2, source: "wan-api" });
     expect(mismatch.success).toBe(false);
   });
 
@@ -143,10 +143,10 @@ describe("private HappyHorse hero video assets", () => {
     const result = await save({
       width: 1280,
       height: 720,
-      source: "happyhorse-api"
+      source: "wan-api"
     });
     expect(result.success).toBe(true);
-    if (result.success) expect(result.asset.source).toBe("happyhorse-api");
+    if (result.success) expect(result.asset.source).toBe("wan-api");
   });
 
   it("keeps the previous valid video when replacement validation fails", async () => {

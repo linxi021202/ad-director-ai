@@ -312,6 +312,7 @@ export const generationProviderSchema = z.enum([
   "deepseek",
   "qwen-image",
   "happyhorse",
+  "wan",
   "remotion"
 ]);
 

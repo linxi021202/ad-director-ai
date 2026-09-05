@@ -4,7 +4,7 @@ import { assertPrivateAssetReadable, requirePrivateAsset } from "../assets/asset
 import type { ProductImage } from "../schemas/project";
 import { assertServerOnly } from "../server-only";
 
-assertServerOnly("HappyHorse reference image resolver");
+assertServerOnly("video reference image resolver");
 
 export type HappyHorseReferenceImage = {
   url: string;
@@ -25,7 +25,7 @@ export async function resolveHappyHorseReferenceImages(input: {
     .sort((a, b) => Number(b.role === "main-product") - Number(a.role === "main-product"));
 
   if (productImages.length === 0) {
-    throw new Error("HappyHorse 多参考图生成至少需要一张真实产品图。");
+    throw new Error("多参考视频生成至少需要一张真实产品图。");
   }
 
   const references: HappyHorseReferenceImage[] = [];
@@ -48,6 +48,19 @@ export async function resolveHappyHorseReferenceImages(input: {
   return dedupeReferences(references).slice(0, MAX_REFERENCE_IMAGES);
 }
 
+export async function resolveWanReferenceImages(input: {
+  sessionId: string;
+  projectId: string;
+  heroImageAssetId?: string;
+  productImages?: ProductImage[];
+}): Promise<HappyHorseReferenceImage[]> {
+  const references = await resolveHappyHorseReferenceImages(input);
+  const scene = references.find((reference) => reference.role === "scene");
+  const products = references.filter((reference) => reference.role === "product").slice(0, 4);
+  if (!scene) throw new Error("Wan 2.7 R2V 需要当前主镜头关键帧作为首帧参考。");
+  return [scene, ...products].slice(0, 5);
+}
+
 async function privateAssetDataUrl(
   sessionId: string,
   projectId: string,
@@ -58,11 +71,11 @@ async function privateAssetDataUrl(
   const allowedKinds = role === "product"
     ? ["product-image", "reference-image", "logo"]
     : ["keyframe"];
-  if (!allowedKinds.includes(asset.kind)) throw new Error("HappyHorse 参考资产类型不匹配。");
-  if (!asset.mimeType.startsWith("image/")) throw new Error("HappyHorse 参考资产不是图片。");
+  if (!allowedKinds.includes(asset.kind)) throw new Error("视频参考资产类型不匹配。");
+  if (!asset.mimeType.startsWith("image/")) throw new Error("视频参考资产不是图片。");
   const filePath = await assertPrivateAssetReadable(asset);
   const buffer = await readFile(filePath);
-  if (buffer.byteLength > MAX_REFERENCE_BYTES) throw new Error("HappyHorse 单张参考图不能超过 20MB。");
+  if (buffer.byteLength > MAX_REFERENCE_BYTES) throw new Error("单张视频参考图不能超过 20MB。");
   return `data:${asset.mimeType};base64,${buffer.toString("base64")}`;
 }
 

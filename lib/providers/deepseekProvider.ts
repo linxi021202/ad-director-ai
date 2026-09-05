@@ -21,7 +21,7 @@ import {
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
 
-const allowedModelSchema = z.enum(["deepseek-v4-flash", "qwen-image", "happyhorse-1.0-r2v", "remotion"]);
+const allowedModelSchema = z.enum(["deepseek-v4-flash", "qwen-image", "wan2.7-r2v", "happyhorse-1.0-r2v", "remotion"]);
 
 const routedShotSchema = storyboardShotSchema.extend({
   recommendedModel: allowedModelSchema

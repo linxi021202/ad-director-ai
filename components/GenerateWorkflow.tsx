@@ -48,7 +48,7 @@ type BriefDraft = {
 type CallSelection = {
   deepseek: boolean;
   qwenImage: boolean;
-  happyHorse: boolean;
+  wan: boolean;
 };
 
 type ProviderDiagnostic = {
@@ -67,7 +67,7 @@ type ApiResponse<T> = {
   error?: string;
 };
 
-type HappyHorseVideoData = { asset: { publicUrl: string; shotId: string; source: "happyhorse-api" } };
+type WanVideoData = { asset: { publicUrl: string; shotId: string; source: "wan-api" } };
 
 type GenerateImagesData = {
   images: Array<{
@@ -88,7 +88,7 @@ type GenerateImagesData = {
 };
 
 const chain = ["简报", "策略", "分镜", "关键帧", "主镜头", "合成"];
-const routes = ["DeepSeek → 策略 / 分镜 / 提示词", "Qwen-Image → 关键帧", "HappyHorse → 主镜头", "Remotion → 成片合成"];
+const routes = ["DeepSeek → 策略 / 分镜 / 提示词", "Qwen-Image → 关键帧", "Wan 2.7 → 广告视频", "Remotion → 成片合成"];
 function isProviderDiagnostic(value: unknown): value is ProviderDiagnostic {
   return Boolean(
     value &&
@@ -131,8 +131,8 @@ function selectedProvidersReady(selection: CallSelection, status: ModelSettingsS
   if (!status) return false;
   if (selection.deepseek && !status.deepseek.configured) return false;
   if (selection.qwenImage && !status.qwenImage.configured) return false;
-  if (selection.happyHorse && !status.happyHorse.apiAvailable) return false;
-  return selection.deepseek || selection.qwenImage || selection.happyHorse;
+  if (selection.wan && !status.wan.apiAvailable) return false;
+  return selection.deepseek || selection.qwenImage || selection.wan;
 }
 
 export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateProject }: GenerateWorkflowProps) {
@@ -157,7 +157,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [requestedShotCount, setRequestedShotCount] = useState(() => initialShotCount);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepState>(() => workflowFromProject(initialProject));
   const [mode, setMode] = useState<GenerationMode>("template");
-  const [selection, setSelection] = useState<CallSelection>({ deepseek: true, qwenImage: true, happyHorse: true });
+  const [selection, setSelection] = useState<CallSelection>({ deepseek: true, qwenImage: true, wan: true });
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [traceLabel, setTraceLabel] = useState(() => initialTraceLabel(initialProject.generationEvents));
@@ -354,7 +354,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     if (mode !== "custom") return null;
     if (selection.deepseek && !modelStatus?.deepseek.configured) return { provider: "deepseek" as const, guidance: "生成策略与分镜前需要配置 DeepSeek。" };
     if (selection.qwenImage && !modelStatus?.qwenImage.configured) return { provider: "qwen-image" as const, guidance: "生成关键帧前需要配置 Qwen-Image。" };
-    if (selection.happyHorse && !modelStatus?.happyHorse.apiAvailable) return { provider: "qwen-image" as const, guidance: "调用 HappyHorse 前需要配置百炼 API Key，并在服务端启用真实视频生成。" };
+    if (selection.wan && !modelStatus?.wan.apiAvailable) return { provider: "qwen-image" as const, guidance: "调用 Wan 2.7 前需要配置百炼 API Key，并在服务端启用真实视频生成。" };
 
     return null;
   }
@@ -429,7 +429,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       return;
     }
 
-    if (!selection.deepseek && !selection.qwenImage && !selection.happyHorse) {
+    if (!selection.deepseek && !selection.qwenImage && !selection.wan) {
       setError("请至少选择一个真实调用节点，或切回使用模板。");
       commitWorkflow(idleWorkflowSteps);
       return;
@@ -488,24 +488,24 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
           throw new Error(imageResponse.error || "Qwen-Image 关键帧生成失败，请检查百炼配置。");
         }
         generatedImages = imageResponse.data.images;
-        patchWorkflow({ keyframes: generatedImages.some((image) => image.fallbackUsed) ? "fallback" : "completed", heroShot: selection.happyHorse ? "running" : "pending" });
+        patchWorkflow({ keyframes: generatedImages.some((image) => image.fallbackUsed) ? "fallback" : "completed", heroShot: selection.wan ? "running" : "pending" });
         setLiveKeyframes(generatedImages);
       }
 
-      if (selection.happyHorse) {
+      if (selection.wan) {
         const selectedHeroShot = resolveHeroShot(workingProject.shots, workingProject.heroShotId) ?? workingProject.shots[0];
-        if (!selectedHeroShot) throw new Error("HappyHorse 调用失败：项目没有可用的主镜头。");
+        if (!selectedHeroShot) throw new Error("Wan 2.7 调用失败：项目没有可用的主镜头。");
         const heroKeyframe = generatedImages.find((image) => image.shotId === selectedHeroShot.id);
         const heroReferenceUrl = heroKeyframe?.localUrl || heroKeyframe?.imageUrl;
         if (!heroReferenceUrl) {
-          throw new Error("HappyHorse 多参考图生成需要当前主镜头关键帧。请先生成当前主镜头关键帧。");
+          throw new Error("Wan 2.7 多参考生成需要当前主镜头关键帧。请先生成当前主镜头关键帧。");
         }
         if (!(workingProject.brief.productImages ?? []).some((image) => image.role !== "logo" && (image.localUrl || image.remoteUrl || image.url))) {
-          throw new Error("HappyHorse 多参考图生成需要至少一张已保存的真实产品图。请先在商品简报上传产品主图。");
+          throw new Error("Wan 2.7 多参考生成需要至少一张已保存的真实产品图。请先在商品简报上传产品主图。");
         }
-        setTraceLabel("HappyHorse 主镜头调用中");
+        setTraceLabel("Wan 2.7 广告视频调用中");
         setStep("heroShot", "running");
-        const videoResponse = await postApi<HappyHorseVideoData>("/api/projects/" + encodeURIComponent(workingProject.id) + "/happyhorse-video", {
+        const videoResponse = await postApi<WanVideoData>("/api/projects/" + encodeURIComponent(workingProject.id) + "/wan-video", {
           shotId: selectedHeroShot.id,
           imageUrl: heroReferenceUrl,
           productImages: workingProject.brief.productImages ?? [],
@@ -514,7 +514,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
           durationSec: Math.min(MAX_SHOT_DURATION_SEC, Math.max(MIN_SHOT_DURATION_SEC, Math.round(selectedHeroShot.durationSec || DEFAULT_SHOT_DURATION_SEC)))
         });
         if (!videoResponse.success || !videoResponse.data?.asset) {
-          throw new Error(videoResponse.error || "HappyHorse 主镜头生成失败，请检查百炼 Key、模型权限和账户状态。");
+          throw new Error(videoResponse.error || "Wan 2.7 广告视频生成失败，请检查百炼 Key、模型权限和账户状态。");
         }
         setStep("heroShot", "completed");
       }
@@ -523,7 +523,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         const next: WorkflowStepState = {
           ...current,
           keyframes: selection.qwenImage ? current.keyframes : "fallback",
-          heroShot: selection.happyHorse ? current.heroShot : "pending",
+          heroShot: selection.wan ? current.heroShot : "pending",
           render: "pending"
         };
         void patchServerProject(activeProject.id, { workflowSteps: next, status: "completed" }).catch((saveError) => {
@@ -621,7 +621,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <div className="generation-call-picker-v3">
                 <CallToggle active={selection.deepseek} title="DeepSeek 文本" desc="策略、分镜与提示词" onClick={() => toggleSelection("deepseek")} disabled={isGenerating} />
                 <CallToggle active={selection.qwenImage} title="Qwen-Image 关键帧" desc={`生成${briefDraft.shotCount}张关键帧`} onClick={() => toggleSelection("qwenImage")} disabled={isGenerating} />
-                <CallToggle active={selection.happyHorse} title="HappyHorse 视频" desc="参考真实产品图生成主镜头" onClick={() => toggleSelection("happyHorse")} disabled={isGenerating} />
+                <CallToggle active={selection.wan} title="Wan 2.7 视频" desc="参考真实产品图生成广告镜头" onClick={() => toggleSelection("wan")} disabled={isGenerating} />
               </div>
             ) : null}
 
@@ -639,7 +639,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <div className="trace-flow-v3__head"><span>模型 Trace</span><small>{traceLabel}</small></div>
               <TraceNode name="DeepSeek" task="策略与提示词" active={selection.deepseek || mode === "template"} tone="blue" />
               <TraceNode name="Qwen-Image" task="关键帧生成" active={selection.qwenImage} tone="violet" />
-              <TraceNode name="HappyHorse" task="主镜头视频生成" active={selection.happyHorse} tone="yellow" />
+              <TraceNode name="Wan 2.7" task="多参考广告视频生成" active={selection.wan} tone="yellow" />
               <TraceNode name="Remotion" task="成片合成" active={generated} tone="green" last />
               <details className="trace-footer-v3"><summary>查看执行日志</summary>{callTrace.length ? callTrace.map((item, index) => <TraceLogLine key={`${index}-${item}`} item={item} />) : <p>生成后可查看完整调用记录。</p>}</details>
             </section>
@@ -673,7 +673,7 @@ function ModelConfigurationCard({ status }: { status: import("@/components/Model
   const rows = [
     { name: "DeepSeek", detail: status?.deepseek.configured ? "已配置" : "未配置", ready: Boolean(status?.deepseek.configured) },
     { name: "Qwen-Image", detail: status?.qwenImage.configured ? "已配置" : "未配置", ready: Boolean(status?.qwenImage.configured) },
-    { name: "HappyHorse", detail: status?.happyHorse.apiAvailable ? "已启用" : "未就绪", ready: Boolean(status?.happyHorse.apiAvailable) },
+    { name: "Wan 2.7", detail: status?.wan.apiAvailable ? "已启用" : "未就绪", ready: Boolean(status?.wan.apiAvailable) },
     { name: "Remotion", detail: "本地未启用", ready: false, title: "Remotion 本地合成功能尚未启用。" }
   ];
   return (
@@ -1040,7 +1040,7 @@ function generationEventsToTrace(events: GenerationEvent[] | undefined): string[
   return [...unique.values()]
     .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id))
     .map((event) => {
-      const provider = event.provider === "system" ? "系统" : event.provider === "qwen-image" ? "Qwen-Image" : event.provider === "happyhorse" ? "HappyHorse" : event.provider === "remotion" ? "Remotion" : "DeepSeek";
+      const provider = event.provider === "system" ? "系统" : event.provider === "qwen-image" ? "Qwen-Image" : event.provider === "wan" ? "Wan 2.7" : event.provider === "happyhorse" ? "HappyHorse（历史）" : event.provider === "remotion" ? "Remotion" : "DeepSeek";
       const progress = event.progressTotal ? `｜${event.progressCurrent ?? 0} / ${event.progressTotal}` : "";
       return `${provider}｜${event.action}｜${eventStatusLabel(event.status)}${progress}｜${event.message}`;
     });

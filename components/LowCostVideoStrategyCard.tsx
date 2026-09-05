@@ -24,7 +24,7 @@ export function LowCostVideoStrategyCard({ status, compact = false, heroShot, vi
       <p className="text-sm font-medium text-muted">视频策略</p>
       <h2 className="mt-1 text-lg font-semibold text-mist">主镜头视频策略</h2>
       <div className="mt-4 space-y-3">{rows.map((row) => <div key={row.label} className="rounded-xl border border-line bg-surface p-3"><div className="text-xs font-semibold text-blue">{row.label}</div><div className="mt-1 text-sm leading-6 text-mist">{row.value}</div></div>)}</div>
-      <div className="mt-4 rounded-xl border border-blue/20 bg-blue/10 p-3 text-xs leading-5 text-mist">MVP 只生成 1 个主镜头视频。默认通过百炼真实调用 HappyHorse；不可用时可使用手动导入或关键帧动效降级。</div>
+      <div className="mt-4 rounded-xl border border-blue/20 bg-blue/10 p-3 text-xs leading-5 text-mist">主视频通过百炼调用 Wan 2.7，并使用真实产品图作为参考；不可用时可手动导入或使用关键帧动效降级。</div>
       <div className="mt-4 flex flex-wrap gap-2"><Badge label={`最大视频镜头数： ${status.limits.maxRealVideoShotsPerRun}`} /><Badge label={`单镜头最长： ${status.limits.maxVideoSecondsPerShot}s`} /><Badge label="降级：关键帧动效" /><Badge label={`来源： ${videoSource}`} /></div>
     </section>
   );
@@ -33,8 +33,8 @@ export function LowCostVideoStrategyCard({ status, compact = false, heroShot, vi
 export function heroVideoStatusLabel(status: HeroVideoStatus) {
   const labels: Record<HeroVideoStatus, string> = {
     "not-started": "未开始，请先选择主镜头",
-    "prompt-ready": "提示词已就绪，可复制给 HappyHorse",
-    "waiting-manual-upload": "等待导入 HappyHorse 视频",
+    "prompt-ready": "提示词已就绪，可调用 Wan 2.7",
+    "waiting-manual-upload": "等待生成或导入视频",
     uploading: "正在上传并校验视频",
     uploaded: "主镜头已就绪",
     "using-demo-asset": "正在使用本地演示视频",

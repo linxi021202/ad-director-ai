@@ -32,7 +32,11 @@ describe("homepage final hero", () => {
     expect(styles).toContain("min-height: 100dvh");
     expect(page).toContain("home-route-transition");
     expect(page).toContain("transitionParticles.map");
+    expect(page).toContain("Array.from({ length: 64 }");
+    expect(page).toContain("1320");
     expect(styles).toContain("home-particle-collapse");
+    expect(styles).toContain("1800ms");
+    expect(styles).toContain("infinite");
   });
 
   it("keeps the cover copy to one short sentence", () => {

@@ -3,7 +3,7 @@ import { NO_READABLE_TEXT_CN, NO_READABLE_TEXT_EN } from "./noReadableText";
 import type { AdStrategy, ProductBrief, StoryboardShot } from "../schemas/project";
 import { createShotPromptTimeSegments } from "../video/shotConfig";
 
-const allowedModels = ["deepseek-v4-flash", "qwen-image", "happyhorse-1.0-r2v", "remotion"];
+const allowedModels = ["deepseek-v4-flash", "qwen-image", "wan2.7-r2v", "remotion"];
 
 export function buildPromptGenerationPrompt(
   brief: ProductBrief,
@@ -11,7 +11,7 @@ export function buildPromptGenerationPrompt(
   shots: StoryboardShot[]
 ): string {
   const totalDurationSec = shots.reduce((sum, shot) => sum + shot.durationSec, 0);
-  const heroShot = shots.find((shot) => shot.recommendedModel === "happyhorse-1.0-r2v") ?? shots[Math.max(0, shots.length - 2)];
+  const heroShot = shots.find((shot) => shot.recommendedModel === "wan2.7-r2v") ?? shots[Math.max(0, shots.length - 2)];
   const heroSegments = createShotPromptTimeSegments(heroShot?.durationSec ?? 5);
   const example = {
     shots: shots.map((shot) => ({
@@ -21,7 +21,7 @@ export function buildPromptGenerationPrompt(
       videoPromptCn: shot.id === heroShot?.id
         ? `基于当前主镜头关键帧与真实产品参考图生成 ${shot.durationSec} 秒广告视频；${heroSegments[0].startSec}–${heroSegments[0].endSec} 秒建立产品，${heroSegments[1].startSec}–${heroSegments[1].endSec} 秒缓慢推进或轻微横移，${heroSegments[2].startSec}–${heroSegments[2].endSec} 秒稳定产品并完成光线变化；保持产品包装结构、材质、颜色和比例，不新增人物，不改变构图，不生成文字。`
         : "该镜头使用 Qwen-Image 关键帧与 Remotion 图片动效，不生成独立视频。",
-      recommendedModel: shot.id === heroShot?.id ? "happyhorse-1.0-r2v" : shot.index === shots.length ? "remotion" : "qwen-image",
+      recommendedModel: shot.id === heroShot?.id ? "wan2.7-r2v" : shot.index === shots.length ? "remotion" : "qwen-image",
       fallbackPlan: "生成失败时使用关键帧与 Remotion 图片动效完成。"
     }))
   };
@@ -45,7 +45,7 @@ ${JSON.stringify(shots, null, 2)}
 - continuityConstraints 只描述不可变化的 Master 规则；shotDirection 只描述本镜头允许发生的动作、表演、光线和摄影机变化，不得揉成同一段。
 - 镜头时长总和为 ${totalDurationSec} 秒，必须保持不变。
 - 当前画幅为 ${brief.aspectRatio}，平台为 ${brief.platform}。
-- 全片只允许 1 个主镜头使用 HappyHorse，主镜头优先为镜头 ${heroShot?.index ?? 1}，时长 ${heroShot?.durationSec ?? 5} 秒。
+- 全片只允许 1 个主镜头使用 Wan 2.7 R2V，主镜头优先为镜头 ${heroShot?.index ?? 1}，时长 ${heroShot?.durationSec ?? 5} 秒。
 - 其他镜头使用 Qwen-Image 关键帧与 Remotion 图片动效；最后一个镜头用于 CTA 合成。
 - recommendedModel 只能是：${allowedModels.join("、")}。
 - imagePromptCn 使用 100–220 个中文字符，明确场景、主体、产品一致性、光线、构图、景别、质感、背景和安全要求。

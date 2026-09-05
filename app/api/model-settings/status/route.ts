@@ -13,15 +13,15 @@ export async function GET() {
     getProviderSecretStatus("deepseek", session.id),
     getProviderSecretStatus("qwen-image", session.id)
   ]);
-  const happyHorseApiAvailable = getAIConfig({ allowSessionSecrets: true }).realVideoEnabled
+  const wanApiAvailable = getAIConfig({ allowSessionSecrets: true }).realVideoEnabled
     && qwenImage.configured;
 
   return NextResponse.json({
     deepseek,
     qwenImage,
-    happyHorse: {
-      capability: happyHorseApiAvailable ? "api-available" as const : "not-configured" as const,
-      apiAvailable: happyHorseApiAvailable
+    wan: {
+      capability: wanApiAvailable ? "api-available" as const : "not-configured" as const,
+      apiAvailable: wanApiAvailable
     },
     remotion: {
       source: "local" as const

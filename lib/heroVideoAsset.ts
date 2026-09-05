@@ -22,7 +22,7 @@ export const heroVideoAssetSchema = z.object({
   assetId: z.string().uuid(),
   projectId: z.string().uuid(),
   shotId: z.string().min(1),
-  source: z.enum(["happyhorse-manual-import", "happyhorse-api"]),
+  source: z.enum(["user-upload", "wan-api", "happyhorse-manual-import", "happyhorse-api"]),
   fileName: z.string().min(1),
   mimeType: z.literal("video/mp4"),
   sizeBytes: z.number().int().positive(),
@@ -53,7 +53,7 @@ export type HeroVideoUploadInput = {
   mimeType: string;
   sizeBytes: number;
   buffer: Buffer;
-  source?: "happyhorse-manual-import" | "happyhorse-api";
+  source?: "user-upload" | "wan-api" | "happyhorse-manual-import" | "happyhorse-api";
 };
 
 export type HeroVideoUploadResult =
@@ -117,12 +117,13 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
 
   const metadata = parseMp4Metadata(input.buffer);
   if (!metadata) return fail("无法读取 MP4 视频元数据。", 400);
-  const source = input.source ?? "happyhorse-manual-import";
-  if (source === "happyhorse-api" && metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC) {
-    return fail(`HappyHorse 视频时长不能短于 ${MIN_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
+  const source = input.source ?? "user-upload";
+  const isGeneratedShot = source === "wan-api" || source === "happyhorse-api";
+  if (isGeneratedShot && metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC) {
+    return fail(`AI 生成视频时长不能短于 ${MIN_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
   }
-  if (source === "happyhorse-api" && metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC) {
-    return fail(`HappyHorse 视频时长不能超过 ${MAX_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
+  if (isGeneratedShot && metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC) {
+    return fail(`AI 生成视频时长不能超过 ${MAX_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
   }
 
   try {
@@ -131,7 +132,7 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
     if (!configuredHeroShot) {
       return fail("HERO_VIDEO_DURATION_MISMATCH：当前视频对应的主镜头已失效，请重新选择主镜头。", 409);
     }
-    if (source === "happyhorse-api" && Math.abs(metadata.durationSec - configuredHeroShot.durationSec) > 0.75) {
+    if (isGeneratedShot && Math.abs(metadata.durationSec - configuredHeroShot.durationSec) > 0.75) {
       return fail(
         "HERO_VIDEO_DURATION_MISMATCH：当前视频时长与主镜头设定不一致。主镜头需要 "
           + configuredHeroShot.durationSec

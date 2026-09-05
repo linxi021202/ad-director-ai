@@ -9,7 +9,6 @@ import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ShotDetailsSheet, type ShotDetailsTab } from "@/components/ShotDetailsSheet";
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
-import { ensureProjectContinuity } from "@/lib/continuity/projectContinuity";
 import {
   buildOptimizedVideoPrompt,
   DEFAULT_HERO_SHOT_ID,
@@ -45,7 +44,7 @@ type HeroVideoAssetClient = {
   assetId: string;
   projectId: string;
   shotId: string;
-  source: "happyhorse-manual-import" | "happyhorse-api";
+  source: "user-upload" | "wan-api" | "happyhorse-manual-import" | "happyhorse-api";
   fileName: string;
   mimeType: "video/mp4";
   sizeBytes: number;
@@ -109,7 +108,7 @@ type VideoLibraryItemClient = {
   projectId: string;
   projectName: string;
   kind: "hero-video" | "final-video";
-  source: "user-upload" | "qwen-image" | "happyhorse-manual-import" | "happyhorse-api" | "remotion" | "system-demo";
+  source: "user-upload" | "qwen-image" | "wan-api" | "happyhorse-manual-import" | "happyhorse-api" | "remotion" | "system-demo";
   fileName: string;
   mimeType: string;
   sizeBytes: number;
@@ -158,7 +157,6 @@ type NextProjectAction = {
 
 export function ProjectDetailView({ project, projectId, projectVersion, aiStatus }: ProjectDetailViewProps) {
   const [displayProject, setDisplayProject] = useState<GenerationProject>(() => normalizeProjectDuration(project));
-  const continuityArchitecture = useMemo(() => ensureProjectContinuity(displayProject), [displayProject]);
   const [currentVersion, setCurrentVersion] = useState(projectVersion);
   const [heroShotId, setHeroShotId] = useState<string | undefined>(project.heroShotId ?? undefined);
   const [keyframes, setKeyframes] = useState<Record<string, KeyframeResult>>(() => projectKeyframesRecord(project));
@@ -373,7 +371,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       const saved = applyProjectSnapshot(payload.data);
       setFinalVideo(null);
       setRenderStatus(saved.finalVideo?.status === "outdated" ? { status: "idle", progress: 0, stage: "时间轴已更新", outputUrl: null, errorMessage: null, warningMessage: "分镜时长已修改，请重新生成最终成片。" } : null);
-      if (shot.id === heroShot.id && heroVideo?.source === "happyhorse-api" && heroVideo.durationSec && Math.abs(heroVideo.durationSec - durationSec) > 0.75) {
+      if (shot.id === heroShot.id && heroVideo && isGeneratedHeroVideo(heroVideo.source) && heroVideo.durationSec && Math.abs(heroVideo.durationSec - durationSec) > 0.75) {
         setHeroVideoError(`当前视频时长与主镜头设定不一致。主镜头需要 ${durationSec} 秒，现有视频为 ${heroVideo.durationSec.toFixed(1)} 秒。`);
       }
     } catch (saveError) {
@@ -416,7 +414,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
         ? { status: "idle", progress: 0, stage: "时间轴已重新分配", outputUrl: null, errorMessage: null, warningMessage: "镜头时长已按目标时长重新分配，请重新生成最终成片。" }
         : null);
       const refreshedHeroShot = resolveHeroShot(saved.shots, saved.heroShotId ?? undefined);
-      if (refreshedHeroShot && heroVideo?.source === "happyhorse-api" && heroVideo.durationSec && Math.abs(heroVideo.durationSec - refreshedHeroShot.durationSec) > 0.75) {
+      if (refreshedHeroShot && heroVideo && isGeneratedHeroVideo(heroVideo.source) && heroVideo.durationSec && Math.abs(heroVideo.durationSec - refreshedHeroShot.durationSec) > 0.75) {
         setHeroVideoError(`当前视频时长与主镜头设定不一致。主镜头需要 ${refreshedHeroShot.durationSec} 秒，现有视频为 ${heroVideo.durationSec.toFixed(1)} 秒。`);
       }
     } catch (rebalanceError) {
@@ -558,7 +556,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     window.setTimeout(() => setCopiedPrompt(null), 1200);
   }
 
-  async function handleGenerateHappyHorseVideo() {
+  async function handleGenerateWanVideo() {
     setHeroVideoError(null);
     setHeroVideoGenerating(true);
     setWaitingManualUpload(false);
@@ -567,12 +565,12 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     try {
       const heroReferenceUrl = keyframes[heroShot.id]?.localUrl || keyframes[heroShot.id]?.imageUrl;
       if (!heroReferenceUrl) {
-        throw new Error("HappyHorse 多参考图生成需要当前主镜头关键帧。请先重新生成当前主镜头关键帧。");
+        throw new Error("Wan 2.7 多参考生成需要当前主镜头关键帧。请先重新生成当前主镜头关键帧。");
       }
       if (!(displayProject.brief.productImages ?? []).some((image) => image.role !== "logo" && (image.localUrl || image.remoteUrl || image.url))) {
-        throw new Error("HappyHorse 多参考图生成需要至少一张已保存的真实产品图。请先返回生成页上传产品主图。");
+        throw new Error("Wan 2.7 多参考生成需要至少一张已保存的真实产品图。请先返回生成页上传产品主图。");
       }
-      const response = await fetch(`/api/projects/${encodeURIComponent(displayProject.id)}/happyhorse-video`, {
+      const response = await fetch(`/api/projects/${encodeURIComponent(displayProject.id)}/wan-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -586,12 +584,12 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       });
       const payload = (await response.json()) as HeroVideoAssetResponse;
       if (!response.ok || !payload.success || !payload.data?.asset) {
-        throw new Error(payload.error || "HappyHorse API 调用失败，请检查百炼 Key、模型权限和账户额度。");
+        throw new Error(payload.error || "Wan 2.7 API 调用失败，请检查百炼 Key、模型权限和账户额度。");
       }
       setHeroVideo(heroVideoFromAsset(payload.data.asset));
       await refreshVideoLibrary();
     } catch (error) {
-      setHeroVideoError(error instanceof Error ? error.message : "HappyHorse API 调用失败。");
+      setHeroVideoError(error instanceof Error ? error.message : "Wan 2.7 API 调用失败。");
       setWaitingManualUpload(false);
     } finally {
       setHeroVideoGenerating(false);
@@ -850,35 +848,6 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           </article>
         </section>
 
-        <section className="visual-continuity-v5" aria-labelledby="visual-continuity-title">
-          <header>
-            <div>
-              <span>视觉一致性</span>
-              <h2 id="visual-continuity-title">强</h2>
-              <p>系统会在每个镜头中重复使用产品、人物和场景的长期约束，并继承上一镜的动作状态。</p>
-            </div>
-            <details>
-              <summary>查看一致性规划</summary>
-              <dl>
-                <div><dt>连续性分组</dt><dd>{continuityArchitecture.visualContinuityBible.continuityGroups.length} 组</dd></div>
-                <div><dt>产品参考</dt><dd>{continuityArchitecture.referencePack.productMasters.length > 0 ? `${continuityArchitecture.referencePack.productMasters.length} 个真实锚点` : "等待真实产品锚点"}</dd></div>
-                <div><dt>人物规范</dt><dd>{continuityArchitecture.visualContinuityBible.characters.length > 0 ? `${continuityArchitecture.visualContinuityBible.characters.length} 个身份` : "当前镜头无需人物"}</dd></div>
-                <div><dt>文字策略</dt><dd>统一由 Remotion 渲染</dd></div>
-              </dl>
-            </details>
-          </header>
-          <div className="visual-continuity-v5__locks" aria-label="已纳入一致性控制的内容">
-            {[
-              ["产品", "几何、比例与颜色"],
-              ["人物", "身份与外观"],
-              ["服装", "造型与配饰"],
-              ["场景", "结构与光线"],
-              ["主要道具", "位置与状态"],
-              ["色调", "同组视觉规则"]
-            ].map(([label, detail]) => <div key={label}><i aria-hidden="true" /><span><strong>{label}</strong><small>{detail}</small></span></div>)}
-          </div>
-        </section>
-
         <section className="model-route-v4" aria-label="模型路由流程">
           <span className="model-route-v4__label">模型路由</span>
           <div className="model-route-v4__nodes">
@@ -925,7 +894,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
         <section id="project-hero-shot" data-project-section="hero-shot" className="project-section-v4 hero-section-v4" aria-labelledby="project-hero-title">
           <header className="project-section-heading-v4">
-            <div><small>广告视频</small><h2 id="project-hero-title">HappyHorse 主镜头视频</h2><p>根据主镜头关键帧与真实产品图生成，也可以从下方视频库导入完整 MP4。</p></div>
+            <div><small>广告视频</small><h2 id="project-hero-title">Wan 2.7 广告视频</h2><p>根据主镜头关键帧与真实产品图生成，也可以从页面底部的视频库导入完整 MP4。</p></div>
           </header>
 
           <div className="hero-layout-v4">
@@ -946,7 +915,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
             <article className="hero-workflow-v4">
               <div className="hero-status-v4"><i aria-hidden="true" /><div><span>广告视频状态</span><strong>{heroStatusLabel(heroVideoStatus)}</strong><p>{heroStatusMessage(heroVideoStatus)}</p></div></div>
-              <div className="hero-manual-copy-v4"><strong>HappyHorse 真实调用</strong><p>使用百炼 API Key，参考当前关键帧和已保存的真实产品图生成主镜头视频。</p></div>
+              <div className="hero-manual-copy-v4"><strong>Wan 2.7 多参考生成</strong><p>复用百炼 API Key，以当前关键帧为首帧，并使用已保存的真实产品图锁定产品外观。</p></div>
 
               <div className="hero-prompts-v4">
                 <PromptSummary title="中文视频提示词" body={optimizedVideoPrompt} copied={copiedPrompt === "optimized"} onCopy={() => void copyPrompt("optimized", optimizedVideoPrompt)} />
@@ -954,8 +923,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
               </div>
 
               <div className="hero-workflow-v4__actions">
-                <button type="button" className="project-button-v4 project-button-v4--primary" disabled={heroVideoGenerating || heroVideoUploading} aria-busy={heroVideoGenerating} onClick={() => void handleGenerateHappyHorseVideo()}>{heroVideoGenerating ? "HappyHorse 生成中" : heroVideo?.source === "happyhorse-api" ? "重新生成主镜头" : "调用 HappyHorse 生成"}</button>
-                <button type="button" className="project-button-v4 project-button-v4--ai" onClick={() => void copyPrompt("optimized", optimizedVideoPrompt)}>{copiedPrompt === "optimized" ? "提示词已复制" : "复制 HappyHorse 提示词"}</button>
+                <button type="button" className="project-button-v4 project-button-v4--primary" disabled={heroVideoGenerating || heroVideoUploading} aria-busy={heroVideoGenerating} onClick={() => void handleGenerateWanVideo()}>{heroVideoGenerating ? "Wan 2.7 生成中" : heroVideo?.source === "wan-api" ? "重新生成广告视频" : "调用 Wan 2.7 生成"}</button>
+                <button type="button" className="project-button-v4 project-button-v4--ai" onClick={() => void copyPrompt("optimized", optimizedVideoPrompt)}>{copiedPrompt === "optimized" ? "提示词已复制" : "复制 Wan 2.7 提示词"}</button>
                 <button type="button" className="project-button-v4 project-button-v4--ghost" onClick={() => openShotDetails(heroShot, "video")}>查看生成详情</button>
               </div>
 
@@ -970,32 +939,6 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
             </article>
           </div>
 
-          <section className="video-library-v4" aria-labelledby="video-library-title">
-            <header className="video-library-v4__header">
-              <div><h3 id="video-library-title">视频库</h3><p>当前会话内生成和上传的视频会集中保留，并在所有项目中可见；本地 MP4 不限制原视频时长和比例。</p></div>
-              <label className="project-button-v4 project-button-v4--secondary">
-                {heroVideoUploading ? "视频导入中" : "导入完整广告视频"}
-                <input className="sr-only" type="file" accept="video/mp4" disabled={heroVideoUploading || heroVideoGenerating} onChange={(event) => { const file = event.target.files?.[0]; if (file) void handleHeroVideoUpload(file); event.target.value = ""; }} />
-              </label>
-            </header>
-            {videoLibraryLoading ? <div className="video-library-v4__empty">正在读取视频库…</div> : null}
-            {!videoLibraryLoading && videoLibrary.length === 0 ? <div className="video-library-v4__empty">还没有历史视频，可以从这里导入完整 MP4，或调用 HappyHorse 生成。</div> : null}
-            {videoLibrary.length > 0 ? (
-              <div className="video-library-v4__grid">
-                {videoLibrary.map((video) => (
-                  <article className="video-library-card-v4" key={`${video.projectId}-${video.id}`}>
-                    <AdaptiveMediaFrame aspectRatio={displayProject.brief.aspectRatio} stage="hero" mediaType="video" src={video.url} controls fit="contain" showBlurredBackdrop={false} alt={`${video.projectName} ${videoLibrarySourceLabel(video)}`} />
-                    <div className="video-library-card-v4__body">
-                      <div><span>{videoLibrarySourceLabel(video)}</span><strong>{video.fileName}</strong></div>
-                      <p>{video.projectName}{video.durationSec ? ` · ${formatDuration(video.durationSec)}` : ""}{video.width && video.height ? ` · ${video.width}×${video.height}` : ""}</p>
-                      <a className="project-button-v4 project-button-v4--ghost" href={video.downloadUrl}>下载</a>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : null}
-            {videoLibraryError ? <p className="project-notice-v4 is-warning" role="alert">{videoLibraryError}</p> : null}
-          </section>
         </section>
 
         <section id="project-final" data-project-section="final" className="project-section-v4 render-section-v4" aria-labelledby="project-final-title">
@@ -1029,6 +972,33 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
               {renderError ? <p className="project-notice-v4 is-warning" role="alert">{renderError}</p> : null}
             </div>
           </div>
+        </section>
+
+        <section className="video-library-v4" aria-labelledby="video-library-title">
+          <header className="video-library-v4__header">
+            <div><h2 id="video-library-title">视频库</h2><p>当前会话内生成和上传的视频会集中保留，并在所有项目中可见；本地 MP4 不限制原视频时长和比例。</p></div>
+            <label className="project-button-v4 project-button-v4--secondary">
+              {heroVideoUploading ? "视频导入中" : "导入完整广告视频"}
+              <input className="sr-only" type="file" accept="video/mp4" disabled={heroVideoUploading || heroVideoGenerating} onChange={(event) => { const file = event.target.files?.[0]; if (file) void handleHeroVideoUpload(file); event.target.value = ""; }} />
+            </label>
+          </header>
+          {videoLibraryLoading ? <div className="video-library-v4__empty">正在读取视频库…</div> : null}
+          {!videoLibraryLoading && videoLibrary.length === 0 ? <div className="video-library-v4__empty">还没有历史视频，可以从这里导入完整 MP4，或调用 Wan 2.7 生成。</div> : null}
+          {videoLibrary.length > 0 ? (
+            <div className="video-library-v4__grid">
+              {videoLibrary.map((video) => (
+                <article className="video-library-card-v4" key={`${video.projectId}-${video.id}`}>
+                  <AdaptiveMediaFrame aspectRatio={displayProject.brief.aspectRatio} stage="hero" mediaType="video" src={video.url} controls fit="contain" showBlurredBackdrop={false} alt={`${video.projectName} ${videoLibrarySourceLabel(video)}`} />
+                  <div className="video-library-card-v4__body">
+                    <div><span>{videoLibrarySourceLabel(video)}</span><strong>{video.fileName}</strong></div>
+                    <p>{video.projectName}{video.durationSec ? ` · ${formatDuration(video.durationSec)}` : ""}{video.width && video.height ? ` · ${video.width}×${video.height}` : ""}</p>
+                    <a className="project-button-v4 project-button-v4--ghost" href={video.downloadUrl}>下载</a>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+          {videoLibraryError ? <p className="project-notice-v4 is-warning" role="alert">{videoLibraryError}</p> : null}
         </section>
       </div>
 
@@ -1337,7 +1307,7 @@ function buildProjectSteps({
     { id: "strategy", label: "策略", status: normalizeWorkflowStatus(project.workflowSteps?.strategy || "completed"), detail: "策略与分镜" },
     { id: "keyframes", label: "关键帧", status: keyframeStatus, detail: `${completedFrames}/${project.shots.length} 已完成` },
     { id: "hero", label: "主镜头", status: heroStatus, detail: project.heroShotId ? `镜头 ${resolveHeroShot(project.shots, project.heroShotId)?.index ?? "—"}` : "尚未选择" },
-    { id: "video", label: "广告视频", status: videoStatus, detail: heroVideo ? heroVideo.source === "happyhorse-api" ? "HappyHorse 已生成" : "完整视频已导入" : "等待生成或导入" },
+    { id: "video", label: "广告视频", status: videoStatus, detail: heroVideo ? isGeneratedHeroVideo(heroVideo.source) ? `${videoSourceLabel(heroVideo.source)}已就绪` : "完整视频已导入" : "等待生成或导入" },
     { id: "final", label: "成片", status: finalStatus, detail: finalVideo ? "可预览下载" : "等待合成" }
   ];
 }
@@ -1394,9 +1364,14 @@ function heroVideoFromAsset(asset: HeroVideoAssetClient): HeroVideoState {
 }
 
 function videoSourceLabel(source: HeroVideoSource) {
-  if (source === "happyhorse-api") return "HappyHorse 生成";
-  if (source === "happyhorse" || source === "happyhorse-manual-import") return "完整广告视频导入";
+  if (source === "wan-api") return "Wan 2.7 生成";
+  if (source === "happyhorse-api") return "HappyHorse 历史生成";
+  if (source === "user-upload" || source === "happyhorse" || source === "happyhorse-manual-import") return "完整广告视频导入";
   return "本地演示素材";
+}
+
+function isGeneratedHeroVideo(source: HeroVideoSource) {
+  return source === "wan-api" || source === "happyhorse-api";
 }
 
 function heroStatusLabel(status: ReturnType<typeof getHeroVideoStatus>) {
@@ -1405,12 +1380,12 @@ function heroStatusLabel(status: ReturnType<typeof getHeroVideoStatus>) {
 }
 
 function heroStatusMessage(status: ReturnType<typeof getHeroVideoStatus>) {
-  const messages: Record<ReturnType<typeof getHeroVideoStatus>, string> = { "not-started": "请先选择参考镜头。", "prompt-ready": "可调用 HappyHorse 生成，或从视频库导入完整广告视频。", "waiting-manual-upload": "等待生成或导入广告视频。", uploading: "正在校验并保存广告视频。", uploaded: "可进入最终成片合成。", "using-demo-asset": "视频已就绪。", failed: "请检查模型状态或视频文件后重试，也可以使用关键帧降级。", "fallback-to-keyframe": "将使用关键帧动效降级。" };
+  const messages: Record<ReturnType<typeof getHeroVideoStatus>, string> = { "not-started": "请先选择参考镜头。", "prompt-ready": "可调用 Wan 2.7 生成，或从视频库导入完整广告视频。", "waiting-manual-upload": "等待生成或导入广告视频。", uploading: "正在校验并保存广告视频。", uploaded: "可进入最终成片合成。", "using-demo-asset": "视频已就绪。", failed: "请检查模型状态或视频文件后重试，也可以使用关键帧降级。", "fallback-to-keyframe": "将使用关键帧动效降级。" };
   return messages[status];
 }
 
 function routeNodes() {
-  return [{ name: "DeepSeek", detail: "策略与提示词", tone: "blue" }, { name: "Qwen-Image", detail: "关键帧生成", tone: "violet" }, { name: "HappyHorse", detail: "主镜头生成", tone: "yellow" }, { name: "Remotion", detail: "成片合成", tone: "green" }] as const;
+  return [{ name: "DeepSeek", detail: "策略与提示词", tone: "blue" }, { name: "Qwen-Image", detail: "关键帧生成", tone: "violet" }, { name: "Wan 2.7", detail: "多参考视频", tone: "yellow" }, { name: "Remotion", detail: "成片合成", tone: "green" }] as const;
 }
 
 function finalRenderCopy(status: RenderStatusState | null, heroVideo: HeroVideoState | null, durationSec: number, shotCount: number) {
@@ -1423,7 +1398,8 @@ function finalRenderCopy(status: RenderStatusState | null, heroVideo: HeroVideoS
 
 function videoLibrarySourceLabel(video: VideoLibraryItemClient) {
   if (video.kind === "final-video" || video.source === "remotion") return "Remotion 成片";
-  if (video.source === "happyhorse-api") return "HappyHorse 生成";
+  if (video.source === "wan-api") return "Wan 2.7 生成";
+  if (video.source === "happyhorse-api") return "HappyHorse 历史生成";
   return "本地上传";
 }
 

@@ -16,6 +16,7 @@ export const projectAssetSourceSchema = z.enum([
   "qwen-image",
   "happyhorse-manual-import",
   "happyhorse-api",
+  "wan-api",
   "remotion",
   "system-demo"
 ]);

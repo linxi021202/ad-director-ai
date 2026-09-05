@@ -29,9 +29,9 @@ ${productImageReferenceNote(brief)}
 - 规划完整商业结构：Hook、Problem、Product Reveal、Benefit、Emotional Payoff、CTA。
 - 不得发明价格、折扣、功效数字、临床数据、认证、排名、百分比或“市场第一”。
 - 事实性广告声明只能来自 verifiedClaims：${JSON.stringify(brief.verifiedClaims ?? [])}。
-- 视频策略只生成 1 个 HappyHorse 主镜头；使用上传的真实产品图保持产品一致性，并使用主镜头关键帧保持构图。
+- 视频策略只生成 1 个 Wan 2.7 R2V 广告镜头；使用上传的真实产品图保持产品一致性，并使用主镜头关键帧保持构图。
 - 其他镜头使用 Qwen-Image 关键帧与 Remotion 图片动效，最后由 Remotion 合成完整广告。
-- 后续推荐模型只能是：deepseek-v4-flash、qwen-image、happyhorse-1.0-r2v、remotion。
+- 后续推荐模型只能是：deepseek-v4-flash、qwen-image、wan2.7-r2v、remotion。
 ${forbiddenRules.map((rule) => `- ${rule}`).join("\n")}
 
 目标 JSON 示例：

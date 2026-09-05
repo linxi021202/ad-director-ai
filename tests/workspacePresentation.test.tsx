@@ -28,7 +28,7 @@ describe("workspace presentation components", () => {
 
   it("renders the fixed four-model route", () => {
     const html = renderToStaticMarkup(<ModelRouteStrip />);
-    for (const model of ["DeepSeek", "Qwen-Image", "HappyHorse", "Remotion"]) {
+    for (const model of ["DeepSeek", "Qwen-Image", "Wan 2.7", "Remotion"]) {
       expect(html).toContain(model);
     }
   });

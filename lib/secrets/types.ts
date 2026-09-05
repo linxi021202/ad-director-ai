@@ -1,7 +1,7 @@
 export const configurableProviders = ["deepseek", "qwen-image"] as const;
 
 export type ConfigurableProvider = (typeof configurableProviders)[number];
-export type SecretProvider = ConfigurableProvider | "happyhorse";
+export type SecretProvider = ConfigurableProvider | "happyhorse" | "wan";
 export type SecretSource = "session" | "env" | "none";
 
 export type SecretRecord = {

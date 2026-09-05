@@ -328,7 +328,7 @@ function groupName(groupId: string) {
 
 function inferGenerationMode(shot: StoryboardShot, shotCount: number) {
   if (shot.index === shotCount || /remotion/i.test(shot.recommendedModel)) return "remotion-motion" as const;
-  if (/happyhorse/i.test(shot.recommendedModel)) return "r2v" as const;
+  if (/wan2\.7-r2v|happyhorse/i.test(shot.recommendedModel)) return "r2v" as const;
   return "remotion-motion" as const;
 }
 

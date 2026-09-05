@@ -55,12 +55,12 @@ describe("DeepSeek prompt pipeline", () => {
     }
   });
 
-  it("keeps the fixed MVP provider chain", () => {
+  it("keeps the current primary provider chain", () => {
     const combined = [strategyPrompt, storyboardPrompt, generationPrompt, scorePrompt].join("\n");
-    for (const model of ["deepseek-v4-flash", "qwen-image", "happyhorse-1.0-r2v", "remotion"]) {
+    for (const model of ["deepseek-v4-flash", "qwen-image", "wan2.7-r2v", "remotion"]) {
       expect(combined).toContain(model);
     }
-    for (const forbidden of ["Wan", "Kling", "Hailuo", "fal.ai", "Seedance", "manual-pippit"]) {
+    for (const forbidden of ["HappyHorse", "Kling", "Hailuo", "fal.ai", "Seedance", "manual-pippit"]) {
       expect(combined).not.toContain(forbidden);
     }
   });

@@ -38,9 +38,9 @@ export const mockProject = {
       description: "Qwen-Image 负责广告关键帧生成，失败时回退占位图。"
     },
     {
-      name: "HappyHorse 视频节点",
+      name: "Wan 2.7 视频节点",
       status: "running" as const,
-      description: "HappyHorse 是唯一视频生成模型；当前先准备详细 Hero Shot 视频 Prompt。"
+      description: "Wan 2.7 使用当前关键帧和真实产品参考图生成广告视频。"
     }
   ],
   preview: {

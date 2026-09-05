@@ -113,13 +113,13 @@ export function selectProviderModel(input: ProviderRouterInput): ProviderModelSe
     case "video": {
       return {
         taskType: "video",
-        provider: "happyhorse",
-        model: process.env.HAPPYHORSE_MODEL || "happyhorse-1.0-r2v",
+        provider: "wan",
+        model: process.env.WAN_VIDEO_MODEL || "wan2.7-r2v",
         backupModel: "qwen-image + remotion-motion",
-        reason: "HappyHorse 通过百炼真实生成主镜头视频，并与 Qwen-Image 共用当前会话的 DashScope API Key。",
+        reason: "Wan 2.7 R2V 通过百炼接收当前关键帧和真实产品参考图，并与 Qwen-Image 共用当前会话的 DashScope API Key。",
         costEstimate: 12,
         latencyEstimate: "provider-async",
-        fallbackMode: "If HappyHorse video is unavailable, use Qwen-Image keyframes plus Remotion image motion."
+        fallbackMode: "If Wan 2.7 video is unavailable, use Qwen-Image keyframes plus Remotion image motion."
       };
     }
     case "tts":

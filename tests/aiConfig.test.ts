@@ -30,6 +30,17 @@ describe("AI environment config for anonymous BYOK", () => {
     expect(config.qwenImage.configured).toBe(false);
   });
 
+  it("shares the configured DashScope endpoint with Wan unless a Wan endpoint override is set", () => {
+    vi.stubEnv("DASHSCOPE_BASE_URL", "https://workspace.cn-beijing.maas.aliyuncs.com");
+    vi.stubEnv("WAN_BASE_URL", "");
+
+    const sharedEndpointConfig = getAIConfig();
+    expect(sharedEndpointConfig.video.baseUrl).toBe("https://workspace.cn-beijing.maas.aliyuncs.com");
+
+    vi.stubEnv("WAN_BASE_URL", "https://video-workspace.cn-beijing.maas.aliyuncs.com");
+    expect(getAIConfig().video.baseUrl).toBe("https://video-workspace.cn-beijing.maas.aliyuncs.com");
+  });
+
   it("uses platform keys only in explicitly allowed non-production development", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("ALLOW_PLATFORM_KEYS", "true");

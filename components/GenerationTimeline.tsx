@@ -16,7 +16,6 @@ export function GenerationTimeline({ steps, generated = true }: GenerationTimeli
 }
 
 function stageDescription(stage: string) {
-  const map: Record<string, string> = { strategy: "DeepSeek 生成广告策略。", storyboard: "DeepSeek 生成固定 4 镜头分镜。", prompt: "DeepSeek 生成图片 Prompt、视频 Prompt 和广告评分。", image: "Qwen-Image-2.0 仅作为关键帧预留节点，第二阶段不真实调用。", video: "HappyHorse 视频节点用于 1 个 Hero Shot；当前只准备详细视频 Prompt。", render: "Remotion 后续负责成片合成和图片动效 fallback。" };
+  const map: Record<string, string> = { strategy: "DeepSeek 生成广告策略。", storyboard: "DeepSeek 生成动态分镜。", prompt: "DeepSeek 生成图片与视频提示词。", image: "Qwen-Image 负责关键帧。", video: "Wan 2.7 使用关键帧和真实产品参考图生成广告视频。", render: "Remotion 负责成片合成和图片动效降级。" };
   return map[stage] ?? "已完成。";
 }
-

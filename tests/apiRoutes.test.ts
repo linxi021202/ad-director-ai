@@ -108,7 +108,7 @@ describe("second-stage API routes", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.stringify(body)).toContain("plannedAssets");
     expect(JSON.stringify(body)).toContain("qwen-image");
-    expect(JSON.stringify(body)).toContain("happyhorse-1.0-r2v");
+    expect(JSON.stringify(body)).toContain("wan2.7-r2v");
   });
 
 

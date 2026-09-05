@@ -11,10 +11,10 @@ import { useModelSettingsStatus } from "@/components/model-settings/useModelSett
 import "./home-final.css";
 import "./home-api-settings.css";
 
-const transitionParticles = Array.from({ length: 30 }, (_, index) => ({
-  angle: `${index * 12 + (index % 3) * 3}deg`,
-  distance: `${150 + (index % 7) * 42}px`,
-  delay: `${(index % 6) * 24}ms`,
+const transitionParticles = Array.from({ length: 64 }, (_, index) => ({
+  angle: `${index * 137.5}deg`,
+  distance: `${30 + (index % 9) * 4.5}vmax`,
+  delay: `${(index % 12) * 42}ms`,
   size: `${2 + (index % 3)}px`
 }));
 
@@ -32,7 +32,7 @@ export default function HomePage() {
     setMenuOpen(false);
     setIsNavigating(true);
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.setTimeout(() => router.push(target), reducedMotion ? 180 : 820);
+    window.setTimeout(() => router.push(target), reducedMotion ? 180 : 1320);
   };
 
   const exitClass = isNavigating ? "home-is-exiting" : "";

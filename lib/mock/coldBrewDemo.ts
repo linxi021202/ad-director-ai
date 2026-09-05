@@ -84,8 +84,8 @@ export const coldBrewDemo = generationProjectSchema.parse({
       subtitle: "清醒续航，低糖不负担。",
       imagePromptCn: appendNoReadableTextRules("城市天台傍晚，一线城市上班族手持低糖冷萃咖啡远眺天际线，产品与人物剪影同框，深色科技感，高级清爽，竖版广告英雄镜头，适合小红书和抖音。"),
       imagePromptEn: appendNoReadableTextRules("Evening city rooftop, tier-one city office worker holding low sugar cold brew coffee and looking at the skyline, product and silhouette in the same frame, dark tech mood, premium refreshing style, vertical ad hero shot for Xiaohongshu and Douyin."),
-      videoPromptCn: appendNoReadableTextRules("镜头从人物背侧缓慢拉远，城市天际线和产品形成记忆点，最后切到咖啡瓶英雄近景并保留干净安全区，不生成文字；标题、口号和 CTA 由 Remotion 后期叠加。当前只准备给 HappyHorse 的详细视频 Prompt，后续用它生成这一条核心 AI 视频镜头。"),
-      recommendedModel: "HappyHorse 视频生成模型；Remotion完成标题、字幕和CTA合成。",
+      videoPromptCn: appendNoReadableTextRules("镜头从人物背侧缓慢拉远，城市天际线和产品形成记忆点，最后切到咖啡瓶英雄近景并保留干净安全区，不生成文字；标题、口号和 CTA 由 Remotion 后期叠加。当前只准备给 Wan 2.7 R2V 的详细视频 Prompt，用它生成这一条核心 AI 视频镜头。"),
+      recommendedModel: "Wan 2.7 R2V 视频生成模型；Remotion完成标题、字幕和CTA合成。",
       fallbackPlan: "如果核心视频镜头失败，使用天台关键帧做慢速拉远、景深模糊和品牌字幕收束，输出图片动效视频。"
     }
     ,
@@ -101,7 +101,7 @@ export const coldBrewDemo = generationProjectSchema.parse({
       imagePromptCn: appendNoReadableTextRules("9:16竖版广告主镜头，真实低糖冷萃咖啡产品位于前景，现代办公室从低沉冷光转为清透晨光，产品包装轮廓保持一致，商业摄影，细腻冷凝水，人物仅作虚化背景，构图稳定且有干净字幕安全区。"),
       imagePromptEn: appendNoReadableTextRules("9:16 vertical advertising hero keyframe, authentic low-sugar cold brew product in the foreground, modern office lighting transitioning from subdued cool tones to clean daylight, preserve package silhouette and product proportions, premium commercial photography, condensation detail, people only as soft background silhouettes, stable composition and clean title-safe area."),
       videoPromptCn: appendNoReadableTextRules("以当前真实产品关键帧为首帧，按项目中该镜头的真实时长生成广告主镜头。镜头缓慢推进并轻微横移，背景光线由低沉转为清透，冷凝水高光自然变化；保持瓶身、包装颜色、比例和主体构图完全一致，不新增人物，不改变产品设计，所有广告文字由Remotion后期叠加。"),
-      recommendedModel: "happyhorse-1.0-r2v",
+      recommendedModel: "wan2.7-r2v",
       fallbackPlan: "主镜头视频失败时使用关键帧做缓慢推进、轻微横移和光线变化。"
     },
     {
@@ -198,9 +198,9 @@ export const coldBrewDemo = generationProjectSchema.parse({
     },
     {
       taskType: "video",
-      primaryModel: "happyhorse-1.0-r2v",
+      primaryModel: "wan2.7-r2v",
       backupModel: "Qwen-Image keyframe + Remotion fallback",
-      reason: "为了控制成本，MVP只生成1个真实AI视频镜头；视频节点统一使用 HappyHorse；当前先返回计划状态，后续接入真实 HappyHorse API。",
+      reason: "主视频节点使用 Wan 2.7 R2V，并将真实产品图与当前关键帧作为参考素材；其余镜头使用关键帧动效完成。",
       estimatedCost: 3,
       estimatedLatency: "planned",
       fallbackMode: "其余镜头使用Qwen-Image关键帧 + Remotion图片动效"
@@ -221,14 +221,14 @@ export const coldBrewDemo = generationProjectSchema.parse({
       label: "最低成本演示模式",
       minCny: 8,
       maxCny: 15,
-      explanation: "DeepSeek + Qwen-Image关键帧 + HappyHorse视频节点 + Remotion。当前不调用真实视频API，先用1个Hero Shot详细视频Prompt控制成本。"
+      explanation: "DeepSeek + Qwen-Image关键帧 + Wan 2.7 R2V视频节点 + Remotion。"
     },
     {
       mode: "qualityFirst",
       label: "自动化视频模式",
       minCny: 15,
       maxCny: 35,
-      explanation: "DeepSeek + Qwen-Image关键帧 + HappyHorse真实视频 + Remotion。后续接入HappyHorse API后，核心视频镜头切到自动化生成链路。"
+      explanation: "DeepSeek + Qwen-Image关键帧 + Wan 2.7 R2V真实视频 + Remotion。"
     }
   ],
   heroShotId: "shot-05-hero-transition",

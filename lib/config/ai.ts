@@ -65,7 +65,14 @@ const envSchema = z.object({
   COSYVOICE_MODEL: z.string().min(1).default("cosyvoice-v3-flash"),
   COSYVOICE_VOICE: z.string().min(1).default("longanyang"),
   COSYVOICE_BASE_URL: optionalUrlEnvSchema(DEFAULT_DASHSCOPE_BASE_URL),
-  VIDEO_PROVIDER: z.string().optional().transform(() => "happyhorse" as const),
+  VIDEO_PROVIDER: z.string().optional().transform(() => "wan" as const),
+  WAN_VIDEO_MODEL: z.string().min(1).default("wan2.7-r2v"),
+  WAN_VIDEO_RESOLUTION: z.enum(["720P", "1080P"]).default("720P"),
+  WAN_BASE_URL: z
+    .string()
+    .optional()
+    .transform((value) => value?.trim() || undefined)
+    .pipe(z.string().url().optional()),
   HAPPYHORSE_API_KEY: optionalSecretSchema,
   HAPPYHORSE_BASE_URL: z.string().optional().transform((value) => value?.trim() || DEFAULT_DASHSCOPE_BASE_URL),
   HAPPYHORSE_MODEL: z.string().min(1).default("happyhorse-1.0-r2v"),
@@ -87,7 +94,17 @@ export type AIConfig = {
   platformKeysAllowed: boolean;
   deepseek: { apiKey?: string; baseUrl: string; model: string; configured: boolean };
   qwenImage: { apiKey?: string; baseUrl: string; imageModel: string; size: string; promptExtend: boolean; watermark: boolean; configured: boolean };
-  video: { provider: RawAIEnv["VIDEO_PROVIDER"]; happyHorseApiKey?: string; happyHorseBaseUrl: string; happyHorseModel: string; assetPath: string; configured: boolean };
+  video: {
+    provider: RawAIEnv["VIDEO_PROVIDER"];
+    model: string;
+    baseUrl: string;
+    resolution: "720P" | "1080P";
+    happyHorseApiKey?: string;
+    happyHorseBaseUrl: string;
+    happyHorseModel: string;
+    assetPath: string;
+    configured: boolean;
+  };
   tts: { baseUrl: string; model: string; voice: string; configured: boolean };
   limits: { maxTextCallsPerRun: number; maxImagesPerRun: number; maxRealVideoShotsPerRun: number; maxVideoSecondsPerShot: number };
 };
@@ -146,7 +163,17 @@ function buildConfig(env: RawAIEnv): AIConfig {
     platformKeysAllowed: allowPlatformKeys,
     deepseek: { apiKey: deepseekApiKey, baseUrl: env.DEEPSEEK_BASE_URL, model: env.DEEPSEEK_MODEL, configured: Boolean(deepseekApiKey) },
     qwenImage: { apiKey: dashscopeApiKey, baseUrl: env.DASHSCOPE_BASE_URL, imageModel: env.QWEN_IMAGE_MODEL, size: env.QWEN_IMAGE_SIZE, promptExtend: env.QWEN_IMAGE_PROMPT_EXTEND, watermark: env.QWEN_IMAGE_WATERMARK, configured: Boolean(dashscopeApiKey) },
-    video: { provider: env.VIDEO_PROVIDER, happyHorseApiKey: undefined, happyHorseBaseUrl: env.HAPPYHORSE_BASE_URL || env.DASHSCOPE_BASE_URL, happyHorseModel: env.HAPPYHORSE_MODEL, assetPath: env.HAPPYHORSE_VIDEO_ASSET_PATH, configured: false },
+    video: {
+      provider: env.VIDEO_PROVIDER,
+      model: env.WAN_VIDEO_MODEL,
+      baseUrl: env.WAN_BASE_URL || env.DASHSCOPE_BASE_URL,
+      resolution: env.WAN_VIDEO_RESOLUTION,
+      happyHorseApiKey: undefined,
+      happyHorseBaseUrl: env.HAPPYHORSE_BASE_URL || env.DASHSCOPE_BASE_URL,
+      happyHorseModel: env.HAPPYHORSE_MODEL,
+      assetPath: env.HAPPYHORSE_VIDEO_ASSET_PATH,
+      configured: false
+    },
     tts: { baseUrl: env.COSYVOICE_BASE_URL, model: env.COSYVOICE_MODEL, voice: env.COSYVOICE_VOICE, configured: false },
     limits: { maxTextCallsPerRun: env.MAX_TEXT_CALLS_PER_RUN, maxImagesPerRun: env.MAX_IMAGES_PER_RUN, maxRealVideoShotsPerRun: env.MAX_REAL_VIDEO_SHOTS_PER_RUN, maxVideoSecondsPerShot: env.MAX_VIDEO_SECONDS_PER_SHOT }
   };
@@ -181,7 +208,7 @@ export function getPublicAIStatus(): PublicAIStatus {
     imagePromptExtend: config.qwenImage.promptExtend,
     imageWatermark: config.qwenImage.watermark,
     videoProvider: config.video.provider,
-    videoModel: config.video.happyHorseModel,
+    videoModel: config.video.model,
     videoConfigured: config.video.configured,
     videoAssetPath: config.video.assetPath,
     limits: config.limits

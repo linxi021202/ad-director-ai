@@ -77,7 +77,7 @@ export async function prepareRenderProject(
 
   const heroVideoAssetId = project.heroVideo?.assetId;
   if (!heroVideoAssetId || project.heroVideo?.shotId !== heroShotId) {
-    throw new RenderProjectError("HERO_VIDEO_MISSING", "当前主镜头缺少可用于合成的私有 HappyHorse 视频。");
+    throw new RenderProjectError("HERO_VIDEO_MISSING", "当前项目缺少可用于合成的私有广告视频。");
   }
 
   const productAssetIds = (project.brief.productImages ?? []).flatMap((image) => image.assetId ? [image.assetId] : []);

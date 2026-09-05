@@ -84,7 +84,7 @@ export async function POST(request: Request) {
       recommendedModel: shot.recommendedModel,
       fallbackPlan: shot.fallbackPlan,
       imageProvider: imageRoute.model,
-      videoProvider: shot.recommendedModel === "happyhorse-1.0-r2v" ? videoRoute.model : "remotion-image-motion",
+      videoProvider: shot.recommendedModel === "wan2.7-r2v" ? videoRoute.model : "remotion-image-motion",
       status: "planned"
     }));
 

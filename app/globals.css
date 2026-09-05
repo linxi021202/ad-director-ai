@@ -2699,7 +2699,7 @@ button { cursor: pointer; }
   }
 }
 
-/* Independent provider call controls: DeepSeek / Qwen-Image / HappyHorse planned. */
+/* Independent provider call controls: DeepSeek / Qwen-Image / Wan 2.7. */
 .ad-call-picker {
   position: relative;
   z-index: 1;

@@ -14,7 +14,7 @@ import { GET as modelStatusGET } from "../app/api/model-settings/status/route";
 import { redactProviderError, sanitizeProviderError } from "../lib/api/provider-error";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
-import { getHappyHorseCapability } from "../lib/providers/happyHorseCapability";
+import { getWanVideoCapability } from "../lib/providers/wanVideoCapability";
 import { resolveProviderApiKey, resolveSessionProviderSecret } from "../lib/secrets/resolver";
 import { secretStore } from "../lib/secrets/store";
 
@@ -97,10 +97,10 @@ describe("anonymous truth and capability gate", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("reuses the session DashScope key for HappyHorse without adding another key provider", async () => {
+  it("reuses the session DashScope key for Wan without adding another configurable provider", async () => {
     await secretStore.set("truth-session", "qwen-image", "shared-dashscope-session-key");
-    expect(await resolveProviderApiKey("happyhorse", "truth-session")).toBe("shared-dashscope-session-key");
-    expect(getHappyHorseCapability(true, true)).toMatchObject({
+    expect(await resolveProviderApiKey("wan", "truth-session")).toBe("shared-dashscope-session-key");
+    expect(getWanVideoCapability(true, true)).toMatchObject({
       capability: "api-available",
       apiAvailable: true,
       manualImportAvailable: true
@@ -120,7 +120,7 @@ describe("anonymous truth and capability gate", () => {
       lastFour: "1234"
     });
     expect(body.qwenImage).toEqual({ configured: false, source: "none" });
-    expect(body.happyHorse).toEqual({
+    expect(body.wan).toEqual({
       capability: "not-configured",
       apiAvailable: false
     });
@@ -129,13 +129,13 @@ describe("anonymous truth and capability gate", () => {
     expect(serialized).not.toContain("updatedAt");
   });
 
-  it("publishes HappyHorse availability when real video and the shared DashScope key are ready", async () => {
+  it("publishes Wan availability when real video and the shared DashScope key are ready", async () => {
     process.env.ENABLE_REAL_VIDEO = "true";
     await secretStore.set("truth-session", "qwen-image", "shared-dashscope-session-key");
     const response = await modelStatusGET();
     const body = await response.json();
 
-    expect(body.happyHorse).toEqual({ capability: "api-available", apiAvailable: true });
+    expect(body.wan).toEqual({ capability: "api-available", apiAvailable: true });
   });
 
   it("redacts tokens and returns provider-safe public messages", () => {

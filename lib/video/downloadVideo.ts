@@ -1,16 +1,16 @@
 ﻿import { assertServerOnly } from "../server-only";
 import type { DownloadVideoResult } from "./types";
 
-assertServerOnly("HappyHorse video download");
+assertServerOnly("generated video download");
 
 export async function downloadRemoteVideo(videoUrl: string): Promise<DownloadVideoResult> {
   try {
     const url = new URL(videoUrl);
-    if (!["http:", "https:"].includes(url.protocol)) return { success: false, error: "HappyHorse 返回的视频地址不是有效的 HTTP URL。" };
+    if (!["http:", "https:"].includes(url.protocol)) return { success: false, error: "模型返回的视频地址不是有效的 HTTP URL。" };
     const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) return { success: false, error: `下载 HappyHorse 视频失败：HTTP ${response.status}` };
+    if (!response.ok) return { success: false, error: `下载生成视频失败：HTTP ${response.status}` };
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length === 0) return { success: false, error: "HappyHorse 返回的视频文件为空。" };
+    if (buffer.length === 0) return { success: false, error: "模型返回的视频文件为空。" };
     return { success: true, buffer, sizeBytes: buffer.length, mimeType: normalizeVideoMime(response.headers.get("content-type")) };
   } catch (error) {
     return { success: false, error: sanitizeVideoError(error) };
