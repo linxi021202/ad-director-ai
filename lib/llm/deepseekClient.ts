@@ -19,6 +19,31 @@ function failure(model: string, startedAt: number, error: string): LLMResult {
   return { success: false, provider: "deepseek", model, latencyMs: Date.now() - startedAt, error };
 }
 
+function parseResponse(raw: string): OpenAICompatibleChatCompletion | null {
+  if (!raw.trim()) return null;
+  try {
+    return JSON.parse(raw) as OpenAICompatibleChatCompletion;
+  } catch {
+    return null;
+  }
+}
+
+function httpFailure(status: number) {
+  if (status === 401 || status === 403) return `DEEPSEEK_AUTH_FAILED：DeepSeek HTTP ${status}，密钥无效或模型权限不足。`;
+  if (status === 402) return "DEEPSEEK_QUOTA_EXHAUSTED：DeepSeek 账户余额或额度不足。";
+  if (status === 429) return "DEEPSEEK_RATE_LIMITED：DeepSeek 请求过于频繁，请稍后重试。";
+  if (status >= 500) return `DEEPSEEK_UPSTREAM_ERROR：DeepSeek 服务暂时异常（HTTP ${status}）。`;
+  return `DEEPSEEK_HTTP_ERROR：DeepSeek 请求失败（HTTP ${status}）。`;
+}
+
+function transportFailure(error: unknown, timeoutMs: number) {
+  const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  if (/timeout|aborted due to timeout|aborterror/i.test(message)) {
+    return `DEEPSEEK_TIMEOUT：DeepSeek 在 ${Math.round(timeoutMs / 1_000)} 秒内未响应。`;
+  }
+  return "DEEPSEEK_NETWORK_ERROR：无法连接 DeepSeek 服务。";
+}
+
 export function createDeepSeekClient(config: DeepSeekClientConfig) {
   const baseUrl = config.baseUrl.replace(/\/+$/, "");
   return {
@@ -26,6 +51,7 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
       const startedAt = Date.now();
       const model = input.model ?? config.model;
       const messages = input.responseFormat === "json" ? ensureJsonPromptHint(input.messages) : input.messages;
+      const timeoutMs = config.timeoutMs ?? 30_000;
       try {
         const response = await fetch(`${baseUrl}${CHAT_COMPLETIONS_PATH}`, {
           method: "POST",
@@ -37,13 +63,15 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
             max_tokens: input.maxTokens,
             ...(input.responseFormat === "json" ? { response_format: { type: "json_object" } } : {})
           }),
-          signal: AbortSignal.timeout(config.timeoutMs ?? 30_000)
+          signal: AbortSignal.timeout(timeoutMs)
         });
 
-        const raw = (await response.json().catch(() => null)) as OpenAICompatibleChatCompletion | null;
-        if (!response.ok) return failure(model, startedAt, "DeepSeek调用失败，请检查密钥、额度或服务状态。");
-        const content = raw?.choices?.[0]?.message?.content?.trim();
-        if (!content) return failure(model, startedAt, "DeepSeek调用失败，请检查密钥、额度或服务状态。");
+        const responseText = await response.text();
+        const raw = parseResponse(responseText);
+        if (!response.ok) return failure(model, startedAt, httpFailure(response.status));
+        if (!raw) return failure(model, startedAt, "DEEPSEEK_INVALID_RESPONSE：DeepSeek 返回了无法解析的响应。");
+        const content = raw.choices?.[0]?.message?.content?.trim();
+        if (!content) return failure(model, startedAt, "DEEPSEEK_EMPTY_RESPONSE：DeepSeek 没有返回可用内容。");
 
         const usage = tokenUsage(raw?.usage);
         const base = { provider: "deepseek" as const, model, latencyMs: Date.now() - startedAt, tokenUsage: usage, costEstimate: estimateDeepSeekCost(model, usage) };
@@ -54,8 +82,8 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
             : { success: false, content, ...base, error: "DeepSeek返回的JSON格式无效。" };
         }
         return { success: true, content, ...base };
-      } catch {
-        return failure(model, startedAt, "DeepSeek调用失败，请检查密钥、额度或服务状态。");
+      } catch (error) {
+        return failure(model, startedAt, transportFailure(error, timeoutMs));
       }
     }
   };

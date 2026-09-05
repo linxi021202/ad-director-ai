@@ -9,6 +9,7 @@ import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ShotDetailsSheet, type ShotDetailsTab } from "@/components/ShotDetailsSheet";
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
+import { readClientApiResponse } from "@/lib/api/clientResponse";
 import {
   buildOptimizedVideoPrompt,
   DEFAULT_HERO_SHOT_ID,
@@ -59,7 +60,14 @@ type HeroVideoAssetClient = {
 
 type HeroVideoAssetResponse = {
   success: boolean;
-  data?: { exists?: boolean; asset?: HeroVideoAssetClient | null; deleted?: boolean } | null;
+  data?: {
+    exists?: boolean;
+    asset?: HeroVideoAssetClient | null;
+    deleted?: boolean;
+    status?: "running" | "completed";
+    eventId?: string;
+    taskId?: string;
+  } | null;
   error?: string | null;
 };
 
@@ -166,6 +174,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   const [heroVideoError, setHeroVideoError] = useState<string | null>(null);
   const [heroVideoUploading, setHeroVideoUploading] = useState(false);
   const [heroVideoGenerating, setHeroVideoGenerating] = useState(false);
+  const [heroVideoElapsedSec, setHeroVideoElapsedSec] = useState(0);
   const [waitingManualUpload, setWaitingManualUpload] = useState(false);
   const [fallbackToKeyframe, setFallbackToKeyframe] = useState(false);
   const [copiedPrompt, setCopiedPrompt] = useState<"raw" | "optimized" | null>(null);
@@ -188,6 +197,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   const [shotCountDialogOpen, setShotCountDialogOpen] = useState(false);
   const [requestedShotCount, setRequestedShotCount] = useState(() => Math.max(MIN_SHOT_COUNT, Math.min(MAX_SHOT_COUNT, project.shots.length)));
   const [shotCountRegenerating, setShotCountRegenerating] = useState(false);
+  const [shotCountElapsedSec, setShotCountElapsedSec] = useState(0);
+  const shotCountOperationRef = useRef(false);
   const renderPollVersion = useRef(0);
 
   const heroShot = useMemo(
@@ -426,8 +437,19 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   }
 
   async function handleRegenerateShotCount() {
+    if (shotCountOperationRef.current || shotCountRegenerating) return;
     const shotCount = clampShotCount(requestedShotCount);
+    if (shotCount === displayProject.shots.length) {
+      setShotCountDialogOpen(false);
+      return;
+    }
+    shotCountOperationRef.current = true;
     setShotCountRegenerating(true);
+    setShotCountElapsedSec(0);
+    const operationStartedAt = Date.now();
+    const elapsedTimer = window.setInterval(() => {
+      setShotCountElapsedSec(Math.max(1, Math.floor((Date.now() - operationStartedAt) / 1_000)));
+    }, 1_000);
     setTimelineError(null);
     try {
       const targetDurationSec = clampTargetDuration(
@@ -461,6 +483,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     } catch (regenerateError) {
       setTimelineError(regenerateError instanceof Error ? regenerateError.message : "分镜数量调整失败，请重试。");
     } finally {
+      window.clearInterval(elapsedTimer);
+      shotCountOperationRef.current = false;
       setShotCountRegenerating(false);
     }
   }
@@ -559,6 +583,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   async function handleGenerateWanVideo() {
     setHeroVideoError(null);
     setHeroVideoGenerating(true);
+    setHeroVideoElapsedSec(0);
     setWaitingManualUpload(false);
     setFallbackToKeyframe(false);
 
@@ -582,11 +607,19 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           durationSec: Math.min(8, Math.max(3, Math.round(heroShot.durationSec || 5)))
         })
       });
-      const payload = (await response.json()) as HeroVideoAssetResponse;
-      if (!response.ok || !payload.success || !payload.data?.asset) {
+      const payload = await readClientApiResponse<NonNullable<HeroVideoAssetResponse["data"]>>(response);
+      if (!payload.success || !payload.data) {
         throw new Error(payload.error || "Wan 2.7 API 调用失败，请检查百炼 Key、模型权限和账户额度。");
       }
-      setHeroVideo(heroVideoFromAsset(payload.data.asset));
+      const completed = payload.data.asset
+        ? payload.data
+        : await pollProjectWanVideoUntilComplete(
+            displayProject.id,
+            payload.data.eventId,
+            setHeroVideoElapsedSec
+          );
+      if (!completed.asset) throw new Error("Wan 2.7 任务已结束，但没有取得项目视频资产。");
+      setHeroVideo(heroVideoFromAsset(completed.asset));
       await refreshVideoLibrary();
     } catch (error) {
       setHeroVideoError(error instanceof Error ? error.message : "Wan 2.7 API 调用失败。");
@@ -923,7 +956,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
               </div>
 
               <div className="hero-workflow-v4__actions">
-                <button type="button" className="project-button-v4 project-button-v4--primary" disabled={heroVideoGenerating || heroVideoUploading} aria-busy={heroVideoGenerating} onClick={() => void handleGenerateWanVideo()}>{heroVideoGenerating ? "Wan 2.7 生成中" : heroVideo?.source === "wan-api" ? "重新生成广告视频" : "调用 Wan 2.7 生成"}</button>
+                <button type="button" className="project-button-v4 project-button-v4--primary" disabled={heroVideoGenerating || heroVideoUploading} aria-busy={heroVideoGenerating} onClick={() => void handleGenerateWanVideo()}>{heroVideoGenerating ? `Wan 2.7 生成中 · ${heroVideoElapsedSec} 秒` : heroVideo?.source === "wan-api" ? "重新生成广告视频" : "调用 Wan 2.7 生成"}</button>
                 <button type="button" className="project-button-v4 project-button-v4--ai" onClick={() => void copyPrompt("optimized", optimizedVideoPrompt)}>{copiedPrompt === "optimized" ? "提示词已复制" : "复制 Wan 2.7 提示词"}</button>
                 <button type="button" className="project-button-v4 project-button-v4--ghost" onClick={() => openShotDetails(heroShot, "video")}>查看生成详情</button>
               </div>
@@ -1011,9 +1044,10 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
             </div>
             <ShotCountDialogControl value={requestedShotCount} disabled={shotCountRegenerating} onChange={setRequestedShotCount} />
             <p>修改分镜数量将重新生成整套分镜，并使现有关键帧、导入广告视频和最终成片失效。此操作不会修改商品简报和核心策略。</p>
+            {shotCountRegenerating ? <p className="shot-count-dialog-v4__progress" aria-live="polite">正在请求 DeepSeek；20 秒未响应时会自动使用当前数量与时长的本地分镜继续。已等待 {shotCountElapsedSec} 秒。</p> : null}
             <footer>
               <button type="button" className="project-button-v4 project-button-v4--secondary" disabled={shotCountRegenerating} onClick={() => setShotCountDialogOpen(false)}>取消</button>
-              <button type="button" className="project-button-v4 project-button-v4--primary" disabled={shotCountRegenerating || requestedShotCount === displayProject.shots.length} onClick={() => void handleRegenerateShotCount()}>{shotCountRegenerating ? "重新生成中" : "确认并重新生成"}</button>
+              <button type="button" className="project-button-v4 project-button-v4--primary" disabled={shotCountRegenerating || requestedShotCount === displayProject.shots.length} onClick={() => void handleRegenerateShotCount()}>{shotCountRegenerating ? `重新生成中 · ${shotCountElapsedSec} 秒` : "确认并重新生成"}</button>
             </footer>
           </section>
         </div>
@@ -1049,6 +1083,50 @@ function RenderProgress({ status }: { status: RenderStatusState }) {
 
 function isActiveRenderState(status: RenderStatusState["status"]) {
   return ["queued", "validating", "narrating", "bundling", "rendering", "encoding"].includes(status);
+}
+
+async function pollProjectWanVideoUntilComplete(
+  projectId: string,
+  eventId: string | undefined,
+  onProgress: (elapsedSeconds: number) => void
+): Promise<NonNullable<HeroVideoAssetResponse["data"]>> {
+  if (!eventId) throw new Error("Wan 2.7 已接受请求，但没有返回任务事件 ID。");
+  const intervalMs = 5_000;
+  const maxAttempts = 120;
+  let consecutiveTransportErrors = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    onProgress(Math.round((attempt * intervalMs) / 1_000));
+
+    let response: Response;
+    try {
+      response = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/wan-video?eventId=${encodeURIComponent(eventId)}`,
+        { cache: "no-store" }
+      );
+    } catch (error) {
+      consecutiveTransportErrors += 1;
+      if (consecutiveTransportErrors < 8) continue;
+      throw error;
+    }
+
+    const result = await readClientApiResponse<NonNullable<HeroVideoAssetResponse["data"]>>(response);
+    if (result.success && result.data?.asset) return result.data;
+    if (result.success && result.data?.status === "running") {
+      consecutiveTransportErrors = 0;
+      continue;
+    }
+
+    const retryable = [502, 503, 504].includes(response.status) || result.data?.status === "running";
+    if (retryable && consecutiveTransportErrors < 8) {
+      consecutiveTransportErrors += 1;
+      continue;
+    }
+    throw new Error(result.error || "Wan 2.7 任务状态查询失败。");
+  }
+
+  throw new Error("Wan 2.7 已等待 10 分钟仍未完成。任务可能仍在百炼处理中，请稍后刷新项目继续查看。");
 }
 function InfoCard({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;

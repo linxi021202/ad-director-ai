@@ -148,9 +148,11 @@ async function callAndValidate<TData>(
   const messages: LLMMessage[] = [{ role: "user", content: prompt }];
   const secret = await resolveProviderSecret("deepseek", context?.sessionId ?? "");
   if (!secret.value) return failureResponse(model, Date.now() - startedAt, "DeepSeek尚未配置。" );
-  const client = createDeepSeekClient({ apiKey: secret.value, baseUrl: runtime.baseUrl, model, timeoutMs: runtime.timeoutMs });
+  const timeoutMs = Math.max(5_000, Math.min(runtime.timeoutMs, context?.providerTimeoutMs ?? runtime.timeoutMs));
+  const maxAttempts = Math.max(1, Math.min(runtime.maxRetries + 1, context?.maxProviderAttempts ?? runtime.maxRetries + 1));
+  const client = createDeepSeekClient({ apiKey: secret.value, baseUrl: runtime.baseUrl, model, timeoutMs });
 
-  for (let attempt = 0; attempt <= runtime.maxRetries; attempt += 1) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await client.call({
       model,
       messages,

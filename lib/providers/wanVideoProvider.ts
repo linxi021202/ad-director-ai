@@ -41,7 +41,8 @@ export const wanVideoProvider: VideoProvider = {
         sessionId: input.sessionId!,
         projectId: input.projectId,
         heroImageAssetId: input.heroImageAssetId,
-        productImages: input.productImages
+        productImages: input.productImages,
+        assetBaseUrl: input.assetBaseUrl
       });
 
       return await submitWanVideo({

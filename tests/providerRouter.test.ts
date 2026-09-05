@@ -171,6 +171,29 @@ describe("providerRouter", () => {
     expect(result.fallbackReason).toContain("mockTextProvider");
   });
 
+  it("keeps the requested shot count and duration plan when DeepSeek storyboard falls back", async () => {
+    enableRealTextMode();
+    const context = { requestedShotCount: 3, targetDurationSec: 24, shotDurationPlan: [8, 8, 8] };
+    vi.spyOn(deepseekProvider, "generateStoryboard").mockResolvedValue({
+      success: false,
+      data: null,
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      latencyMs: 20,
+      fallbackUsed: false,
+      error: "DEEPSEEK_TIMEOUT：DeepSeek 在 20 秒内未响应。"
+    });
+
+    const result = await runTextTask(
+      { taskType: "storyboard", brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy },
+      context
+    );
+    const shots = result.data as typeof coldBrewDemo.shots;
+
+    expect(shots).toHaveLength(3);
+    expect(shots.map((shot) => shot.durationSec)).toEqual([8, 8, 8]);
+  });
+
   it("falls back to mockTextProvider when real text config is missing DeepSeek key", async () => {
     process.env.AI_MODE = "real";
     process.env.ENABLE_REAL_TEXT = "true";

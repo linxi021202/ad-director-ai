@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync("components/GenerateWorkflow.tsx", "utf8");
+const projectDetail = readFileSync("components/ProjectDetailView.tsx", "utf8");
 const workspaceCss = readFileSync("app/workspace-v3.css", "utf8");
 
 describe("generate workflow shot count interaction", () => {
@@ -62,5 +63,17 @@ describe("generate workflow shot count interaction", () => {
   it("refreshes the server-owned project after rebuilding the storyboard", () => {
     expect(workflow).toContain("fetchServerProject(activeProject.id)");
     expect(workflow).toContain("setLiveKeyframes(projectKeyframesToImages(refreshed))");
+  });
+
+  it("prevents duplicate regeneration requests and shows elapsed progress", () => {
+    expect(workflow).toContain("shotCountOperationRef.current || shotCountSaving || isGenerating");
+    expect(workflow).toContain("shotCountOperationRef.current = true");
+    expect(workflow).toContain("shotCountOperationRef.current = false");
+    expect(workflow).toContain("shotCountElapsedSec");
+    expect(workflow).toContain("20 秒未响应时会自动使用");
+    expect(workflow).toContain('setTraceLabel("分镜数量调整失败")');
+    expect(projectDetail).toContain("shotCountOperationRef.current || shotCountRegenerating");
+    expect(projectDetail).toContain("shotCountElapsedSec");
+    expect(projectDetail).toContain("20 秒未响应时会自动使用");
   });
 });

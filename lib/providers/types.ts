@@ -104,6 +104,7 @@ export type HeroVideoFromImageInput = {
   projectId?: string;
   shotId?: string;
   sessionId?: string;
+  assetBaseUrl?: string;
 };
 
 export type ReservedVideoProviderResponse = {
@@ -155,6 +156,8 @@ export type ProviderRequestContext = {
   requestedShotCount?: number;
   targetDurationSec?: number;
   shotDurationPlan?: number[];
+  providerTimeoutMs?: number;
+  maxProviderAttempts?: number;
 };
 
 export type TextProvider = {

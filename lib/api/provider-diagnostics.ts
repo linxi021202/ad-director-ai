@@ -35,6 +35,33 @@ export function diagnoseProviderFallback(error: unknown): ProviderDiagnostic {
     };
   }
 
+  if (normalized.includes("deepseek_timeout") || normalized.includes("timed out") || normalized.includes("超时")) {
+    return {
+      code: "task_timeout",
+      title: "DeepSeek 请求超时",
+      detail: message || "DeepSeek 在限定时间内没有返回分镜。",
+      hint: "本次已停止继续等待，并使用与当前分镜数量和时长一致的本地模板。"
+    };
+  }
+
+  if (normalized.includes("deepseek_auth_failed")) {
+    return {
+      code: "permission_denied",
+      title: "DeepSeek 鉴权失败",
+      detail: message,
+      hint: "请重新校验 DeepSeek Key 与当前模型权限。"
+    };
+  }
+
+  if (normalized.includes("deepseek_quota_exhausted") || normalized.includes("deepseek_rate_limited")) {
+    return {
+      code: "provider_call_failed",
+      title: normalized.includes("quota") ? "DeepSeek 额度不足" : "DeepSeek 请求限流",
+      detail: message,
+      hint: "请检查账户额度或稍后再试；本次已使用本地模板完成分镜调整。"
+    };
+  }
+
   if (normalized.includes("json") || normalized.includes("parse")) {
     return {
       code: "json_parse_failed",

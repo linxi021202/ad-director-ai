@@ -1792,6 +1792,11 @@
   font-size: 13px;
   line-height: 22px;
 }
+.shot-count-dialog-v4 > section > .shot-count-dialog-v4__progress {
+  border-left: 2px solid var(--project-accent-ai);
+  color: #b8f5ff;
+  padding-left: 12px;
+}
 .shot-count-dialog-v4 footer {
   display: flex;
   justify-content: flex-end;

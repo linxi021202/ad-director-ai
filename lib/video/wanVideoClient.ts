@@ -11,7 +11,8 @@ assertServerOnly("Wan 2.7 video client");
 
 const GENERATION_PATH = "/api/v1/services/aigc/video-generation/video-synthesis";
 const TASK_PATH = "/api/v1/tasks";
-const PROVIDER_REQUEST_TIMEOUT_MS = 25_000;
+const PROVIDER_SUBMIT_TIMEOUT_MS = 75_000;
+const PROVIDER_STATUS_TIMEOUT_MS = 20_000;
 
 export async function submitWanVideo(input: WanVideoRequest): Promise<WanVideoResult> {
   const startedAt = Date.now();
@@ -45,7 +46,7 @@ export async function submitWanVideo(input: WanVideoRequest): Promise<WanVideoRe
         "X-DashScope-Async": "enable"
       },
       body: JSON.stringify(buildWanRequestBody(input, model, config.video.resolution)),
-      signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(PROVIDER_SUBMIT_TIMEOUT_MS),
       cache: "no-store"
     });
     const createJson = await readJson(createResponse);
@@ -80,7 +81,7 @@ export async function submitWanVideo(input: WanVideoRequest): Promise<WanVideoRe
       latencyMs: Date.now() - startedAt
     };
   } catch (error) {
-    return fail(model, startedAt, sanitizeVideoError(error));
+    return fail(model, startedAt, wanTransportError(error, "submit", PROVIDER_SUBMIT_TIMEOUT_MS));
   }
 }
 
@@ -149,7 +150,7 @@ export async function getWanVideoTaskStatus(input: {
   try {
     const response = await fetch(buildUrl(config.video.baseUrl, `${TASK_PATH}/${encodeURIComponent(input.taskId)}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(PROVIDER_STATUS_TIMEOUT_MS),
       cache: "no-store"
     });
     const json = await readJson(response);
@@ -198,7 +199,13 @@ export async function getWanVideoTaskStatus(input: {
       latencyMs: Date.now() - startedAt
     };
   } catch (error) {
-    return taskFail(model, startedAt, sanitizeVideoError(error), input.taskId, true);
+    return taskFail(
+      model,
+      startedAt,
+      wanTransportError(error, "status", PROVIDER_STATUS_TIMEOUT_MS),
+      input.taskId,
+      true
+    );
   }
 }
 
@@ -256,6 +263,17 @@ function walk(value: unknown, visit: (key: string, item: unknown) => void) {
 
 function safeJsonPreview(value: unknown) {
   return sanitizeVideoError(JSON.stringify(value ?? {}).slice(0, 500));
+}
+
+function wanTransportError(error: unknown, stage: "submit" | "status", timeoutMs: number) {
+  const sanitized = sanitizeVideoError(error);
+  if (/timeout|aborted due to timeout|aborterror/i.test(sanitized)) {
+    const code = stage === "submit" ? "WAN_SUBMIT_TIMEOUT" : "WAN_STATUS_TIMEOUT";
+    const action = stage === "submit" ? "提交生成任务" : "查询任务状态";
+    return `${code}：百炼 Wan 2.7 在 ${Math.round(timeoutMs / 1_000)} 秒内未完成${action}。`;
+  }
+  const code = stage === "submit" ? "WAN_SUBMIT_NETWORK_ERROR" : "WAN_STATUS_NETWORK_ERROR";
+  return `${code}：连接百炼 Wan 2.7 时失败。${sanitized ? ` ${sanitized}` : ""}`;
 }
 
 function fail(

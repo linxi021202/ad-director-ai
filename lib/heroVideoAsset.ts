@@ -60,6 +60,8 @@ export type HeroVideoUploadResult =
   | { success: true; asset: HeroVideoAsset }
   | { success: false; error: string; status: number };
 
+const GENERATED_VIDEO_DURATION_TOLERANCE_SEC = 0.5;
+
 export async function readHeroVideoProjectState(sessionId: string, projectId: string): Promise<HeroVideoProjectState> {
   const record = await requireOwnedAnonymousProject(sessionId, projectId);
   const metadata = record.project.heroVideo;
@@ -119,11 +121,11 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
   if (!metadata) return fail("无法读取 MP4 视频元数据。", 400);
   const source = input.source ?? "user-upload";
   const isGeneratedShot = source === "wan-api" || source === "happyhorse-api";
-  if (isGeneratedShot && metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC) {
-    return fail(`AI 生成视频时长不能短于 ${MIN_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
+  if (isGeneratedShot && metadata.durationSec < MIN_HERO_VIDEO_DURATION_SEC - GENERATED_VIDEO_DURATION_TOLERANCE_SEC) {
+    return fail(`AI 生成视频实际时长 ${metadata.durationSec.toFixed(2)} 秒，短于 ${MIN_HERO_VIDEO_DURATION_SEC} 秒下限。`, 400);
   }
-  if (isGeneratedShot && metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC) {
-    return fail(`AI 生成视频时长不能超过 ${MAX_HERO_VIDEO_DURATION_SEC} 秒。`, 400);
+  if (isGeneratedShot && metadata.durationSec > MAX_HERO_VIDEO_DURATION_SEC + GENERATED_VIDEO_DURATION_TOLERANCE_SEC) {
+    return fail(`AI 生成视频实际时长 ${metadata.durationSec.toFixed(2)} 秒，超过 ${MAX_HERO_VIDEO_DURATION_SEC} 秒上限（允许 0.50 秒封装误差）。`, 400);
   }
 
   try {

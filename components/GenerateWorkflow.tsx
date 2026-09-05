@@ -158,6 +158,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [briefSaveStatus, setBriefSaveStatus] = useState<BriefSaveStatus>(() => initialProject.briefStatus === "saved" ? "saved" : "draft");
   const [briefNotice, setBriefNotice] = useState<string | null>(null);
   const [shotCountSaving, setShotCountSaving] = useState(false);
+  const shotCountOperationRef = useRef(false);
+  const [shotCountElapsedSec, setShotCountElapsedSec] = useState(0);
   const [shotCountDialogOpen, setShotCountDialogOpen] = useState(false);
   const [requestedShotCount, setRequestedShotCount] = useState(() => initialShotCount);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepState>(() => workflowFromProject(initialProject));
@@ -315,14 +317,22 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   async function regenerateShotCount() {
+    if (shotCountOperationRef.current || shotCountSaving || isGenerating) return;
     const shotCount = clampShotCount(requestedShotCount);
     if (shotCount === getEffectiveShotCount(activeProject)) {
       setShotCountDialogOpen(false);
       return;
     }
 
+    shotCountOperationRef.current = true;
     setShotCountSaving(true);
+    setShotCountElapsedSec(0);
+    const operationStartedAt = Date.now();
+    const elapsedTimer = window.setInterval(() => {
+      setShotCountElapsedSec(Math.max(1, Math.floor((Date.now() - operationStartedAt) / 1_000)));
+    }, 1_000);
     setError(null);
+    setTraceLabel(`正在重新生成 ${shotCount} 个分镜`);
     try {
       const targetDurationSec = clampTargetDuration(shotCount, briefDraft.targetDurationSec);
       const shotDurationPlan = allocateShotDurations(shotCount, targetDurationSec);
@@ -355,8 +365,11 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       setShotCountDialogOpen(false);
       await refreshServerEvents(activeProject.id);
     } catch (saveError) {
+      setTraceLabel("分镜数量调整失败");
       setError(saveError instanceof Error ? saveError.message : "分镜数量调整失败，请重试。");
     } finally {
+      window.clearInterval(elapsedTimer);
+      shotCountOperationRef.current = false;
       setShotCountSaving(false);
     }
   }
@@ -701,9 +714,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             <div className="shot-count-dialog-v4__summary"><span>当前分镜</span><strong>{getEffectiveShotCount(activeProject)} 个</strong></div>
             <ShotCountDialogControl value={requestedShotCount} disabled={shotCountSaving} onChange={setRequestedShotCount} />
             <p>调整后将重新生成完整分镜，现有关键帧、导入广告视频和最终成片会失效。商品简报与核心策略保持不变。</p>
+            {shotCountSaving ? <p className="shot-count-dialog-v4__progress" aria-live="polite">正在请求 DeepSeek；20 秒未响应时会自动使用当前数量与时长的本地分镜继续。已等待 {shotCountElapsedSec} 秒。</p> : null}
             <footer>
               <button type="button" className="button-secondary-v3" disabled={shotCountSaving} onClick={() => setShotCountDialogOpen(false)}>取消</button>
-              <button type="button" className="button-primary-v3" disabled={shotCountSaving || requestedShotCount === getEffectiveShotCount(activeProject)} onClick={() => void regenerateShotCount()}>{shotCountSaving ? "重新生成中" : "确认并重新生成"}</button>
+              <button type="button" className="button-primary-v3" disabled={shotCountSaving || requestedShotCount === getEffectiveShotCount(activeProject)} onClick={() => void regenerateShotCount()}>{shotCountSaving ? `重新生成中 · ${shotCountElapsedSec} 秒` : "确认并重新生成"}</button>
             </footer>
           </section>
         </div>
@@ -1105,7 +1119,8 @@ function generationEventsToTrace(events: GenerationEvent[] | undefined): string[
     .map((event) => {
       const provider = event.provider === "system" ? "系统" : event.provider === "qwen-image" ? "Qwen-Image" : event.provider === "wan" ? "Wan 2.7" : event.provider === "happyhorse" ? "HappyHorse（历史）" : event.provider === "remotion" ? "Remotion" : "DeepSeek";
       const progress = event.progressTotal ? `｜${event.progressCurrent ?? 0} / ${event.progressTotal}` : "";
-      return `${provider}｜${event.action}｜${eventStatusLabel(event.status)}${progress}｜${event.message}`;
+      const errorCode = event.errorCode ? `｜错误码 ${event.errorCode}` : "";
+      return `${provider}｜${event.action}｜${eventStatusLabel(event.status)}${progress}${errorCode}｜${event.message}`;
     });
 }
 

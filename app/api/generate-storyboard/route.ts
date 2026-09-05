@@ -58,7 +58,8 @@ export async function POST(request: Request) {
       sessionId: session.id,
       requestedShotCount: timeline.shotCount,
       targetDurationSec: timeline.targetDurationSec,
-      shotDurationPlan: timeline.shotDurationPlan
+      shotDurationPlan: timeline.shotDurationPlan,
+      ...(parsed.data.regenerateExisting ? { providerTimeoutMs: 20_000, maxProviderAttempts: 1 } : {})
     });
     let responseShots = result.data ?? [];
     if (result.data) {
@@ -80,8 +81,13 @@ export async function POST(request: Request) {
         }
       });
       responseShots = updated.project.shots;
+      const diagnostic = result.fallbackUsed || result.error
+        ? diagnoseProviderFallback(result.fallbackReason ?? result.error)
+        : null;
       await completeGenerationEvent(session.id, projectId, eventId,
-        result.fallbackUsed ? "分镜生成失败，已使用本地模板继续。" : `分镜生成完成，共 ${responseShots.length} 个镜头。`,
+        result.fallbackUsed
+          ? `${diagnostic?.title ?? "DeepSeek 调用失败"}：${diagnostic?.detail ?? "已使用本地模板继续。"} 当前分镜 ${responseShots.length} 个，总时长 ${responseShots.reduce((sum, shot) => sum + shot.durationSec, 0)} 秒。`
+          : `分镜生成完成，共 ${responseShots.length} 个镜头，总时长 ${responseShots.reduce((sum, shot) => sum + shot.durationSec, 0)} 秒。`,
         { status: result.fallbackUsed ? "fallback" : "completed", latencyMs: result.latencyMs, progressCurrent: responseShots.length, progressTotal: responseShots.length }
       );
     } else {
@@ -102,10 +108,11 @@ export async function POST(request: Request) {
       error: result.error
     });
   } catch (error) {
-    if (eventId && projectId) await failGenerationEvent(session.id, projectId, eventId, "分镜生成失败，请稍后重试。").catch(() => undefined);
+    const detail = sanitizeApiError(error);
+    if (eventId && projectId) await failGenerationEvent(session.id, projectId, eventId, `分镜生成或保存失败：${detail}`).catch(() => undefined);
     const projectError = projectStoreErrorResponse(error);
     if (projectError) return projectError;
-    return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "exception" }, fallbackUsed: false, error: sanitizeApiError(error) }, 500);
+    return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "exception" }, fallbackUsed: false, error: detail }, 500);
   }
 }
 

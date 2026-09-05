@@ -3,17 +3,28 @@ import type { DownloadVideoResult } from "./types";
 
 assertServerOnly("generated video download");
 
+const VIDEO_DOWNLOAD_TIMEOUT_MS = 90_000;
+
 export async function downloadRemoteVideo(videoUrl: string): Promise<DownloadVideoResult> {
   try {
     const url = new URL(videoUrl);
     if (!["http:", "https:"].includes(url.protocol)) return { success: false, error: "模型返回的视频地址不是有效的 HTTP URL。" };
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await fetch(url, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(VIDEO_DOWNLOAD_TIMEOUT_MS)
+    });
     if (!response.ok) return { success: false, error: `下载生成视频失败：HTTP ${response.status}` };
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.length === 0) return { success: false, error: "模型返回的视频文件为空。" };
     return { success: true, buffer, sizeBytes: buffer.length, mimeType: normalizeVideoMime(response.headers.get("content-type")) };
   } catch (error) {
-    return { success: false, error: sanitizeVideoError(error) };
+    const sanitized = sanitizeVideoError(error);
+    return {
+      success: false,
+      error: /timeout|aborted due to timeout|aborterror/i.test(sanitized)
+        ? "VIDEO_DOWNLOAD_TIMEOUT：模型已生成视频，但服务器在 90 秒内未完成下载。"
+        : `VIDEO_DOWNLOAD_FAILED：${sanitized}`
+    };
   }
 }
 

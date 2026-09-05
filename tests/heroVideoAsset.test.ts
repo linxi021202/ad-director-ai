@@ -15,7 +15,8 @@ import {
 } from "../lib/heroVideoAsset";
 import {
   createAnonymousProject,
-  resetAnonymousProjectQueuesForTests
+  resetAnonymousProjectQueuesForTests,
+  updateOwnedShotDurations
 } from "../lib/projects/anonymousProjectStore";
 
 const SESSION_A = "hero-video-session-a";
@@ -137,6 +138,13 @@ describe("private advertising video assets", () => {
 
     const mismatch = await save({ durationSec: heroShotDurationSec + 2, source: "wan-api" });
     expect(mismatch.success).toBe(false);
+  });
+
+  it("accepts small MP4 container duration drift at the eight-second boundary", async () => {
+    await updateOwnedShotDurations(SESSION_A, projectId, [{ shotId: heroShotId, durationSec: 8 }]);
+    heroShotDurationSec = 8;
+    const result = await save({ durationSec: 8.4, source: "wan-api" });
+    expect(result.success).toBe(true);
   });
 
   it("accepts an API video for Remotion adaptation and records its source", async () => {

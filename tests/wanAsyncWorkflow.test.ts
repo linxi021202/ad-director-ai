@@ -19,8 +19,22 @@ describe("Wan asynchronous generation workflow", () => {
 
   it("uses tolerant response parsing while the browser polls the task", async () => {
     const workflow = await readFile(path.join(root, "components/GenerateWorkflow.tsx"), "utf8");
+    const projectDetail = await readFile(path.join(root, "components/ProjectDetailView.tsx"), "utf8");
     expect(workflow).toContain("pollWanVideoUntilComplete");
     expect(workflow).toContain("readClientApiResponse<WanVideoData>");
     expect(workflow).toContain("[502, 503, 504]");
+    expect(projectDetail).toContain("pollProjectWanVideoUntilComplete");
+    expect(projectDetail).toContain("readClientApiResponse<NonNullable<HeroVideoAssetResponse");
+    expect(projectDetail).toContain("heroVideoElapsedSec");
+    expect(projectDetail).toContain("[502, 503, 504]");
+  });
+
+  it("uses short-lived private asset URLs in production instead of embedding large images", async () => {
+    const references = await readFile(path.join(root, "lib/video/referenceImages.ts"), "utf8");
+    const route = await readFile(path.join(root, "app/api/projects/[projectId]/wan-video/route.ts"), "utf8");
+    expect(references).toContain("issueRenderAssetToken");
+    expect(references).toContain("getInternalRenderAssetUrl");
+    expect(references).toContain("isExternallyReachableOrigin");
+    expect(route).toContain("RAILWAY_PUBLIC_DOMAIN");
   });
 });

@@ -13,7 +13,8 @@ import {
   attachGenerationEventProviderTask,
   completeGenerationEvent,
   failGenerationEvent,
-  startGenerationEvent
+  startGenerationEvent,
+  updateGenerationEventProgress
 } from "@/lib/projects/generationEvents";
 import { wanVideoProvider } from "@/lib/providers/wanVideoProvider";
 import { aspectRatioSchema, productImageSchema, type GenerationEvent } from "@/lib/schemas/project";
@@ -55,7 +56,7 @@ export async function POST(request: Request, context: RouteContext) {
       stage: "hero-shot",
       provider: "wan",
       action: "generate-hero-video",
-      message: "Wan 2.7 广告视频生成已开始。",
+      message: `Wan 2.7 正在提交生成任务：目标 ${parsed.data.durationSec} 秒，画幅 ${parsed.data.aspectRatio}。`,
       shotId: parsed.data.shotId,
       progressCurrent: 0,
       progressTotal: 1
@@ -73,7 +74,8 @@ export async function POST(request: Request, context: RouteContext) {
       aspectRatio: parsed.data.aspectRatio,
       projectId,
       shotId: parsed.data.shotId,
-      sessionId: session.id
+      sessionId: session.id,
+      assetBaseUrl: resolveAssetBaseUrl(request)
     });
 
     if (!result || !result.success) {
@@ -113,16 +115,17 @@ export async function POST(request: Request, context: RouteContext) {
       202
     );
   } catch (error) {
+    const detail = sanitizeError(error);
     if (eventId && projectId) {
       await failGenerationEvent(
         session.id,
         projectId,
         eventId,
-        "Wan 2.7 视频任务提交异常，请稍后重试。",
-        "PROVIDER_REQUEST_FAILED"
+        `Wan 2.7 视频任务提交异常：${detail}`,
+        classifyProviderError(detail)
       ).catch(() => undefined);
     }
-    return response(false, null, null, sanitizeError(error), 500);
+    return response(false, null, null, detail, 500);
   }
 }
 
@@ -172,6 +175,14 @@ export async function GET(request: Request, context: RouteContext) {
     if (!result.success) {
       const error = result.error ?? "Wan 2.7 任务状态查询失败。";
       if (result.retryable) {
+        await updateGenerationEventProgress(
+          session.id,
+          authorization.projectId,
+          event.id,
+          0,
+          1,
+          `Wan 2.7 任务仍在运行，但本次状态查询失败：${error} 系统将继续查询。`
+        );
         return response(false, { status: "running", eventId: event.id, taskId: event.providerTaskId }, buildTrace(result), error, 503);
       }
       await failGenerationEvent(session.id, authorization.projectId, event.id, error, classifyProviderError(error));
@@ -222,7 +233,13 @@ async function finalizeWanVideo(input: {
   const download = await downloadRemoteVideo(input.result.remoteVideoUrl);
   if (!download.success || !download.buffer || !download.sizeBytes) {
     const error = download.error ?? "Wan 2.7 视频下载失败。";
-    await failGenerationEvent(input.sessionId, input.projectId, input.event.id, error, "ASSET_UPLOAD_FAILED");
+    await failGenerationEvent(
+      input.sessionId,
+      input.projectId,
+      input.event.id,
+      error,
+      /VIDEO_DOWNLOAD_TIMEOUT/i.test(error) ? "PROVIDER_TIMEOUT" : "ASSET_UPLOAD_FAILED"
+    );
     return response(false, null, buildTrace(input.result), error, 502);
   }
 
@@ -282,10 +299,20 @@ function buildTrace(result: {
 }
 
 function classifyProviderError(error: string) {
+  if (/WAN_SUBMIT_TIMEOUT/i.test(error)) return "PROVIDER_SUBMIT_TIMEOUT";
+  if (/WAN_STATUS_TIMEOUT/i.test(error)) return "PROVIDER_STATUS_TIMEOUT";
+  if (/actual duration|实际时长|VIDEO_DURATION/i.test(error)) return "VIDEO_DURATION_OUT_OF_TOLERANCE";
   if (/quota|allocation|free tier/i.test(error)) return "QUOTA_EXHAUSTED";
   if (/timeout|timed out/i.test(error)) return "PROVIDER_TIMEOUT";
   if (/not configured|key|密钥/i.test(error)) return "NOT_CONFIGURED";
   return "PROVIDER_REQUEST_FAILED";
+}
+
+function resolveAssetBaseUrl(request: Request) {
+  const configured = process.env.APP_PUBLIC_URL?.trim();
+  if (configured) return configured;
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  return railwayDomain ? `https://${railwayDomain}` : new URL(request.url).origin;
 }
 
 function response(success: boolean, data: unknown, trace: unknown, error: string | null, status: number) {

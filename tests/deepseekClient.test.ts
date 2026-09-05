@@ -83,7 +83,7 @@ describe("deepseekClient", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe("DeepSeek调用失败，请检查密钥、额度或服务状态。");
+    expect(result.error).toContain("DEEPSEEK_EMPTY_RESPONSE");
   });
 
   it("does not throw uncaught fetch errors", async () => {
@@ -95,6 +95,19 @@ describe("deepseekClient", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe("DeepSeek调用失败，请检查密钥、额度或服务状态。");
+    expect(result.error).toContain("DEEPSEEK_NETWORK_ERROR");
+  });
+
+  it("reports timeout as a specific diagnostic instead of a generic provider failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("The operation was aborted due to timeout", "TimeoutError")));
+
+    const result = await callDeepSeekLLM({
+      messages: [{ role: "user", content: "Return text" }],
+      responseFormat: "text"
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("DEEPSEEK_TIMEOUT");
+    expect(result.error).toContain("30 秒");
   });
 });
