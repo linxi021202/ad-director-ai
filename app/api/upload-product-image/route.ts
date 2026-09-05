@@ -6,7 +6,7 @@ import { createPrivateAsset, deletePrivateAsset } from "@/lib/assets/assetStore"
 import { validateProductImage } from "@/lib/assets/media";
 import { getProjectAssetUrl } from "@/lib/assets/url";
 import { authorizeOwnedProject } from "@/lib/projects/api";
-import { updateOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
+import { mutateOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
 import { productImageRoleSchema } from "@/lib/schemas/project";
 import { getAnonymousApiSession } from "@/lib/session/api";
 
@@ -27,8 +27,10 @@ export async function POST(request: Request) {
     const clientImageId = String(formData.get("assetId") ?? crypto.randomUUID()).trim().slice(0, 120);
     const requestedRole = productImageRoleSchema.safeParse(String(formData.get("role") ?? "main-product"));
     const existingImages = authorization.record.project.brief.productImages ?? [];
-    const previous = existingImages.find((image) => image.id === clientImageId);
-    const role = requestedRole.success ? requestedRole.data : previous?.role ?? "main-product";
+    const existingImage = existingImages.find((image) => image.id === clientImageId);
+    const role = requestedRole.success
+      ? requestedRole.data
+      : existingImage?.role ?? (existingImages.some((image) => image.role === "main-product") ? "reference" : "main-product");
 
     const asset = await createPrivateAsset(session.id, authorization.projectId, {
       kind: role === "logo" ? "logo" : role === "reference" ? "reference-image" : "product-image",
@@ -50,30 +52,35 @@ export async function POST(request: Request) {
       localUrl,
       role
     };
-    const retained = existingImages.filter((image) => image.id !== clientImageId);
-    if (retained.length >= 3) {
-      await deletePrivateAsset(session.id, authorization.projectId, asset.id);
-      return response(false, null, "最多只能保存 3 张产品图。", 400);
-    }
-
+    let replacedAssetId: string | undefined;
+    let updated;
     try {
-      await updateOwnedAnonymousProject(session.id, authorization.projectId, {
-        brief: {
-          ...authorization.record.project.brief,
-          productImages: [...retained, nextImage]
-        }
+      updated = await mutateOwnedAnonymousProject(session.id, authorization.projectId, (project) => {
+        const currentImages = project.brief.productImages ?? [];
+        const previous = currentImages.find((image) => image.id === clientImageId);
+        const retained = currentImages.filter((image) => image.id !== clientImageId);
+        if (retained.length >= 3) throw new Error("PRODUCT_IMAGE_LIMIT_REACHED");
+        replacedAssetId = previous?.assetId;
+        return {
+          ...project,
+          brief: {
+            ...project.brief,
+            productImages: [...retained, nextImage]
+          }
+        };
       });
     } catch (error) {
       await deletePrivateAsset(session.id, authorization.projectId, asset.id);
       throw error;
     }
-    if (previous?.assetId && previous.assetId !== asset.id) {
-      await deletePrivateAsset(session.id, authorization.projectId, previous.assetId).catch(() => undefined);
+    if (replacedAssetId && replacedAssetId !== asset.id) {
+      await deletePrivateAsset(session.id, authorization.projectId, replacedAssetId).catch(() => undefined);
     }
 
     return response(true, {
       assetId: asset.id,
       localUrl,
+      version: updated.version,
       width: inspected.width,
       height: inspected.height,
       mimeType: inspected.mimeType,
@@ -81,6 +88,7 @@ export async function POST(request: Request) {
     }, null, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
+    if (/PRODUCT_IMAGE_LIMIT_REACHED/.test(message)) return response(false, null, "最多只能保存 3 张产品图。", 400);
     if (/PRODUCT_IMAGE_SIZE_INVALID/.test(message)) return response(false, null, "单张图片必须小于 5MB。", 400);
     if (/MIME|EXTENSION|UNSUPPORTED_OR_CORRUPT_IMAGE/.test(message)) {
       return response(false, null, "图片内容、扩展名或 MIME 类型不一致，仅支持有效的 PNG、JPG、WebP。", 400);

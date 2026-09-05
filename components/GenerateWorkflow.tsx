@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ModelSettingsSheet, type ModelSettingsStatus, type ProviderId } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
@@ -16,6 +16,10 @@ import { ProductImageUploader } from "@/components/ProductImageUploader";
 import { buildOptimizedVideoPrompt, resolveHeroShot } from "@/lib/heroVideo";
 import type { AdStrategy, AspectRatio, GenerationEvent, GenerationProject, ProductBrief, StoryboardShot } from "@/lib/schemas/project";
 import { normalizeProjectDuration } from "@/lib/projectDuration";
+import {
+  saveProjectBriefWithConflictRetry,
+  type ProjectPatchData
+} from "@/lib/projects/clientMutations";
 import {
   DEFAULT_SHOT_DURATION_SEC,
   DEFAULT_TARGET_DURATION_SEC,
@@ -144,7 +148,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     initialProject.targetDurationSec ?? initialProject.brief.durationSec ?? DEFAULT_TARGET_DURATION_SEC
   );
   const [generated, setGenerated] = useState(initialProject.status !== "draft");
-  const [activeVersion, setActiveVersion] = useState(projectVersion);
+  const activeVersionRef = useRef(projectVersion);
+  const projectWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [briefDraft, setBriefDraft] = useState<BriefDraft>(() => ({
     brief: { ...initialProject.brief, durationSec: initialTargetDurationSec },
     shotCount: initialShotCount,
@@ -156,6 +161,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [shotCountDialogOpen, setShotCountDialogOpen] = useState(false);
   const [requestedShotCount, setRequestedShotCount] = useState(() => initialShotCount);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepState>(() => workflowFromProject(initialProject));
+  const workflowStepsRef = useRef<WorkflowStepState>(workflowFromProject(initialProject));
   const [mode, setMode] = useState<GenerationMode>("template");
   const [selection, setSelection] = useState<CallSelection>({ deepseek: true, qwenImage: true, wan: true });
   const [isGenerating, setIsGenerating] = useState(false);
@@ -176,17 +182,39 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }), [activeProject, briefDraft.brief.aspectRatio]);
 
-  function commitWorkflow(next: WorkflowStepState) {
+  function trackServerVersion(version: number) {
+    activeVersionRef.current = Math.max(activeVersionRef.current, version);
+  }
+
+  function applyWorkflowState(next: WorkflowStepState) {
+    workflowStepsRef.current = next;
     setWorkflowSteps(next);
-    void patchServerProject(activeProject.id, { workflowSteps: next });
+  }
+
+  function updateWorkflowState(patch: Partial<WorkflowStepState>) {
+    const next = { ...workflowStepsRef.current, ...patch };
+    applyWorkflowState(next);
+    return next;
+  }
+
+  function queueProjectPatch(projectId: string, patch: Record<string, unknown>) {
+    const operation = projectWriteQueueRef.current.then(async () => {
+      const saved = await patchServerProject(projectId, patch);
+      trackServerVersion(saved.version);
+      return saved;
+    });
+    projectWriteQueueRef.current = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  function commitWorkflow(next: WorkflowStepState) {
+    applyWorkflowState(next);
+    void queueProjectPatch(activeProject.id, { workflowSteps: next }).catch(() => undefined);
   }
 
   function patchWorkflow(patch: Partial<WorkflowStepState>) {
-    setWorkflowSteps((current) => {
-      const next = { ...current, ...patch };
-      void patchServerProject(activeProject.id, { workflowSteps: next });
-      return next;
-    });
+    const next = updateWorkflowState(patch);
+    void queueProjectPatch(activeProject.id, { workflowSteps: next }).catch(() => undefined);
   }
 
   function setStep(key: WorkflowStepKey, status: WorkflowStepStatus) { patchWorkflow({ [key]: status }); }
@@ -196,8 +224,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setGenerated(false);
     setIsGenerating(false);
     const nextWorkflow = { ...idleWorkflowSteps, brief: briefSaveStatus === "saved" ? "completed" as const : "pending" as const };
-    setWorkflowSteps(nextWorkflow);
-    if (briefSaveStatus === "saved") void patchServerProject(activeProject.id, { workflowSteps: nextWorkflow });
+    applyWorkflowState(nextWorkflow);
+    if (briefSaveStatus === "saved") {
+      void queueProjectPatch(activeProject.id, { workflowSteps: nextWorkflow }).catch(() => undefined);
+    }
     setError(null);
   }
 
@@ -207,7 +237,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setBriefNotice(null);
     setBriefDraft((current) => ({ ...current, brief: { ...current.brief, ...patch } }));
     setBriefSaveStatus("dirty");
-    setWorkflowSteps((current) => ({ ...current, brief: "pending" }));
+    updateWorkflowState({ brief: "pending" });
   }
 
   function updateShotCount(rawValue: number) {
@@ -230,7 +260,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       };
     });
     setBriefSaveStatus("dirty");
-    setWorkflowSteps((current) => ({ ...current, brief: "pending" }));
+    updateWorkflowState({ brief: "pending" });
   }
 
   function updateTargetDuration(rawValue: number) {
@@ -242,7 +272,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }));
     setBriefSaveStatus("dirty");
     setBriefNotice(null);
-    setWorkflowSteps((current) => ({ ...current, brief: "pending" }));
+    updateWorkflowState({ brief: "pending" });
   }
 
   async function saveBrief() {
@@ -256,18 +286,19 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setBriefSaveStatus("saving");
     setError(null);
     try {
-      const saved = await saveServerBrief(activeProject.id, activeVersion, briefDraft);
+      await projectWriteQueueRef.current;
+      const saved = await saveProjectBriefWithConflictRetry(activeProject.id, activeVersionRef.current, briefDraft);
       const refreshed = normalizeProjectDuration(saved.project);
       const savedShotCount = getEffectiveShotCount(refreshed);
       const savedTarget = refreshed.targetDurationSec ?? refreshed.brief.durationSec;
-      setActiveVersion(saved.version);
+      trackServerVersion(saved.version);
       setActiveProject(refreshed);
       setBriefDraft({
         brief: { ...refreshed.brief, durationSec: savedTarget },
         shotCount: savedShotCount,
         targetDurationSec: savedTarget
       });
-      setWorkflowSteps(workflowFromProject(refreshed));
+      applyWorkflowState(workflowFromProject(refreshed));
       setBriefSaveStatus("saved");
       setBriefNotice(null);
       router.replace(`/generate?projectId=${encodeURIComponent(refreshed.id)}`);
@@ -310,9 +341,9 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
       const snapshot = await fetchServerProject(activeProject.id);
       const refreshed = normalizeProjectDuration(snapshot.project);
-      setActiveVersion(snapshot.version);
+      trackServerVersion(snapshot.version);
       setActiveProject(refreshed);
-      setWorkflowSteps(workflowFromProject(refreshed));
+      applyWorkflowState(workflowFromProject(refreshed));
       setLiveKeyframes(projectKeyframesToImages(refreshed));
       setBriefDraft({
         brief: { ...refreshed.brief, durationSec: refreshed.targetDurationSec ?? refreshed.brief.durationSec },
@@ -338,7 +369,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setBriefDraft({ brief: { ...restored.brief, durationSec: targetDurationSec }, shotCount, targetDurationSec });
     setBriefSaveStatus("dirty");
     setBriefNotice("已恢复模板内容，保存后才会应用到项目。");
-    setWorkflowSteps((current) => ({ ...current, brief: "pending" }));
+    updateWorkflowState({ brief: "pending" });
   }
   function toggleSelection(key: keyof CallSelection) {
     setSelection((current) => ({ ...current, [key]: !current[key] }));
@@ -414,7 +445,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       setTraceLabel("本地模板生成中");
       commitWorkflow(templateWorkflow);
       setTraceLabel("本地模板完成");
-      await patchServerProject(templateProject.id, {
+      await queueProjectPatch(templateProject.id, {
         brief: templateProject.brief,
         strategy: templateProject.strategy,
         shots: templateProject.shots,
@@ -519,29 +550,25 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         setStep("heroShot", "completed");
       }
 
-      setWorkflowSteps((current) => {
-        const next: WorkflowStepState = {
-          ...current,
-          keyframes: selection.qwenImage ? current.keyframes : "fallback",
-          heroShot: selection.wan ? current.heroShot : "pending",
-          render: "pending"
-        };
-        void patchServerProject(activeProject.id, { workflowSteps: next, status: "completed" }).catch((saveError) => {
-          setError(saveError instanceof Error ? saveError.message : "项目状态保存失败。");
-        });
-        return next;
+      const completedWorkflow: WorkflowStepState = {
+        ...workflowStepsRef.current,
+        keyframes: selection.qwenImage ? workflowStepsRef.current.keyframes : "fallback",
+        heroShot: selection.wan ? workflowStepsRef.current.heroShot : "pending",
+        render: "pending"
+      };
+      applyWorkflowState(completedWorkflow);
+      void queueProjectPatch(activeProject.id, { workflowSteps: completedWorkflow, status: "completed" }).catch((saveError) => {
+        setError(saveError instanceof Error ? saveError.message : "项目状态保存失败。");
       });
 
       setGenerated(true);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "真实调用失败。请确认服务端环境变量已配置。不同 Key 不会在前端显示。");
       setTraceLabel("调用失败");
-      setWorkflowSteps((current) => {
-        const running = (Object.entries(current).find(([, status]) => status === "running")?.[0] ?? "strategy") as WorkflowStepKey;
-        const next = { ...current, [running]: "failed" as const };
-        void patchServerProject(activeProject.id, { workflowSteps: next, status: "failed" }).catch(() => undefined);
-        return next;
-      });
+      const running = (Object.entries(workflowStepsRef.current).find(([, status]) => status === "running")?.[0] ?? "strategy") as WorkflowStepKey;
+      const failedWorkflow = { ...workflowStepsRef.current, [running]: "failed" as const };
+      applyWorkflowState(failedWorkflow);
+      void queueProjectPatch(activeProject.id, { workflowSteps: failedWorkflow, status: "failed" }).catch(() => undefined);
     } finally {
       setIsGenerating(false);
       await refreshServerEvents(activeProject.id);
@@ -579,7 +606,13 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               onTargetDurationChange={updateTargetDuration}
               onRequestShotCountChange={requestGeneratedShotCountChange}
             />
-            <ProductImageUploader projectId={activeProject.id} images={briefDraft.brief.productImages ?? []} disabled={isGenerating} onChange={(images) => updateBrief({ productImages: images })} />
+            <ProductImageUploader
+              projectId={activeProject.id}
+              images={briefDraft.brief.productImages ?? []}
+              disabled={isGenerating}
+              onChange={(images) => updateBrief({ productImages: images })}
+              onPersistedVersion={trackServerVersion}
+            />
             </div>
             <footer className="brief-sidebar-footer brief-save-footer">
               <span className={`brief-save-state is-${briefSaveStatus}`}>{briefSaveStatusLabel(briefSaveStatus, activeProject.briefSavedAt)}</span>
@@ -965,29 +998,6 @@ function projectKeyframesToImages(project: GenerationProject): GenerateImagesDat
     fallbackUsed: frame.fallbackUsed,
     fallbackReason: frame.fallbackReason ?? null
   }));
-}
-
-type ProjectPatchData = {
-  project: GenerationProject;
-  version: number;
-};
-
-async function saveServerBrief(projectId: string, expectedVersion: number, draft: BriefDraft): Promise<ProjectPatchData> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      expectedVersion,
-      saveBrief: {
-        brief: { ...draft.brief, durationSec: draft.targetDurationSec },
-        shotCount: draft.shotCount,
-        targetDurationSec: draft.targetDurationSec
-      }
-    })
-  });
-  const payload = await response.json().catch(() => null) as { data?: ProjectPatchData; error?: { message?: string } } | null;
-  if (!response.ok || !payload?.data) throw new Error(payload?.error?.message || "商品简报保存失败，请重试。");
-  return payload.data;
 }
 
 function briefWorkflowStatus(status: BriefSaveStatus): WorkflowStepStatus {

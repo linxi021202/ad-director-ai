@@ -20,7 +20,11 @@ describe("generate workflow shot count interaction", () => {
   it("keeps brief edits in draft state until the explicit server save succeeds", () => {
     expect(workflow).toContain("const [briefDraft");
     expect(workflow).toContain('setBriefSaveStatus("dirty")');
-    expect(workflow).toContain("saveServerBrief(activeProject.id, activeVersion, briefDraft)");
+    expect(workflow).toContain("saveProjectBriefWithConflictRetry(activeProject.id, activeVersionRef.current, briefDraft)");
+    expect(workflow).toContain("await projectWriteQueueRef.current");
+    expect(workflow).toContain("onPersistedVersion={trackServerVersion}");
+    expect(workflow).toContain("projectWriteQueueRef.current = operation.then");
+    expect(workflow).not.toContain("setWorkflowSteps((current)");
     expect(workflow).toContain("保存商品简报");
     expect(workflow).toContain('briefSaveStatus !== "saved"');
     expect(workflow).toContain('router.replace(`/generate?projectId=${encodeURIComponent(refreshed.id)}`)');

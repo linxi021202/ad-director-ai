@@ -17,13 +17,14 @@ import type { ProductImage } from "@/lib/schemas/project";
 type ProductImageUploaderProps = {
   images: ProductImage[];
   onChange: (images: ProductImage[]) => void;
+  onPersistedVersion?: (version: number) => void;
   projectId?: string;
   disabled?: boolean;
 };
 
 type LocalUploadResponse = {
   success: boolean;
-  data?: { localUrl: string } | null;
+  data?: { assetId: string; localUrl: string; version: number } | null;
   error?: string;
 };
 
@@ -33,7 +34,7 @@ const roleLabels: Record<ProductImage["role"], string> = {
   reference: "参考图"
 };
 
-export function ProductImageUploader({ images, onChange, projectId, disabled = false }: ProductImageUploaderProps) {
+export function ProductImageUploader({ images, onChange, onPersistedVersion, projectId, disabled = false }: ProductImageUploaderProps) {
   const [error, setError] = useState<string | null>(null);
   const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set());
   const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set());
@@ -63,6 +64,7 @@ export function ProductImageUploader({ images, onChange, projectId, disabled = f
       body.append("file", file);
       body.append("projectId", projectId);
       body.append("assetId", image.id);
+      body.append("role", image.role);
       const response = await fetch("/api/upload-product-image", { method: "POST", body });
       const payload = await response.json() as LocalUploadResponse;
       if (!response.ok || !payload.success || !payload.data?.localUrl) {
@@ -74,10 +76,11 @@ export function ProductImageUploader({ images, onChange, projectId, disabled = f
       if (!currentImage) return;
       releaseOwnedProductImageUrl(currentImage, ownedUrlsRef.current);
       const nextImages = currentImages.map((item) => item.id === image.id
-        ? { ...item, localUrl: payload.data!.localUrl, previewUrl: undefined }
+        ? { ...item, assetId: payload.data!.assetId, localUrl: payload.data!.localUrl, previewUrl: undefined }
         : item);
       imagesRef.current = nextImages;
       onChange(nextImages);
+      onPersistedVersion?.(payload.data.version);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? `${caughtError.message}，当前图片仅在本页临时可见。` : "本地素材保存失败。");
     } finally {

@@ -141,6 +141,42 @@ describe("anonymous project ownership and persistence", () => {
     expect((await getRender(new Request("http://localhost"), context(projectB))).status).toBe(404);
   });
 
+  it("merges concurrent product uploads and returns the latest project versions", async () => {
+    const projectId = await createForCurrentSession();
+    const created = await getOwnedAnonymousProject("session-a", projectId);
+    await updateOwnedAnonymousProject("session-a", projectId, {
+      brief: { ...created!.project.brief, productImages: [] }
+    }, created!.version);
+    const pngBytes = Buffer.from("89504e470d0a1a0a0000000d494844520000000100000001", "hex");
+    const upload = (assetId: string, role: "main-product" | "reference") => {
+      const form = new FormData();
+      form.set("projectId", projectId);
+      form.set("assetId", assetId);
+      form.set("role", role);
+      form.set("file", new File([pngBytes], `${assetId}.png`, { type: "image/png" }));
+      return uploadProductImage(new Request("http://localhost", { method: "POST", body: form }));
+    };
+
+    const [mainResponse, referenceResponse] = await Promise.all([
+      upload("product-main", "main-product"),
+      upload("product-reference", "reference")
+    ]);
+    expect(mainResponse.status, await mainResponse.clone().text()).toBe(201);
+    expect(referenceResponse.status, await referenceResponse.clone().text()).toBe(201);
+
+    const mainPayload = await mainResponse.json() as { data: { assetId: string; version: number } };
+    const referencePayload = await referenceResponse.json() as { data: { assetId: string; version: number } };
+    expect(mainPayload.data.assetId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(referencePayload.data.assetId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(new Set([mainPayload.data.version, referencePayload.data.version]).size).toBe(2);
+
+    const stored = await getOwnedAnonymousProject("session-a", projectId);
+    expect(stored?.project.brief.productImages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "product-main", role: "main-product", assetId: mainPayload.data.assetId }),
+      expect.objectContaining({ id: "product-reference", role: "reference", assetId: referencePayload.data.assetId })
+    ]));
+  });
+
   it("ignores forged ownership fields and never exposes the owner fingerprint", async () => {
     const forged = await createProject(jsonRequest("http://localhost", "POST", {
       sessionId: "session-b",
@@ -246,6 +282,49 @@ describe("anonymous project ownership and persistence", () => {
       shotCount: 8,
       targetDurationSec: 40
     }, created.version)).rejects.toBeInstanceOf(AnonymousProjectVersionConflictError);
+  });
+
+  it("preserves server-owned product asset links when a stale draft is saved", async () => {
+    const created = await createAnonymousProject("session-a");
+    const imageId = "product-image-1";
+    const assetId = crypto.randomUUID();
+    const withUploadedImage = await updateOwnedAnonymousProject("session-a", created.id, {
+      brief: {
+        ...created.project.brief,
+        productImages: [{
+          id: imageId,
+          assetId,
+          name: "product.png",
+          type: "image/png",
+          size: 1024,
+          localUrl: `/api/projects/${created.id}/assets/${assetId}`,
+          role: "main-product"
+        }]
+      }
+    }, created.version);
+
+    const saved = await saveOwnedProjectBrief("session-a", created.id, {
+      brief: {
+        ...withUploadedImage.project.brief,
+        productImages: [{
+          id: imageId,
+          name: "product.png",
+          type: "image/png",
+          size: 1024,
+          previewUrl: "blob:stale-preview",
+          role: "main-product"
+        }]
+      },
+      shotCount: withUploadedImage.project.shots.length,
+      targetDurationSec: withUploadedImage.project.targetDurationSec ?? withUploadedImage.project.brief.durationSec
+    }, withUploadedImage.version);
+
+    expect(saved.project.brief.productImages?.[0]).toMatchObject({
+      id: imageId,
+      assetId,
+      localUrl: `/api/projects/${created.id}/assets/${assetId}`
+    });
+    expect(saved.project.brief.productImages?.[0]?.previewUrl).toBeUndefined();
   });
 
   it("rejects invalid, foreign and stale duration updates", async () => {

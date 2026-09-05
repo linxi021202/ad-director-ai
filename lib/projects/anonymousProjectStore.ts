@@ -313,9 +313,24 @@ export async function saveOwnedProjectBrief(
       targetChanged && heroShot && ["wan-api", "happyhorse-api"].includes(project.heroVideo?.source ?? "") && project.heroVideo?.durationSec
       && Math.abs(project.heroVideo.durationSec - heroShot.durationSec) > 0.75
     );
+    const currentProductImages = new Map(
+      (project.brief.productImages ?? []).map((image) => [image.id, image])
+    );
+    const incomingProductImages = input.brief.productImages === undefined
+      ? project.brief.productImages
+      : input.brief.productImages.map((image) => {
+          const currentImage = currentProductImages.get(image.id);
+          if (!currentImage?.assetId) return image;
+          return {
+            ...image,
+            assetId: currentImage.assetId,
+            localUrl: currentImage.localUrl ?? image.localUrl,
+            previewUrl: undefined
+          };
+        });
     const next: GenerationProject = {
       ...project,
-      brief: { ...input.brief, durationSec: targetDurationSec },
+      brief: { ...input.brief, durationSec: targetDurationSec, productImages: incomingProductImages },
       shotCount: input.shotCount,
       targetDurationSec,
       durationSec: shots.reduce((sum, shot) => sum + shot.durationSec, 0),
