@@ -1,7 +1,7 @@
 export type HappyHorseVideoRequest = {
   referenceImages: Array<{
     url: string;
-    role: "product" | "scene";
+    role: "product" | "scene" | "last-frame";
   }>;
   prompt: string;
   projectId: string;
@@ -26,7 +26,7 @@ export type HappyHorseVideoResult = {
 export type WanVideoRequest = {
   referenceImages: Array<{
     url: string;
-    role: "product" | "scene";
+    role: "product" | "scene" | "last-frame";
   }>;
   prompt: string;
   projectId: string;

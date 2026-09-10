@@ -35,6 +35,13 @@ describe("product image input support", () => {
     expect(removeProductImage([image], "img-1")).toEqual([]);
   });
 
+  it("does not promote a supplemental reference after the main product is deleted", () => {
+    const main = createProductImageMetadata({ name: "main.png", type: "image/png", size: 1000 }, "blob:main", "main-product", "main");
+    const reference = createProductImageMetadata({ name: "angle.png", type: "image/png", size: 1000 }, "blob:angle", "reference", "angle");
+
+    expect(removeProductImage([main, reference], "main")).toEqual([reference]);
+  });
+
   it("returns an error for more than three images", () => {
     const files = [
       { name: "1.png", type: "image/png", size: 100 },
@@ -69,6 +76,22 @@ describe("product image input support", () => {
     });
 
     expect(parsed.success).toBe(true);
+  });
+
+  it("maps the legacy main role to main-product", () => {
+    const parsed = productBriefSchema.parse({
+      ...coldBrewDemo.brief,
+      productImages: [{
+        id: "legacy-main",
+        name: "legacy.png",
+        type: "image/png",
+        size: 1000,
+        previewUrl: "blob:legacy",
+        role: "main"
+      }]
+    });
+
+    expect(parsed.productImages?.[0]?.role).toBe("main-product");
   });
 
   it("does not put image file content or previewUrl into DeepSeek prompt", () => {
@@ -139,4 +162,18 @@ describe("product image input support", () => {
       { image: "data:image/png;base64,cHJvZHVjdA==" },
       { text: "Create an office advertising keyframe." }
     ]);
-  });});
+  });
+
+  it("keeps product and previous-shot references ordered before one prompt", () => {
+    const content = buildQwenImageContent({
+      prompt: "Create a distinct next shot while preserving identity.",
+      referenceImages: ["data:image/png;base64,cHJvZHVjdA==", "data:image/png;base64,cHJldmlvdXM="]
+    });
+
+    expect(content).toEqual([
+      { image: "data:image/png;base64,cHJvZHVjdA==" },
+      { image: "data:image/png;base64,cHJldmlvdXM=" },
+      { text: "Create a distinct next shot while preserving identity." }
+    ]);
+  });
+});

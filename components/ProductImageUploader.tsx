@@ -31,7 +31,7 @@ type LocalUploadResponse = {
 const roleLabels: Record<ProductImage["role"], string> = {
   "main-product": "主产品",
   logo: "品牌标识",
-  reference: "参考图"
+  reference: "补充参考"
 };
 
 export function ProductImageUploader({ images, onChange, onPersistedVersion, projectId, disabled = false }: ProductImageUploaderProps) {
@@ -40,6 +40,7 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
   const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set());
   const [lightboxImage, setLightboxImage] = useState<ProductImage | null>(null);
   const addInputRef = useRef<HTMLInputElement>(null);
+  const addRoleRef = useRef<ProductImage["role"]>("main-product");
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const replaceTargetRef = useRef<string | null>(null);
   const ownedUrlsRef = useRef<Set<string>>(new Set());
@@ -98,6 +99,11 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
     return createProductImageMetadata(file, previewUrl, role, id);
   }
 
+  function openAddPicker(role: ProductImage["role"]) {
+    addRoleRef.current = role;
+    addInputRef.current?.click();
+  }
+
   function handleFiles(fileList: FileList | File[]) {
     const files = Array.from(fileList);
     const validation = validateProductImageFiles(files, images.length);
@@ -106,9 +112,10 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
       return;
     }
 
+    const requestedRole = addRoleRef.current;
     const created = files.map((file, index) => createImage(
       file,
-      images.length === 0 && index === 0 ? "main-product" : "reference",
+      requestedRole === "main-product" && index === 0 ? "main-product" : "reference",
       `${Date.now()}-${index}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "-")}`
     ));
     const nextImages = [...images, ...created];
@@ -149,7 +156,7 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
     imagesRef.current = nextImages;
     onChange(nextImages);
     if (lightboxImage?.id === id) setLightboxImage(null);
-    setError(null);
+    setError(target?.role === "main-product" && nextImages.length > 0 ? "主产品已删除，请从补充参考中选择新的主产品，或重新上传。" : null);
   }
 
   function handleSetMain(id: string) {
@@ -158,70 +165,89 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
     onChange(nextImages);
   }
 
+  const mainImage = images.find((image) => image.role === "main-product");
+  const referenceImages = images.filter((image) => image.role === "reference");
+  const logoImages = images.filter((image) => image.role === "logo");
+
+  function renderAsset(image: ProductImage, variant: "primary" | "supplemental") {
+    const source = resolveProductImageUrl(image);
+    const isBroken = brokenIds.has(image.id) || !source;
+    return (
+      <article key={image.id} className={`product-asset product-asset--${variant}`} data-role={image.role}>
+        <button type="button" className="product-asset__preview" onClick={() => !isBroken && setLightboxImage(image)} aria-label={`查看 ${image.name}`} disabled={isBroken}>
+          {isBroken ? (
+            <span className="product-asset__broken"><span className="product-assets__glyph" aria-hidden="true" />图片无法显示</span>
+          ) : (
+            <AdaptiveMediaFrame
+              aspectRatio="1:1"
+              stage="product"
+              src={source}
+              mediaType="image"
+              fit="contain"
+              showBlurredBackdrop={false}
+              alt={image.name}
+              onError={() => setBrokenIds((current) => new Set(current).add(image.id))}
+            />
+          )}
+        </button>
+        <div className="product-asset__meta">
+          <span className="product-asset__role">{roleLabels[image.role]}</span>
+          <strong title={image.name}>{image.name}</strong>
+          <small>{formatFileSize(image.size)}{uploadingIds.has(image.id) ? " · 保存中" : ""}</small>
+        </div>
+        <div className="product-asset__actions">
+          <button type="button" onClick={() => setLightboxImage(image)} disabled={isBroken} aria-label={`查看 ${image.name}`}>查看</button>
+          <button type="button" onClick={() => { replaceTargetRef.current = image.id; replaceInputRef.current?.click(); }} disabled={disabled} aria-label={`替换 ${image.name}`}>替换</button>
+          {image.role === "reference" ? <button type="button" onClick={() => handleSetMain(image.id)} disabled={disabled} aria-label={`将 ${image.name} 设为主产品`}>设为主产品</button> : null}
+          <button type="button" onClick={() => handleRemove(image.id)} disabled={disabled} aria-label={`删除 ${image.name}`}>删除</button>
+        </div>
+      </article>
+    );
+  }
+
   return (
     <section className="product-assets" aria-labelledby="product-assets-title">
       <div className="product-assets__header">
         <div>
           <h3 id="product-assets-title">产品图</h3>
-          <p>保持包装一致，并用于结尾行动画面。图片不会传给文本模型。</p>
         </div>
-        {images.length > 0 && images.length < 3 ? (
-          <button type="button" onClick={() => addInputRef.current?.click()} disabled={disabled}>添加</button>
+        {images.length < 3 ? (
+          <button type="button" onClick={() => openAddPicker(mainImage ? "reference" : "main-product")} disabled={disabled} aria-label={mainImage ? "添加补充参考" : "添加主产品"}>添加</button>
         ) : null}
       </div>
+      <p className="product-assets__help">已有一张清晰主产品图即可生成。补充其他真实角度仅用于提高一致性。</p>
 
-      {images.length === 0 ? (
+      <div className="product-assets__primary" aria-label="主产品">
+      {mainImage ? renderAsset(mainImage, "primary") : (
         <button
           type="button"
-          className="product-assets__empty"
+          className="product-assets__empty product-assets__empty--primary"
           disabled={disabled}
-          onClick={() => addInputRef.current?.click()}
+          onClick={() => openAddPicker("main-product")}
           onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => { event.preventDefault(); if (!disabled) handleFiles(event.dataTransfer.files); }}
+          onDrop={(event) => { event.preventDefault(); if (!disabled) { addRoleRef.current = "main-product"; handleFiles(event.dataTransfer.files); } }}
         >
           <span className="product-assets__glyph" aria-hidden="true" />
-          <span><strong>上传产品图</strong><small>PNG / JPG / WebP，最多 3 张，单张不超过 5MB</small></span>
+          <span><strong>添加主产品</strong><small>用于锁定商品外观，仅接受真实上传图片</small></span>
           <em>选择图片</em>
         </button>
-      ) : (
-        <div className="product-assets__grid">
-          {images.map((image) => {
-            const source = resolveProductImageUrl(image);
-            const isBroken = brokenIds.has(image.id) || !source;
-            return (
-              <article key={image.id} className="product-asset" data-role={image.role}>
-                <button type="button" className="product-asset__preview" onClick={() => !isBroken && setLightboxImage(image)} aria-label={`查看 ${image.name}`}>
-                  {isBroken ? (
-                    <span className="product-asset__broken"><span className="product-assets__glyph" aria-hidden="true" />图片无法显示</span>
-                  ) : (
-                    <AdaptiveMediaFrame
-                      aspectRatio="1:1"
-                      stage="product"
-                      src={source}
-                      mediaType="image"
-                      fit="contain"
-                      showBlurredBackdrop={false}
-                      alt={image.name}
-                      onError={() => setBrokenIds((current) => new Set(current).add(image.id))}
-                    />
-                  )}
-                  <span className="product-asset__role">{roleLabels[image.role]}</span>
-                  {uploadingIds.has(image.id) ? <span className="product-asset__saving">保存中</span> : null}
-                </button>
-                <div className="product-asset__meta"><strong title={image.name}>{image.name}</strong><small>{formatFileSize(image.size)}</small></div>
-                <div className="product-asset__actions">
-                  <button type="button" onClick={() => setLightboxImage(image)} disabled={isBroken}>查看</button>
-                  <button type="button" onClick={() => { replaceTargetRef.current = image.id; replaceInputRef.current?.click(); }} disabled={disabled}>替换</button>
-                  {image.role !== "main-product" ? <button type="button" onClick={() => handleSetMain(image.id)} disabled={disabled}>设为主图</button> : null}
-                  <button type="button" onClick={() => handleRemove(image.id)} disabled={disabled} aria-label={`删除 ${image.name}`}>删除</button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
       )}
+      </div>
 
-      <input ref={addInputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={(event) => { if (event.target.files) handleFiles(event.target.files); event.target.value = ""; }} />
+      <div className="product-assets__supplemental">
+        <div className="product-assets__section-heading"><strong>补充参考</strong><span>可选，最多 2 张真实角度</span></div>
+        {referenceImages.length > 0 ? (
+          <div className="product-assets__reference-grid">{referenceImages.map((image) => renderAsset(image, "supplemental"))}</div>
+        ) : (
+          <button type="button" className="product-assets__reference-empty" onClick={() => openAddPicker(mainImage ? "reference" : "main-product")} disabled={disabled || images.length >= 3}>
+            <span aria-hidden="true">+</span>{mainImage ? "添加真实角度" : "请先添加主产品"}
+          </button>
+        )}
+      </div>
+
+      {logoImages.length > 0 ? <div className="product-assets__legacy"><div className="product-assets__section-heading"><strong>品牌标识</strong><span>兼容已有素材</span></div>{logoImages.map((image) => renderAsset(image, "supplemental"))}</div> : null}
+
+      <input ref={addInputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple={addRoleRef.current === "reference"} hidden onChange={(event) => { if (event.target.files) handleFiles(event.target.files); event.target.value = ""; }} />
       <input ref={replaceInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) handleReplace(file); event.target.value = ""; }} />
       {error ? <p className="product-assets__error" role="alert">{error}</p> : null}
 

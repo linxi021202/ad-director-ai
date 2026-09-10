@@ -20,9 +20,12 @@ export const adCompositionPropsSchema = z.object({
     id: z.string().min(1),
     durationSec: z.number().int().min(MIN_SHOT_DURATION_SEC).max(MAX_SHOT_DURATION_SEC),
     keyframeUrl: z.string().min(1),
-    subtitle: z.string().min(1),
+    subtitle: z.string(),
     title: z.string().min(1),
-    keywords: z.array(z.string().min(1)).max(3).default([])
+    keywords: z.array(z.string().min(1)).max(3).default([]),
+    subclips: z.array(z.object({
+      id: z.string().min(1), url: z.string().min(1), durationSec: z.number().positive()
+    }).strict()).max(2).default([])
   })).min(1).max(12),
   heroShotId: z.string().min(1),
   heroVideoUrl: z.string().min(1),
@@ -30,7 +33,15 @@ export const adCompositionPropsSchema = z.object({
   cta: z.string().min(1),
   brandName: z.string().min(1),
   backgroundMusicUrl: z.string().optional(),
-  voiceoverUrl: z.string().optional()
+  voiceoverUrl: z.string().optional(),
+  narrationBeats: z.array(z.object({
+    id: z.string().min(1),
+    shotId: z.string().min(1),
+    text: z.string().min(1),
+    displayText: z.string().min(1).optional(),
+    audioUrl: z.string().min(1),
+    durationSec: z.number().positive()
+  }).strict()).max(MAX_SHOT_COUNT).default([])
 });
 
 export type AdCompositionProps = z.infer<typeof adCompositionPropsSchema>;

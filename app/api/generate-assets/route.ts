@@ -12,6 +12,7 @@ import { completeGenerationEvent, failGenerationEvent, startGenerationEvent } fr
 import { generatePrompts, selectProviderModel } from "../../../lib/providers/providerRouter";
 import { adStrategySchema, productBriefSchema, storyboardShotSchema } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
+import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -34,7 +35,8 @@ export async function POST(request: Request) {
     }
 
     projectId = parsed.data.projectId;
-    await requireOwnedAnonymousProject(session.id, projectId);
+    const owned = await requireOwnedAnonymousProject(session.id, projectId);
+    const productSpec = await resolveProjectProductVisualSpec({ sessionId: session.id, project: owned.project });
     const event = await startGenerationEvent(session.id, projectId, {
       stage: "prompts",
       provider: "deepseek",
@@ -48,13 +50,17 @@ export async function POST(request: Request) {
     const promptRoute = selectProviderModel({ taskType: "prompt" });
     const imageRoute = selectProviderModel({ taskType: "image", hasChineseText: true });
     const videoRoute = selectProviderModel({ taskType: "video", isHeroShot: true });
-    const result = await generatePrompts(parsed.data.brief, parsed.data.strategy, parsed.data.shots, { sessionId: session.id });
+    const result = await generatePrompts(parsed.data.brief, parsed.data.strategy, parsed.data.shots, {
+      sessionId: session.id,
+      productVisualSpec: productSpec.spec
+    });
     let shots = result.data ?? [];
 
     if (shots.length > 0) {
       await replaceOwnedProjectShots(session.id, projectId, shots);
       const current = await requireOwnedAnonymousProject(session.id, projectId);
       const updated = await updateOwnedAnonymousProject(session.id, projectId, {
+        ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
         workflowSteps: {
           ...(current.project.workflowSteps ?? defaultWorkflow()),
           storyboard: result.fallbackUsed ? "fallback" : "completed"
@@ -84,7 +90,7 @@ export async function POST(request: Request) {
       recommendedModel: shot.recommendedModel,
       fallbackPlan: shot.fallbackPlan,
       imageProvider: imageRoute.model,
-      videoProvider: shot.recommendedModel === "wan2.7-r2v" ? videoRoute.model : "remotion-image-motion",
+      videoProvider: /wan2\.7-(?:i2v|r2v)/i.test(shot.recommendedModel) ? videoRoute.model : "remotion-image-motion",
       status: "planned"
     }));
 

@@ -1,5 +1,5 @@
 import React, { type CSSProperties } from "react";
-export type WorkflowStepStatus = "idle" | "pending" | "running" | "completed" | "failed" | "fallback";
+export type WorkflowStepStatus = "idle" | "pending" | "running" | "qa-review" | "completed" | "needs-review" | "failed" | "fallback";
 export type WorkflowStepKey = "brief" | "strategy" | "storyboard" | "keyframes" | "heroShot" | "render";
 export type WorkflowStepState = Record<WorkflowStepKey, WorkflowStepStatus>;
 const steps: Array<{ key: WorkflowStepKey; label: string }> = [{key:"brief",label:"简报"},{key:"strategy",label:"策略"},{key:"storyboard",label:"分镜"},{key:"keyframes",label:"关键帧"},{key:"heroShot",label:"主镜头"},{key:"render",label:"合成"}];
@@ -18,5 +18,5 @@ export function WorkflowFlowRail({ state, briefSaveStatus, onRetry }: { state: W
     <div className="workflow-flow-rail__track" aria-hidden="true"><span><i /></span></div>
   </section>;
 }
-function stepStatusLabel(status:WorkflowStepStatus){if(status==="completed")return"已完成";if(status==="running")return"生成中";if(status==="failed")return"生成失败";if(status==="fallback")return"已降级";if(status==="pending")return"待执行";return"未开始";}
+function stepStatusLabel(status:WorkflowStepStatus){if(status==="completed")return"已完成";if(status==="running")return"生成中";if(status==="qa-review")return"一致性检查";if(status==="needs-review")return"需人工确认";if(status==="failed")return"生成失败";if(status==="fallback")return"已降级";if(status==="pending")return"待执行";return"未开始";}
 function briefStatusLabel(status: BriefSaveStatus){if(status==="saved")return"已完成";if(status==="saving")return"保存中";if(status==="dirty")return"待保存";if(status==="error")return"保存失败";return"待填写";}

@@ -9,7 +9,7 @@ function resetEnv() {
   process.env.AI_MODE = "real";
   process.env.ENABLE_REAL_TEXT = "true";
   process.env.DEEPSEEK_API_KEY = "test-key";
-  process.env.DEEPSEEK_MODEL = "deepseek-v4-flash";
+  process.env.DEEPSEEK_MODEL = "deepseek-v4-pro";
 }
 
 function mockDeepSeekResponse(content: string) {
@@ -43,7 +43,7 @@ describe("deepseekProvider", () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual(coldBrewDemo.strategy);
     expect(result.provider).toBe("deepseek");
-    expect(result.model).toBe("deepseek-v4-flash");
+    expect(result.model).toBe("deepseek-v4-pro");
     expect(result.tokenUsage?.totalTokens).toBe(150);
     expect(result.costEstimate).toContain("estimated CNY");
     expect(result.fallbackUsed).toBe(false);
@@ -132,7 +132,7 @@ describe("deepseekProvider", () => {
       fixSuggestions: ["继续压缩字幕。"],
       modelRouteCheck: {
         allowedOnly: true,
-        usedModels: ["deepseek-v4-flash", "qwen-image", "happyhorse-1.0-r2v", "remotion"],
+        usedModels: ["deepseek-v4-pro", "qwen-image", "wan2.7-i2v", "remotion"],
         forbiddenModelsFound: []
       },
       videoGenerationStrategyCheck: {

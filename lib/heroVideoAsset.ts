@@ -178,7 +178,7 @@ export async function saveHeroVideoAsset(input: HeroVideoUploadInput): Promise<H
           shotId: input.shotId,
           assetId: stored.id,
           source,
-          status: "uploaded",
+          status: isGeneratedShot ? "generated" : "ready",
           url: asset.publicUrl,
           fileName: stored.fileName,
           mimeType: stored.mimeType,

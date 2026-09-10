@@ -90,12 +90,27 @@ beforeEach(async () => {
   });
   const updated = await updateOwnedAnonymousProject(SESSION_ID, record.id, {
     keyframes,
+    keyframeQAResults: keyframes.map((frame) => ({
+      id: crypto.randomUUID(),
+      shotId: frame.shotId,
+      assetId: frame.assetId,
+      attempt: 1,
+      inspectorModel: "qwen3.7-plus",
+      checkedAt: new Date().toISOString(),
+      singleFramePassed: true,
+      productMatchPassed: true,
+      characterMatchPassed: true,
+      sceneMatchPassed: true,
+      textSafetyPassed: true,
+      overallPassed: true,
+      issues: []
+    })),
     narrationAssetId: narration.id,
     heroVideo: {
       shotId: record.project.heroShotId ?? record.project.shots[0]!.id,
       assetId: hero.id,
       source: "happyhorse-manual-import",
-      status: "uploaded",
+      status: "ready",
       url: `/api/projects/${record.id}/assets/${hero.id}`,
       fileName: "hero-shot.mp4",
       mimeType: "video/mp4",

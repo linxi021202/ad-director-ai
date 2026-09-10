@@ -25,7 +25,8 @@ const projectPatchRequestSchema = z.union([
     saveBrief: z.object({
       brief: productBriefSchema,
       shotCount: z.number().int(),
-      targetDurationSec: z.number().int()
+      targetDurationSec: z.number().int(),
+      createVersion: z.boolean().optional()
     }).strict()
   }).strict(),
   z.object({

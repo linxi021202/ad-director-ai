@@ -13,15 +13,24 @@ import {
 } from "../prompts";
 import {
   adStrategySchema,
+  characterAnchorBriefSchema,
+  narrationPlanSchema,
   storyboardShotSchema,
   type AdStrategy,
+  type CharacterAnchorBrief,
+  type CreativeBible,
   type ProductBrief,
+  type ProductVisualSpec,
+  type NarrationPlan,
   type StoryboardShot
 } from "../schemas/project";
+import { inferProductShotType, shotContainsProduct } from "../continuity/projectContinuity";
+import { repairShotProductTerminology } from "../visual/productTerminology";
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
+import { ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
 
-const allowedModelSchema = z.enum(["deepseek-v4-flash", "qwen-image", "wan2.7-r2v", "happyhorse-1.0-r2v", "remotion"]);
+const allowedModelSchema = z.enum(["deepseek-v4-pro", "qwen-image", "wan2.7-i2v", "remotion"]);
 
 const routedShotSchema = storyboardShotSchema.extend({
   recommendedModel: allowedModelSchema
@@ -74,6 +83,13 @@ const adScoreSchema = z.object({
     fallbackReady: z.boolean()
   })
 });
+const partialNarrationSchema = narrationPlanSchema.extend({
+  mode: z.literal("partial"),
+  beats: narrationPlanSchema.shape.beats.min(2).max(4)
+}).refine((plan) => plan.beats.some((beat) => beat.role === "problem") && plan.beats.some((beat) => beat.role === "brand-payoff"), {
+  message: "partial narration requires problem and brand-payoff beats"
+});
+const shortenedNarrationSchema = z.object({ text: z.string().trim().min(1).max(80) }).strict();
 
 export type AdScoreResult = z.infer<typeof adScoreSchema>;
 
@@ -202,10 +218,11 @@ export const deepseekProvider = {
       context?.shotDurationPlan,
       context?.targetDurationSec ?? (context?.shotDurationPlan ? undefined : brief.durationSec)
     );
-    return callAndValidate(buildStoryboardPrompt(brief, strategy, timeline), createShotsPayloadSchema(timeline.shotDurationPlan), {
+    const response = await callAndValidate(buildStoryboardPrompt(brief, strategy, { ...timeline, productVisualSpec: context?.productVisualSpec }), createShotsPayloadSchema(timeline.shotDurationPlan), {
       temperature: 0.45,
       maxTokens: Math.max(3600, timeline.shotCount * 650)
     }, context);
+    return response.success && response.data ? { ...response, data: ensureStoryboardArchitecture(applyProductLockRules(response.data, context?.productVisualSpec)) } : response;
   },
 
   async optimizeCopy(storyboard: StoryboardShot[]): Promise<RealTextProviderResponse<OptimizedCopy>> {
@@ -228,10 +245,11 @@ export const deepseekProvider = {
     shots: StoryboardShot[],
     context?: ProviderRequestContext
   ): Promise<RealTextProviderResponse<StoryboardShot[]>> {
-    return callAndValidate(buildPromptGenerationPrompt(brief, strategy, shots), createShotsPayloadSchema(shots.map((shot) => shot.durationSec)), {
+    const response = await callAndValidate(buildPromptGenerationPrompt(brief, strategy, shots, context?.productVisualSpec), createShotsPayloadSchema(shots.map((shot) => shot.durationSec)), {
       temperature: 0.35,
       maxTokens: 4200
     }, context);
+    return response.success && response.data ? { ...response, data: ensureStoryboardArchitecture(applyProductLockRules(response.data, context?.productVisualSpec)) } : response;
   },
 
   async scoreAdPlan(
@@ -246,6 +264,110 @@ export const deepseekProvider = {
     }, context);
   }
 } satisfies TextProvider;
+
+export async function generateNarrationPlan(
+  brief: ProductBrief,
+  strategy: AdStrategy,
+  shots: StoryboardShot[],
+  context?: ProviderRequestContext
+): Promise<RealTextProviderResponse<NarrationPlan>> {
+  const evidence = { productName: brief.productName, sellingPoints: brief.sellingPoints, verifiedClaims: brief.verifiedClaims ?? [], coreMessage: strategy.coreMessage, cta: strategy.cta };
+  const prompt = `你是广告旁白导演。只输出合法 JSON。为 ${brief.durationSec} 秒广告生成 Partial Narration。
+必须输出 mode="partial"，只安排 2-4 个 beats；必须包含开场 problem 和最后一镜 brand-payoff。中间多数镜头保持无旁白。
+每个 beat 必须绑定真实 shotId，text 简短自然，maxDurationSec 不得超过该镜头 durationSec-0.4，subtitleEnabled=true。
+旁白只能使用以下事实，不得发明功效数字、折扣、认证、价格、医学作用或排名：${JSON.stringify(evidence)}
+Ending brand-payoff 必须动态使用产品名“${brief.productName}”，不得写死其他品牌。字幕与 TTS 均直接使用 beat.text；只有确需缩写时才提供不改变含义的 displayText。
+镜头：${JSON.stringify(shots.map((shot) => ({ id: shot.id, index: shot.index, durationSec: shot.durationSec, goal: shot.goal, visualDescription: shot.visualDescription })))}
+返回结构：{"mode":"partial","beats":[{"id":"narration-1","shotId":"shot-id","role":"problem|transition|benefit|brand-payoff|cta","text":"短句","tone":"语气","maxDurationSec":2.5,"subtitleEnabled":true}]}`;
+  const response = await callAndValidate(prompt, partialNarrationSchema, { temperature: 0.25, maxTokens: 1400 }, context);
+  if (!response.success || !response.data) return response;
+  return { ...response, data: normalizeNarrationPlan(response.data, brief, strategy, shots) };
+}
+
+export async function generateCharacterAnchorBriefs(
+  brief: ProductBrief,
+  creativeBible: CreativeBible,
+  defaults: CharacterAnchorBrief[],
+  context?: ProviderRequestContext
+): Promise<RealTextProviderResponse<CharacterAnchorBrief[]>> {
+  if (defaults.length === 0) {
+    return successResponse([], getDeepSeekRuntimeConfig().model, 0, undefined);
+  }
+  const schema = z.array(characterAnchorBriefSchema).length(defaults.length);
+  const response = await callAndValidate(
+    `你是广告选角导演。只输出合法 JSON 数组。根据已锁定的 Creative Direction，为每个 required character 生成可执行的 Character Brief。
+必须保持输入 id 和 role，不得增加或删除人物。Identity 与 State 必须分离：年龄观感、脸部、发型、发色、肤色、服装、配饰和体型属于不可变身份；疲惫、恢复、清醒等只写入 states。
+每个 states 项必须说明只改变表情、姿态或能量，不得改变人物身份、发型或服装。不得使用明星、IP 角色、品牌文字或可读文字。
+商品：${brief.productName}
+Creative Bible：${JSON.stringify(creativeBible)}
+Required Characters：${JSON.stringify(defaults)}
+返回与 Required Characters 等长的数组，字段严格为 id, role, apparentAgeRange, faceAppearance, hairstyle, hairColor, skinTone, wardrobe, accessories, bodyBuild, immutableTraits, states。`,
+    schema,
+    { temperature: 0.3, maxTokens: Math.max(1000, defaults.length * 850) },
+    context
+  );
+  if (!response.success || !response.data) return response;
+  return {
+    ...response,
+    data: response.data.map((generated, index) => ({
+      ...generated,
+      id: defaults[index]!.id,
+      role: defaults[index]!.role
+    }))
+  };
+}
+
+export async function shortenNarration(
+  text: string,
+  maxDurationSec: number,
+  brief: ProductBrief,
+  context?: ProviderRequestContext
+) {
+  return callAndValidate(
+    `只输出 JSON。将旁白缩短到自然朗读不超过 ${maxDurationSec.toFixed(1)} 秒。保持原意，不添加原文和商品简报之外的事实、数字、价格、折扣、认证、医学作用或排名。商品：${brief.productName}。原文：${text}\n返回 {"text":"缩短后的旁白"}`,
+    shortenedNarrationSchema,
+    { temperature: 0.15, maxTokens: 240 },
+    context
+  );
+}
+
+function applyProductLockRules(shots: StoryboardShot[], spec?: ProductVisualSpec) {
+  return shots.map((rawShot) => {
+    const shot = repairShotProductTerminology(rawShot, spec);
+    const containsProduct = shotContainsProduct(shot);
+    const productShotType = containsProduct ? inferProductShotType(shot, shots.length) : "not-visible" as const;
+    return {
+      ...shot,
+      containsProduct,
+      productFidelityMode: containsProduct ? "exact" as const : "not-visible" as const,
+      productShotType,
+      exactProductShot: productShotType === "packshot",
+      referenceImageAssetIds: containsProduct && spec
+        ? Array.from(new Set([spec.sourceAssetId, ...(shot.referenceImageAssetIds ?? [])]))
+        : shot.referenceImageAssetIds
+    };
+  });
+}
+
+function normalizeNarrationPlan(plan: NarrationPlan, brief: ProductBrief, strategy: AdStrategy, shots: StoryboardShot[]): NarrationPlan {
+  const shotById = new Map(shots.map((shot) => [shot.id, shot]));
+  const validBeats = plan.beats.filter((beat) => shotById.has(beat.shotId)).slice(0, 4).map((beat) => ({
+    ...beat,
+    maxDurationSec: Math.max(0.8, Math.min(beat.maxDurationSec, (shotById.get(beat.shotId)?.durationSec ?? 3) - 0.4)),
+    subtitleEnabled: beat.subtitleEnabled !== false
+  }));
+  const ending = shots.at(-1)!;
+  const withoutPayoff = validBeats.filter((beat) => beat.role !== "brand-payoff");
+  const payoff = validBeats.find((beat) => beat.role === "brand-payoff");
+  const brandPayoff = {
+    ...(payoff ?? { id: "narration-brand-payoff", role: "brand-payoff" as const, tone: "清晰坚定", subtitleEnabled: true }),
+    shotId: ending.id,
+    text: payoff?.text.includes(brief.productName) ? payoff.text : `${brief.productName}，${strategy.cta}`,
+    maxDurationSec: Math.max(0.8, ending.durationSec - 0.4),
+    subtitleEnabled: true
+  };
+  return narrationPlanSchema.parse({ mode: "partial", beats: [...withoutPayoff.slice(0, 3), brandPayoff] });
+}
 
 
 

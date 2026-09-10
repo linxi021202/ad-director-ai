@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { diagnoseQwenImageFallback } from "../../../lib/api/provider-diagnostics";
+import { markPrivateAssetsLifecycle } from "../../../lib/assets/assetStore";
 import { apiJson, sanitizeApiError } from "../../../lib/api/response";
 import { getPublicAIStatus } from "../../../lib/config/ai";
 import { selectPrimaryProductImage } from "../../../lib/image/productReference";
@@ -8,37 +9,53 @@ import { projectStoreErrorResponse } from "../../../lib/projects/api";
 import {
   completeGenerationEvent,
   failGenerationEvent,
+  markGenerationEventQAReview,
   startGenerationEvent,
   updateGenerationEventProgress
 } from "../../../lib/projects/generationEvents";
 import {
   anonymousProjectIdSchema,
+  mutateOwnedAnonymousProject,
   requireOwnedAnonymousProject,
   updateOwnedAnonymousProject
 } from "../../../lib/projects/anonymousProjectStore";
-import { generateBatchShotImages, selectProviderModel } from "../../../lib/providers/providerRouter";
-import { aspectRatioSchema, productImageSchema, storyboardShotSchema } from "../../../lib/schemas/project";
+import { generateShotImage, selectProviderModel } from "../../../lib/providers/providerRouter";
+import { aspectRatioSchema, productImageSchema, storyboardShotSchema, type KeyframeQAResult, type ShotFrame } from "../../../lib/schemas/project";
+import type { ShotImageGenerationResult } from "../../../lib/providers/types";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, getDefaultHeroShotArrayIndex } from "../../../lib/video/shotConfig";
+import { selectLockedMasterAssetIds } from "../../../lib/continuity/visualMasters";
+import type { ProductVisualSpec } from "../../../lib/schemas/project";
+import { createMockKeyframeQA, inspectKeyframe } from "../../../lib/visual/visualQA";
+import { ensureShotArchitecture } from "../../../lib/storyboard/shotArchitecture";
+import { ensureVisualAnchorWorkspace, getVisualAnchorReadiness } from "../../../lib/visual/visualAnchors";
+
+const QWEN_FRAME_CONCURRENCY = 2;
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
   shots: z.array(storyboardShotSchema).min(1).max(12),
   mode: z.enum(["hero-only", "all-shots"]),
   aspectRatio: aspectRatioSchema.optional().default("9:16"),
-  productImages: z.array(productImageSchema).max(3).optional()
+  productImages: z.array(productImageSchema).max(3).optional(),
+  frameIds: z.array(z.string().min(1)).max(60).optional()
 }).strict();
 
 const batchEventIdSchema = z.string().uuid();
 type TargetShot = z.infer<typeof storyboardShotSchema>;
+type TargetFrame = { shot: TargetShot; frame: ShotFrame };
 type ImageBatchInput = {
   sessionId: string;
   projectId: string;
   targetShots: TargetShot[];
+  targetFrames: TargetFrame[];
   aspectRatio: z.infer<typeof aspectRatioSchema>;
   productImage: ReturnType<typeof selectPrimaryProductImage>;
   mode: "hero-only" | "all-shots";
   requestedShots: number;
+  continuityImageAssetId?: string;
+  productVisualSpec?: ProductVisualSpec;
+  masterReferenceAssetIdsByShot: Record<string, string[]>;
   batchEventId: string;
   shotEvents: Map<string, string>;
 };
@@ -52,13 +69,21 @@ globalImageJobs.__adDirectorImageJobs = imageJobs;
 function selectTargetShots(
   shots: z.infer<typeof storyboardShotSchema>[],
   mode: "hero-only" | "all-shots",
-  maxImagesPerRun: number,
+  _maxImagesPerRun: number,
   heroShotId?: string | null
 ) {
   if (mode === "hero-only") {
     return [shots.find((shot) => shot.id === heroShotId) ?? shots[getDefaultHeroShotArrayIndex(shots.length)] ?? shots[0]];
   }
-  return shots.slice(0, Math.min(MAX_SHOT_COUNT, maxImagesPerRun));
+  return shots.slice(0, MAX_SHOT_COUNT);
+}
+
+function selectTargetFrames(shots: TargetShot[], frameIds?: string[]): TargetFrame[] {
+  const requested = frameIds ? new Set(frameIds) : null;
+  return shots.flatMap((rawShot) => {
+    const shot = ensureShotArchitecture(rawShot);
+    return (shot.frames ?? []).filter((frame) => !frame.isLocked && (!requested || requested.has(frame.id))).map((frame) => ({ shot, frame }));
+  });
 }
 
 export async function POST(request: Request) {
@@ -81,6 +106,17 @@ export async function POST(request: Request) {
     }
 
     const owned = await requireOwnedAnonymousProject(session.id, parsed.data.projectId);
+    const anchorProject = ensureVisualAnchorWorkspace(owned.project);
+    const anchorReadiness = getVisualAnchorReadiness(anchorProject);
+    if (anchorProject.stageStates?.anchors.status !== "locked" || !anchorReadiness.ready) {
+      return apiJson({
+        success: false,
+        data: null,
+        trace: { route: "generate-images", stage: "visual-anchor-gate", anchorReadiness },
+        fallbackUsed: false,
+        error: "VISUAL_ANCHOR_NOT_LOCKED：请先确认并锁定 Product、Character 与 Scene Masters。"
+      }, 400);
+    }
     const publicStatus = getPublicAIStatus();
     const maxImagesPerRun = publicStatus.limits.maxImagesPerRun;
     const requestedShotIds = parsed.data.shots.map((shot) => shot.id);
@@ -97,19 +133,23 @@ export async function POST(request: Request) {
       }, 400);
     }
     const targetShots = selectTargetShots(requestedShots, parsed.data.mode, maxImagesPerRun, owned.project.heroShotId);
+    const targetFrames = selectTargetFrames(targetShots, parsed.data.frameIds);
+    if (!targetFrames.length) {
+      return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "frame-validation" }, fallbackUsed: false, error: "没有找到可生成的镜头帧。" }, 400);
+    }
     activeProjectId = parsed.data.projectId;
     const batchEvent = await startGenerationEvent(session.id, activeProjectId, {
       stage: "keyframes", provider: "qwen-image", action: "生成关键帧批次",
-      message: `Qwen-Image 正在生成 ${targetShots.length} 张关键帧。`, progressCurrent: 0, progressTotal: targetShots.length
+      message: `Qwen-Image 正在逐帧生成 ${targetFrames.length} 张独立关键帧。`, progressCurrent: 0, progressTotal: targetFrames.length
     });
     batchEventId = batchEvent.id;
     const shotEvents = new Map<string, string>();
-    for (const shot of targetShots) {
+    for (const { shot, frame } of targetFrames) {
       const event = await startGenerationEvent(session.id, activeProjectId, {
-        stage: "keyframes", provider: "qwen-image", action: "生成单镜头关键帧",
-        message: `正在生成镜头 ${shot.index} 关键帧。`, shotId: shot.id, runId: batchEvent.runId
+        stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧",
+        message: `正在生成镜头 ${shot.index} 的第 ${frame.index + 1} 帧。`, shotId: shot.id, frameId: frame.id, runId: batchEvent.runId
       });
-      shotEvents.set(shot.id, event.id);
+      shotEvents.set(frame.id, event.id);
     }
     const imageRoute = selectProviderModel({ taskType: "image", hasChineseText: true });
     const productImage = selectPrimaryProductImage(owned.project.brief.productImages);
@@ -117,10 +157,17 @@ export async function POST(request: Request) {
       sessionId: session.id,
       projectId: activeProjectId,
       targetShots,
+      targetFrames,
       aspectRatio: parsed.data.aspectRatio,
       productImage,
       mode: parsed.data.mode,
       requestedShots: parsed.data.shots.length,
+      continuityImageAssetId: findPreviousContinuityAssetId(owned.project, targetShots),
+      productVisualSpec: anchorProject.productVisualSpec,
+      masterReferenceAssetIdsByShot: Object.fromEntries(targetShots.map((shot) => [
+        shot.id,
+        selectLockedMasterAssetIds(owned.project, shot)
+      ])),
       batchEventId: batchEvent.id,
       shotEvents
     };
@@ -153,7 +200,7 @@ export async function POST(request: Request) {
       }, 202);
     }
 
-    const completed = await executeImageBatch(batchInput);
+    const completed = await queueImageBatch(batchInput);
     return apiJson({
       success: true,
       data: { status: "completed", eventId: batchEvent.id, ...completed },
@@ -209,7 +256,7 @@ export async function GET(request: Request) {
       return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "batch-failed", errorCode: event.errorCode }, fallbackUsed: false, error: event.message }, 409);
     }
 
-    if (event.status === "running" || event.status === "queued") {
+    if (event.status === "running" || event.status === "queued" || event.status === "qa-review") {
       return apiJson({
         success: true,
         data: {
@@ -244,35 +291,126 @@ export async function GET(request: Request) {
 }
 
 function launchImageBatch(input: ImageBatchInput) {
-  if (imageJobs.has(input.batchEventId)) return;
-  const job = executeImageBatch(input)
-    .then(() => undefined)
-    .catch(() => undefined)
-    .finally(() => {
-      imageJobs.delete(input.batchEventId);
-    });
-  imageJobs.set(input.batchEventId, job);
+  void queueImageBatch(input).catch(() => undefined);
 }
+
+function queueImageBatch(input: ImageBatchInput) {
+  const previous = imageJobs.get(input.projectId) ?? Promise.resolve();
+  const job = previous.catch(() => undefined).then(() => executeImageBatch(input));
+  const tracked = job.then(() => undefined, () => undefined).finally(() => {
+    if (imageJobs.get(input.projectId) === tracked) imageJobs.delete(input.projectId);
+  });
+  imageJobs.set(input.projectId, tracked);
+  return job;
+}
+
+type EvaluatedImage = ShotImageGenerationResult & {
+  qaResult?: KeyframeQAResult;
+  qaResults?: KeyframeQAResult[];
+  status: "ready" | "needs-review" | "fallback";
+};
 
 async function executeImageBatch(input: ImageBatchInput) {
   try {
     let completedCount = 0;
-    const results = await generateBatchShotImages(input.projectId, input.targetShots, {
-      aspectRatio: input.aspectRatio,
-      hasChineseText: true,
-      sessionId: input.sessionId,
-      productImage: input.productImage
-    }, async (result) => {
-      const image = toClientImage(result);
-      const eventId = input.shotEvents.get(image.shotId);
+    const results: EvaluatedImage[] = [];
+    const previousAssetByGroup = new Map<string, string>();
+    const firstGroup = input.targetShots[0]?.continuityGroupId ?? input.targetShots[0]?.sceneGroupId;
+    if (firstGroup && input.continuityImageAssetId) previousAssetByGroup.set(firstGroup, input.continuityImageAssetId);
+
+    await runContinuityAware(input.targetFrames, async ({ shot, frame }) => {
+      const groupId = shot.continuityGroupId ?? shot.sceneGroupId;
+      let project = (await requireOwnedAnonymousProject(input.sessionId, input.projectId)).project;
+      const frameShot = shotForFrame(shot, frame);
+      const qaShot = { ...frameShot, id: shot.id };
+      let result: ShotImageGenerationResult = { ...await generateShotImage(input.projectId, frameShot, {
+        aspectRatio: input.aspectRatio,
+        hasChineseText: true,
+        sessionId: input.sessionId,
+        productImage: input.productImage,
+        productVisualSpec: input.productVisualSpec,
+        masterReferenceAssetIds: selectLockedMasterAssetIds(project, shot),
+        continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined
+      }), shotId: shot.id, frameId: frame.id };
+      let qaResult: KeyframeQAResult | undefined;
+      const qaResults: KeyframeQAResult[] = [];
+      let status: EvaluatedImage["status"] = result.fallbackUsed || !result.assetId ? "fallback" : "ready";
+      const eventId = input.shotEvents.get(frame.id);
+
+      if (!result.fallbackUsed && result.provider === "mockImageProvider") {
+        qaResult = createMockKeyframeQA(qaShot, 1, frame.id);
+        qaResults.push(qaResult);
+        status = "ready";
+      } else if (!result.fallbackUsed && result.assetId) {
+        await persistKeyframeState(input, shot, frame, result, "generated");
+        if (eventId) await markGenerationEventQAReview(input.sessionId, input.projectId, eventId, `镜头 ${shot.index} 第 ${frame.index + 1} 帧已生成，正在执行视觉一致性检查。`);
+        await persistKeyframeState(input, shot, frame, result, "text-qa");
+        project = (await requireOwnedAnonymousProject(input.sessionId, input.projectId)).project;
+        qaResult = await inspectKeyframe({
+              sessionId: input.sessionId,
+              project,
+              shot: qaShot,
+              frameId: frame.id,
+              candidateAssetId: result.assetId,
+              productAssetId: shot.containsProduct ? input.productImage?.assetId : undefined,
+              masterAssetIds: selectLockedMasterAssetIds(project, shot),
+              attempt: 1
+            });
+        qaResults.push(qaResult);
+        await persistKeyframeState(input, shot, frame, result, "product-qa");
+        if ((shot.characterIds ?? []).length) await persistKeyframeState(input, shot, frame, result, "character-qa");
+        if (shot.sceneId) await persistKeyframeState(input, shot, frame, result, "scene-qa");
+
+        if (!qaResult.overallPassed && result.provider !== "deterministic-product-master") {
+          if (result.assetId !== input.productImage?.assetId) {
+            await markPrivateAssetsLifecycle(input.sessionId, input.projectId, [result.assetId], "orphaned");
+          }
+          const repairedShot = {
+            ...frameShot,
+            imagePromptCn: `${frameShot.imagePromptCn}\n只修复当前这一帧，禁止增加面板、拼贴或其他时刻。视觉 QA 定向修复：${qaResult.repairPrompt ?? qaResult.issues.join("；")}`,
+            imagePromptEn: `${frameShot.imagePromptEn}\nRepair this frame only. One full-frame image, no panels, collage, contact sheet, or additional moments.`
+          };
+          result = { ...await generateShotImage(input.projectId, repairedShot, {
+            aspectRatio: input.aspectRatio,
+            hasChineseText: true,
+            sessionId: input.sessionId,
+            productImage: input.productImage,
+            productVisualSpec: input.productVisualSpec,
+            masterReferenceAssetIds: selectLockedMasterAssetIds(project, shot),
+            continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined
+          }), shotId: shot.id, frameId: frame.id };
+          if (!result.fallbackUsed && result.assetId) {
+            await persistKeyframeState(input, shot, frame, result, "generated");
+            qaResult = await inspectKeyframe({
+              sessionId: input.sessionId,
+              project: (await requireOwnedAnonymousProject(input.sessionId, input.projectId)).project,
+              shot: { ...repairedShot, id: shot.id },
+              frameId: frame.id,
+              candidateAssetId: result.assetId,
+              productAssetId: shot.containsProduct ? input.productImage?.assetId : undefined,
+              masterAssetIds: selectLockedMasterAssetIds(project, shot),
+              attempt: 2
+            });
+            qaResults.push(qaResult);
+          }
+        }
+        status = result.fallbackUsed || !result.assetId ? "fallback" : qaResult?.overallPassed ? "ready" : "needs-review";
+      }
+
+      const evaluated: EvaluatedImage = { ...result, qaResult, qaResults, status };
+      results.push(evaluated);
+      await persistEvaluatedKeyframe(input, shot, frame, evaluated);
+      if (groupId && evaluated.assetId && evaluated.status === "ready") previousAssetByGroup.set(groupId, evaluated.assetId);
+
+      const image = toClientImage(evaluated);
       if (eventId) {
         const reason = image.fallbackReason ?? "模型未返回可用图片。";
         await completeGenerationEvent(
           input.sessionId,
           input.projectId,
           eventId,
-          image.fallbackUsed ? `镜头关键帧生成失败：${reason}` : "单镜头关键帧生成完成。",
-          { status: image.fallbackUsed ? "fallback" : "completed", latencyMs: image.latencyMs }
+          image.status === "ready" ? "关键帧通过视觉一致性检查。" : image.status === "needs-review" ? "关键帧两次视觉检查未通过，需要人工确认。" : `镜头关键帧生成失败：${reason}`,
+          { status: image.status === "ready" ? "completed" : image.status === "needs-review" ? "needs-review" : "fallback", latencyMs: image.latencyMs }
         );
       }
       completedCount += 1;
@@ -281,50 +419,30 @@ async function executeImageBatch(input: ImageBatchInput) {
         input.projectId,
         input.batchEventId,
         completedCount,
-        input.targetShots.length,
-        `关键帧批次已完成 ${completedCount} / ${input.targetShots.length}。`
+        input.targetFrames.length,
+        `关键帧批次已完成 ${completedCount} / ${input.targetFrames.length}。`
       );
     });
     const images = results.map(toClientImage);
 
-    const failedShots = images.filter((image) => image.fallbackUsed).map((image) => ({
+    const failedShots = images.filter((image) => image.status !== "ready").map((image) => ({
       shotId: image.shotId,
-      fallbackReason: image.fallbackReason ?? "关键帧生成使用了占位图降级。",
+      fallbackReason: image.status === "needs-review" ? "视觉一致性检查未通过，已停止自动进入视频生成。" : image.fallbackReason ?? "关键帧生成使用了占位图降级。",
       diagnostic: image.diagnostic
     }));
     const current = await requireOwnedAnonymousProject(input.sessionId, input.projectId);
-    const currentShotIds = new Set(current.project.shots.map((shot) => shot.id));
-    const generatedFrames = images.filter((image) => currentShotIds.has(image.shotId)).map((image) => ({
-      shotId: image.shotId,
-      ...(image.assetId ? { assetId: image.assetId } : {}),
-      ...(image.localUrl ? { imageUrl: image.localUrl, localUrl: image.localUrl } : {}),
-      provider: image.provider,
-      model: image.model,
-      latencyMs: image.latencyMs,
-      ...(image.requestId ? { requestId: image.requestId } : {}),
-      ...(image.cacheStatus ? { cacheStatus: image.cacheStatus } : {}),
-      fallbackUsed: image.fallbackUsed,
-      ...(image.fallbackReason ? { fallbackReason: image.fallbackReason } : {}),
-      status: image.fallbackUsed ? "fallback" as const : "ready" as const,
-      storageTransition: "PRIVATE_ASSET_V1" as const
-    }));
-    if (generatedFrames.length !== images.length) {
-      throw new Error("关键帧生成期间分镜已发生变化，本批结果已停止写入，请重新执行。");
-    }
-    const generatedShotIds = new Set(generatedFrames.map((frame) => frame.shotId));
     await updateOwnedAnonymousProject(input.sessionId, input.projectId, {
-      keyframes: [...(current.project.keyframes ?? []).filter((frame) => !generatedShotIds.has(frame.shotId)), ...generatedFrames],
       workflowSteps: {
         ...(current.project.workflowSteps ?? defaultWorkflow()),
-        keyframes: failedShots.length > 0 ? "fallback" : "completed"
+        keyframes: images.some((image) => image.status === "needs-review") ? "needs-review" : images.some((image) => image.status === "fallback") ? "fallback" : "completed"
       }
     });
     await completeGenerationEvent(
       input.sessionId,
       input.projectId,
       input.batchEventId,
-      failedShots.length > 0 ? `关键帧批次完成，${failedShots.length} 个镜头生成失败，具体原因见对应镜头日志。` : `关键帧批次完成，共 ${images.length} 张。`,
-      { status: failedShots.length > 0 ? "fallback" : "completed", progressCurrent: images.length, progressTotal: input.targetShots.length }
+      failedShots.length > 0 ? `关键帧批次完成，${failedShots.length} 个镜头需要处理，具体原因见对应镜头日志。` : `关键帧批次完成并通过视觉检查，共 ${images.length} 张。`,
+      { status: images.some((image) => image.status === "needs-review") ? "needs-review" : failedShots.length > 0 ? "fallback" : "completed", progressCurrent: images.length, progressTotal: input.targetFrames.length }
     );
     return { images, failedShots, mode: input.mode, requestedShots: input.requestedShots, generatedShots: images.length };
   } catch (error) {
@@ -333,18 +451,118 @@ async function executeImageBatch(input: ImageBatchInput) {
   }
 }
 
+async function runContinuityAware<T>(targets: TargetFrame[], worker: (target: TargetFrame) => Promise<T>): Promise<T[]> {
+  const groups = new Map<string, TargetFrame[]>();
+  for (const target of [...targets].sort((left, right) => left.shot.index - right.shot.index || left.frame.index - right.frame.index)) {
+    const key = target.shot.continuityGroupId ?? target.shot.sceneGroupId ?? `shot:${target.shot.id}`;
+    groups.set(key, [...(groups.get(key) ?? []), target]);
+  }
+  const queues = [...groups.values()];
+  const output: T[] = [];
+  let cursor = 0;
+  async function consume() {
+    while (cursor < queues.length) {
+      const queue = queues[cursor++];
+      for (const target of queue ?? []) output.push(await worker(target));
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(QWEN_FRAME_CONCURRENCY, queues.length) }, consume));
+  return output;
+}
+
+async function persistKeyframeState(
+  input: ImageBatchInput,
+  shot: TargetShot,
+  frame: ShotFrame,
+  result: ShotImageGenerationResult,
+  status: "generated" | "text-qa" | "product-qa" | "character-qa" | "scene-qa" | "qa-review"
+) {
+  await mutateOwnedAnonymousProject(input.sessionId, input.projectId, (project) => ({
+    ...project,
+    shots: updateShotFrame(project.shots, shot.id, frame.id, result.assetId, status === "generated" ? "generating" : "qa-review"),
+    keyframes: [...(project.keyframes ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), toKeyframeMetadata(result, status)]
+  }));
+}
+
+async function persistEvaluatedKeyframe(input: ImageBatchInput, shot: TargetShot, frame: ShotFrame, image: EvaluatedImage) {
+  await mutateOwnedAnonymousProject(input.sessionId, input.projectId, (project) => {
+    const qaResults = image.qaResults?.length
+      ? [...(project.keyframeQAResults ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), ...image.qaResults]
+      : project.keyframeQAResults;
+    return {
+      ...project,
+      keyframeQAResults: qaResults,
+      shots: updateShotFrame(project.shots, shot.id, frame.id, image.assetId, image.status === "fallback" ? "failed" : image.status),
+      keyframes: [...(project.keyframes ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), toKeyframeMetadata(image, image.status)]
+    };
+  });
+}
+
+function toKeyframeMetadata(result: ShotImageGenerationResult, status: "generated" | "text-qa" | "product-qa" | "character-qa" | "scene-qa" | "qa-review" | EvaluatedImage["status"]) {
+  return {
+    shotId: result.shotId,
+    ...(result.frameId ? { frameId: result.frameId } : {}),
+    ...(result.assetId ? { assetId: result.assetId } : {}),
+    ...(result.localUrl ? { imageUrl: result.localUrl, localUrl: result.localUrl } : {}),
+    provider: result.provider,
+    model: result.model,
+    latencyMs: result.latencyMs,
+    ...(result.requestId ? { requestId: result.requestId } : {}),
+    ...(result.cacheStatus ? { cacheStatus: result.cacheStatus } : {}),
+    fallbackUsed: result.fallbackUsed,
+    ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
+    status,
+    storageTransition: "PRIVATE_ASSET_V1" as const
+  };
+}
+
+function keyframeIdentity(shotId: string, frameId?: string) {
+  return `${shotId}:${frameId ?? "legacy-frame-0"}`;
+}
+
+function updateShotFrame(
+  shots: TargetShot[],
+  shotId: string,
+  frameId: string,
+  assetId: string | undefined,
+  status: ShotFrame["status"]
+) {
+  return shots.map((shot) => shot.id !== shotId ? shot : {
+    ...shot,
+    primaryKeyframeAssetId: shot.primaryKeyframeAssetId ?? assetId,
+    frames: (shot.frames ?? []).map((frame) => frame.id !== frameId ? frame : {
+      ...frame,
+      ...(assetId ? { assetId } : {}),
+      status
+    })
+  });
+}
+
+function shotForFrame(shot: TargetShot, frame: ShotFrame): TargetShot {
+  return {
+    ...shot,
+    id: `${shot.id}--${frame.id}`,
+    visualDescription: frame.description,
+    imagePromptCn: `${frame.imagePromptCn}\n硬性要求：只生成一个冻结瞬间的一张完整全画幅图片。禁止分镜板、网格、拼贴、接触表、前后对比和多面板。`,
+    imagePromptEn: `${frame.imagePromptEn}\nHARD CONSTRAINT: Generate exactly one frozen moment as one full-frame image. No storyboard, grid, collage, contact sheet, before/after layout, split screen, or multiple panels.`,
+    negativePromptCn: [frame.negativePromptCn, shot.negativePromptCn, "多面板，拼贴，分镜板，网格，接触表，前后对比，分屏，多时刻"].filter(Boolean).join("，"),
+    negativePromptEn: [frame.negativePromptEn, shot.negativePromptEn, "multi-panel, collage, storyboard, grid, contact sheet, before-after, split screen, multiple moments"].filter(Boolean).join(", ")
+  };
+}
+
 async function failImageBatch(input: ImageBatchInput, detail: string) {
-  await Promise.all([...input.shotEvents.entries()].map(async ([shotId, eventId]) => {
-    const shot = input.targetShots.find((item) => item.id === shotId);
-    await failGenerationEvent(input.sessionId, input.projectId, eventId, `镜头 ${shot?.index ?? "?"} 关键帧生成中断：${detail}`).catch(() => undefined);
+  await Promise.all([...input.shotEvents.entries()].map(async ([frameId, eventId]) => {
+    const target = input.targetFrames.find((item) => item.frame.id === frameId);
+    await failGenerationEvent(input.sessionId, input.projectId, eventId, `镜头 ${target?.shot.index ?? "?"} 第 ${(target?.frame.index ?? 0) + 1} 帧生成中断：${detail}`).catch(() => undefined);
   }));
   await failGenerationEvent(input.sessionId, input.projectId, input.batchEventId, `关键帧批次生成失败：${detail}`).catch(() => undefined);
 }
 
-function toClientImage(result: Awaited<ReturnType<typeof generateBatchShotImages>>[number]) {
+function toClientImage(result: EvaluatedImage) {
   const diagnostic = result.fallbackUsed ? diagnoseQwenImageFallback(result.fallbackReason ?? result.error) : null;
   return {
     shotId: result.shotId,
+    frameId: result.frameId,
     assetId: result.assetId,
     imageUrl: result.localUrl || result.imageUrl,
     localUrl: result.localUrl,
@@ -357,18 +575,24 @@ function toClientImage(result: Awaited<ReturnType<typeof generateBatchShotImages
     fallbackUsed: result.fallbackUsed,
     fallbackReason: result.fallbackReason ?? null,
     referenceUsed: result.referenceUsed ?? false,
+    status: result.status,
+    errorCode: result.errorCode ?? null,
+    qaResult: result.qaResult ?? null,
     diagnostic
   };
 }
 
 function imageBatchDataFromProject(project: Awaited<ReturnType<typeof requireOwnedAnonymousProject>>["project"], runId: string) {
-  const shotIds = new Set((project.generationEvents ?? [])
-    .filter((event) => event.runId === runId && event.action === "生成单镜头关键帧" && event.shotId)
-    .map((event) => event.shotId!));
-  const images = (project.keyframes ?? []).filter((frame) => shotIds.has(frame.shotId)).map((frame) => {
+  const events = (project.generationEvents ?? [])
+    .filter((event) => event.runId === runId && event.action === "生成单帧关键帧" && event.shotId)
+  const frameIds = new Set(events.map((event) => event.frameId).filter((id): id is string => Boolean(id)));
+  const shotIds = new Set(events.map((event) => event.shotId!));
+  const images = (project.keyframes ?? []).filter((frame) => frame.frameId ? frameIds.has(frame.frameId) : shotIds.has(frame.shotId)).map((frame) => {
     const diagnostic = frame.fallbackUsed ? diagnoseQwenImageFallback(frame.fallbackReason) : null;
+    const qaResult = project.keyframeQAResults?.filter((item) => item.shotId === frame.shotId && item.frameId === frame.frameId && item.assetId === frame.assetId).sort((a, b) => b.attempt - a.attempt)[0] ?? null;
     return {
       shotId: frame.shotId,
+      frameId: frame.frameId,
       assetId: frame.assetId,
       imageUrl: frame.localUrl || frame.imageUrl,
       localUrl: frame.localUrl,
@@ -380,11 +604,28 @@ function imageBatchDataFromProject(project: Awaited<ReturnType<typeof requireOwn
       fallbackUsed: frame.fallbackUsed,
       fallbackReason: frame.fallbackReason ?? null,
       referenceUsed: Boolean(frame.assetId),
+      status: frame.status === "ready" ? "ready" as const : frame.status === "needs-review" ? "needs-review" as const : "fallback" as const,
+      qaResult,
       diagnostic
     };
   });
-  const failedShots = images.filter((image) => image.fallbackUsed).map((image) => ({ shotId: image.shotId, fallbackReason: image.fallbackReason, diagnostic: image.diagnostic }));
-  return { images, failedShots, generatedShots: images.length, requestedShots: shotIds.size };
+  const failedShots = images.filter((image) => image.fallbackUsed || image.status === "needs-review").map((image) => ({ shotId: image.shotId, fallbackReason: image.status === "needs-review" ? "视觉一致性检查未通过。" : image.fallbackReason, diagnostic: image.diagnostic }));
+  return { images, failedShots, generatedShots: images.length, requestedShots: events.length };
+}
+
+function findPreviousContinuityAssetId(
+  project: Awaited<ReturnType<typeof requireOwnedAnonymousProject>>["project"],
+  targetShots: TargetShot[]
+) {
+  if (targetShots.length !== 1) return undefined;
+  const target = targetShots[0];
+  const groupId = target?.continuityGroupId ?? target?.sceneGroupId;
+  if (!target || !groupId) return undefined;
+  const previous = [...project.shots]
+    .filter((shot) => shot.index < target.index && (shot.continuityGroupId ?? shot.sceneGroupId) === groupId)
+    .sort((a, b) => b.index - a.index)[0];
+  if (!previous) return undefined;
+  return project.keyframes?.find((frame) => frame.shotId === previous.id && frame.assetId)?.assetId;
 }
 
 function defaultWorkflow() {

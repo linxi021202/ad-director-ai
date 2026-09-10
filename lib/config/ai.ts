@@ -51,13 +51,14 @@ const envSchema = z.object({
 
   DEEPSEEK_API_KEY: optionalSecretSchema,
   DEEPSEEK_BASE_URL: z.string().url().default("https://api.deepseek.com"),
-  DEEPSEEK_MODEL: z.string().min(1).default("deepseek-v4-flash"),
+  DEEPSEEK_MODEL: z.string().min(1).default("deepseek-v4-pro"),
   DEEPSEEK_TIMEOUT_MS: positiveIntEnvSchema(90_000),
   DEEPSEEK_MAX_RETRIES: positiveIntEnvSchema(1),
 
   DASHSCOPE_API_KEY: optionalSecretSchema,
   DASHSCOPE_BASE_URL: optionalUrlEnvSchema(DEFAULT_DASHSCOPE_BASE_URL),
   QWEN_IMAGE_MODEL: z.string().min(1).default("qwen-image"),
+  VISUAL_INSPECTOR_MODEL: z.string().min(1).default("qwen3.7-plus"),
   QWEN_IMAGE_SIZE: z.string().min(1).default("1152*2048"),
   QWEN_IMAGE_PROMPT_EXTEND: booleanEnvSchema,
   QWEN_IMAGE_WATERMARK: booleanEnvSchema,
@@ -66,7 +67,7 @@ const envSchema = z.object({
   COSYVOICE_VOICE: z.string().min(1).default("longanyang"),
   COSYVOICE_BASE_URL: optionalUrlEnvSchema(DEFAULT_DASHSCOPE_BASE_URL),
   VIDEO_PROVIDER: z.string().optional().transform(() => "wan" as const),
-  WAN_VIDEO_MODEL: z.string().min(1).default("wan2.7-r2v"),
+  WAN_VIDEO_MODEL: z.string().min(1).default("wan2.7-i2v"),
   WAN_VIDEO_RESOLUTION: z.enum(["720P", "1080P"]).default("720P"),
   WAN_BASE_URL: z
     .string()
@@ -93,7 +94,7 @@ export type AIConfig = {
   realVideoEnabled: boolean;
   platformKeysAllowed: boolean;
   deepseek: { apiKey?: string; baseUrl: string; model: string; configured: boolean };
-  qwenImage: { apiKey?: string; baseUrl: string; imageModel: string; size: string; promptExtend: boolean; watermark: boolean; configured: boolean };
+  qwenImage: { apiKey?: string; baseUrl: string; imageModel: string; inspectorModel: string; size: string; promptExtend: boolean; watermark: boolean; configured: boolean };
   video: {
     provider: RawAIEnv["VIDEO_PROVIDER"];
     model: string;
@@ -162,7 +163,7 @@ function buildConfig(env: RawAIEnv): AIConfig {
     realVideoEnabled: env.ENABLE_REAL_VIDEO,
     platformKeysAllowed: allowPlatformKeys,
     deepseek: { apiKey: deepseekApiKey, baseUrl: env.DEEPSEEK_BASE_URL, model: env.DEEPSEEK_MODEL, configured: Boolean(deepseekApiKey) },
-    qwenImage: { apiKey: dashscopeApiKey, baseUrl: env.DASHSCOPE_BASE_URL, imageModel: env.QWEN_IMAGE_MODEL, size: env.QWEN_IMAGE_SIZE, promptExtend: env.QWEN_IMAGE_PROMPT_EXTEND, watermark: env.QWEN_IMAGE_WATERMARK, configured: Boolean(dashscopeApiKey) },
+    qwenImage: { apiKey: dashscopeApiKey, baseUrl: env.DASHSCOPE_BASE_URL, imageModel: env.QWEN_IMAGE_MODEL, inspectorModel: env.VISUAL_INSPECTOR_MODEL, size: env.QWEN_IMAGE_SIZE, promptExtend: env.QWEN_IMAGE_PROMPT_EXTEND, watermark: env.QWEN_IMAGE_WATERMARK, configured: Boolean(dashscopeApiKey) },
     video: {
       provider: env.VIDEO_PROVIDER,
       model: env.WAN_VIDEO_MODEL,
@@ -224,7 +225,7 @@ export function getDeepSeekRuntimeConfig(): DeepSeekRuntimeConfig {
   const env = parseEnv();
   return {
     baseUrl: env.DEEPSEEK_BASE_URL,
-    model: env.DEEPSEEK_MODEL || "deepseek-v4-flash",
+    model: env.DEEPSEEK_MODEL || "deepseek-v4-pro",
     timeoutMs: env.DEEPSEEK_TIMEOUT_MS,
     maxRetries: env.DEEPSEEK_MAX_RETRIES
   };

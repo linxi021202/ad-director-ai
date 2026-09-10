@@ -37,7 +37,7 @@ export function ImageShot({ src, subtitle, title, mode, keywords }: { src: strin
         {title}
       </VideoText>
       <KeywordOverlay keywords={keywords} />
-      <Subtitle text={subtitle} />
+      {subtitle ? <Subtitle text={subtitle} /> : null}
     </AbsoluteFill>
   );
 }

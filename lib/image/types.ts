@@ -3,6 +3,7 @@ export type QwenImageCacheStatus = "cached" | "remote-only" | "not-requested";
 export type QwenImageRequest = {
   prompt: string;
   referenceImage?: string;
+  referenceImages?: string[];
   negativePrompt?: string;
   projectId?: string;
   shotId?: string;

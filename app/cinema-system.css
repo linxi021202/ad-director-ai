@@ -533,3 +533,38 @@ html { background: #000; }
   .site-body *::before,
   .site-body *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Generate brief width contract. Keep this in the final theme layer. */
+.site-body .workbench-layout {
+  grid-template-columns: clamp(420px, 30vw, 460px) minmax(0, 1fr) 236px;
+}
+@media (max-width: 1439px) {
+  .site-body .workbench-layout {
+    grid-template-columns: clamp(400px, 31vw, 440px) minmax(0, 1fr) 220px;
+  }
+}
+@media (max-width: 1180px) {
+  .site-body .workbench-layout {
+    grid-template-columns: clamp(380px, 38vw, 400px) minmax(0, 1fr);
+  }
+}
+@media (min-width: 768px) and (max-width: 980px) {
+  .site-body .workbench-layout {
+    grid-template-columns: 380px minmax(0, 1fr) !important;
+  }
+  .site-body .brief-sidebar-shell {
+    position: sticky;
+    top: 82px;
+    min-height: calc(100svh - 98px);
+    max-height: calc(100svh - 98px);
+  }
+  .site-body .brief-sidebar-content {
+    overflow-y: auto;
+    padding-right: 3px;
+  }
+}
+@media (max-width: 767px) {
+  .site-body .workbench-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}

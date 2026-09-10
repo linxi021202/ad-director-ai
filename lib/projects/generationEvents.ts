@@ -28,6 +28,18 @@ const ALLOWED_ERROR_CODES = new Set([
   "RENDER_FAILED",
   "RENDER_CANCELLED",
   "TASK_INTERRUPTED",
+  "BRIEF_NOT_LOCKED",
+  "CREATIVE_NOT_LOCKED",
+  "VISUAL_ANCHOR_NOT_LOCKED",
+  "VISUAL_ANCHORS_INCOMPLETE",
+  "STORYBOARD_NOT_LOCKED",
+  "PRODUCT_REFERENCE_REQUIRED",
+  "PRODUCT_VISUAL_SPEC_REQUIRED",
+  "PRODUCT_MASTER_NOT_LOCKED",
+  "CHARACTER_MASTER_REQUIRED",
+  "SCENE_MASTER_REQUIRED",
+  "DEPENDENCY_OUTDATED",
+  "PROJECT_VERSION_CONFLICT",
   "NOT_CONFIGURED",
   "RATE_LIMITED",
   "QUOTA_EXHAUSTED"
@@ -35,12 +47,16 @@ const ALLOWED_ERROR_CODES = new Set([
 
 const STAGE_TIMEOUT_MS: Record<GenerationStage, number> = {
   brief: 5 * 60_000,
+  creative: 10 * 60_000,
+  anchors: 20 * 60_000,
   strategy: 10 * 60_000,
   storyboard: 15 * 60_000,
   prompts: 15 * 60_000,
   keyframes: 30 * 60_000,
+  video: 45 * 60_000,
   "hero-shot": 45 * 60_000,
   narration: 20 * 60_000,
+  final: 60 * 60_000,
   composition: 60 * 60_000
 };
 
@@ -51,6 +67,7 @@ type NewEventInput = {
   status?: GenerationEventStatus;
   message: string;
   shotId?: string;
+  frameId?: string;
   progressCurrent?: number;
   progressTotal?: number;
   errorCode?: string;
@@ -82,6 +99,7 @@ export async function appendGenerationEvent(
     status: input.status ?? "queued",
     message: input.message,
     ...(input.shotId ? { shotId: input.shotId } : {}),
+    ...(input.frameId ? { frameId: input.frameId } : {}),
     ...(input.progressCurrent !== undefined ? { progressCurrent: input.progressCurrent } : {}),
     ...(input.progressTotal !== undefined ? { progressTotal: input.progressTotal } : {}),
     startedAt: now,
@@ -110,7 +128,7 @@ export function completeGenerationEvent(
   projectId: string,
   eventId: string,
   message: string,
-  details: { status?: "completed" | "fallback" | "cancelled"; latencyMs?: number; progressCurrent?: number; progressTotal?: number } = {}
+  details: { status?: "completed" | "fallback" | "cancelled" | "needs-review"; latencyMs?: number; progressCurrent?: number; progressTotal?: number } = {}
 ) {
   return updateEvent(sessionId, projectId, eventId, {
     status: details.status ?? "completed",
@@ -120,6 +138,15 @@ export function completeGenerationEvent(
     ...(details.progressCurrent !== undefined ? { progressCurrent: details.progressCurrent } : {}),
     ...(details.progressTotal !== undefined ? { progressTotal: details.progressTotal } : {})
   });
+}
+
+export function markGenerationEventQAReview(
+  sessionId: string,
+  projectId: string,
+  eventId: string,
+  message: string
+) {
+  return updateEvent(sessionId, projectId, eventId, { status: "qa-review", message });
 }
 
 export function failGenerationEvent(
@@ -156,9 +183,10 @@ export function attachGenerationEventProviderTask(
   sessionId: string,
   projectId: string,
   eventId: string,
-  details: { taskId: string; requestId?: string; message?: string }
+  details: { taskId: string; requestId?: string; message?: string; status?: "running" }
 ) {
   return updateEvent(sessionId, projectId, eventId, {
+    ...(details.status ? { status: details.status, completedAt: undefined } : {}),
     providerTaskId: sanitizeText(details.taskId, 200),
     ...(details.requestId ? { providerRequestId: sanitizeText(details.requestId, 200) } : {}),
     ...(details.message ? { message: details.message } : {})
@@ -261,5 +289,5 @@ function sanitizeErrorCode(value: string): string {
 }
 
 function isTerminal(status: GenerationEventStatus | undefined): boolean {
-  return Boolean(status && ["completed", "failed", "fallback", "cancelled", "blocked", "interrupted"].includes(status));
+  return Boolean(status && ["completed", "needs-review", "failed", "fallback", "cancelled", "blocked", "interrupted"].includes(status));
 }

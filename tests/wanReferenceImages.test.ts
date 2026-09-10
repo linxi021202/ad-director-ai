@@ -67,11 +67,12 @@ describe("Wan private reference transport", () => {
       assetBaseUrl: "https://example.com"
     });
 
-    expect(references).toHaveLength(2);
+    expect(references).toHaveLength(1);
     expect(references[0]?.role).toBe("scene");
     expect(references.every((reference) => reference.url.startsWith("https://example.com/api/internal/render-assets/"))).toBe(true);
     expect(references.every((reference) => !reference.url.startsWith("data:"))).toBe(true);
     const signed = new URL(references[0]!.url);
     expect(resolveRenderAssetGrant(signed.searchParams.get("token")!, keyframe.id)?.projectId).toBe(project.id);
+    expect(resolveRenderAssetGrant(signed.searchParams.get("token")!, product.id)).toBeNull();
   });
 });

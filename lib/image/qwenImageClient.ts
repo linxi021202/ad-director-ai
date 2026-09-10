@@ -9,10 +9,29 @@ const QWEN_TASK_PATH = "/api/v1/tasks";
 const TASK_POLL_INTERVAL_MS = 1500;
 const TASK_POLL_MAX_ATTEMPTS = 24;
 
-export function buildQwenImageContent(input: Pick<QwenImageRequest, "prompt" | "referenceImage">) {
-  return input.referenceImage
-    ? [{ image: input.referenceImage }, { text: input.prompt }]
-    : [{ text: input.prompt }];
+export function buildQwenImageContent(input: Pick<QwenImageRequest, "prompt" | "referenceImage" | "referenceImages">) {
+  const references = (input.referenceImages?.length ? input.referenceImages : input.referenceImage ? [input.referenceImage] : [])
+    .filter(Boolean)
+    .slice(0, 3);
+  return [...references.map((image) => ({ image })), { text: input.prompt }];
+}
+
+export function buildQwenImageRequestBody(input: QwenImageRequest, model: string, size: string, defaults: { promptExtend: boolean; watermark: boolean }) {
+  return {
+    model,
+    input: { messages: [{ role: "user", content: buildQwenImageContent(input) }] },
+    parameters: {
+      negative_prompt: input.negativePrompt,
+      prompt_extend: input.promptExtend ?? defaults.promptExtend,
+      watermark: input.watermark ?? defaults.watermark,
+      size,
+      n: 1 as const
+    }
+  };
+}
+
+function hasImageReference(input: Pick<QwenImageRequest, "referenceImage" | "referenceImages">) {
+  return Boolean(input.referenceImage || input.referenceImages?.length);
 }
 
 function assertServerOnly() {
@@ -264,7 +283,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
 
   try {
     const config = getAIConfig({ allowSessionSecrets: true });
-    model = input.referenceImage
+    model = hasImageReference(input)
       ? input.model || process.env.QWEN_IMAGE_EDIT_MODEL || "qwen-image-2.0"
       : input.model || config.qwenImage.imageModel;
     size = input.size || config.qwenImage.size;
@@ -303,24 +322,10 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        model,
-        input: {
-          messages: [
-            {
-              role: "user",
-              content: buildQwenImageContent(input)
-            }
-          ]
-        },
-        parameters: {
-          negative_prompt: input.negativePrompt,
-          prompt_extend: input.promptExtend ?? config.qwenImage.promptExtend,
-          watermark: input.watermark ?? config.qwenImage.watermark,
-          size,
-          n: 1
-        }
-      })
+      body: JSON.stringify(buildQwenImageRequestBody(input, model, size, {
+        promptExtend: config.qwenImage.promptExtend,
+        watermark: config.qwenImage.watermark
+      }))
     });
 
     const payload = (await response.json().catch(() => null)) as unknown;
@@ -406,7 +411,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
       size,
       cacheStatus: cached.cacheStatus,
       costEstimate: estimateQwenImageCost(size),
-      referenceUsed: Boolean(input.referenceImage)
+      referenceUsed: hasImageReference(input)
     };
   } catch (error) {
     return {

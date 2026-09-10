@@ -7,7 +7,7 @@ import { z } from "zod";
 import { assertPrivateAssetReadable, requirePrivateAsset } from "../assets/assetStore";
 import { getInternalRenderAssetUrl, issueRenderAssetToken } from "../assets/renderAccess";
 import { resolvePrivateProjectDirectory } from "../assets/path";
-import { generationProjectSchema, type StoryboardShot } from "../schemas/project";
+import { generationProjectSchema, type GenerationProject, type StoryboardShot } from "../schemas/project";
 import {  DEFAULT_FPS,
   adCompositionPropsSchema,
   getCompositionSize,
@@ -17,6 +17,7 @@ import { getDurationInFrames } from "../video/durationConfig";
 import { getDefaultHeroShotArrayIndex } from "../video/shotConfig";
 import type { RenderErrorCode } from "./renderStateStore";
 import { safeSegment } from "./renderStateStore";
+import { hasApprovedKeyframeQA, hasApprovedVideoQA } from "../visual/generationGate";
 
 const keyframeManifestItemSchema = z.object({
   shotId: z.string().min(1),
@@ -68,27 +69,33 @@ export async function prepareRenderProject(
   const size = getCompositionSize(project.brief.aspectRatio);
   const heroShotId = project.heroShotId || project.shots[getDefaultHeroShotArrayIndex(project.shots.length)]?.id || project.shots[0]?.id;
   const keyframeAssetIds = project.shots.map((shot) => {
-    const frame = project.keyframes?.find((item) => item.shotId === shot.id);
-    if (!frame?.assetId || frame.fallbackUsed) {
-      throw new RenderProjectError("KEYFRAME_MISSING", `镜头 ${shot.index} 缺少可用于合成的私有关键帧。`);
+    const primaryFrameId = shot.frames?.[0]?.id;
+    const frame = project.keyframes?.find((item) => item.shotId === shot.id && (!primaryFrameId || item.frameId === primaryFrameId));
+    if (!frame?.assetId || frame.fallbackUsed || !hasApprovedKeyframeQA(project, shot.id, primaryFrameId)) {
+      throw new RenderProjectError("KEYFRAME_MISSING", `镜头 ${shot.index} 缺少通过视觉一致性检查的私有关键帧。`);
     }
     return frame.assetId;
   });
 
   const heroVideoAssetId = project.heroVideo?.assetId;
-  if (!heroVideoAssetId || project.heroVideo?.shotId !== heroShotId) {
-    throw new RenderProjectError("HERO_VIDEO_MISSING", "当前项目缺少可用于合成的私有广告视频。");
+  if (!heroVideoAssetId || project.heroVideo?.shotId !== heroShotId || !hasApprovedVideoQA(project, heroShotId)) {
+    throw new RenderProjectError("HERO_VIDEO_MISSING", "当前项目缺少通过视觉一致性检查的私有广告视频。");
   }
 
   const productAssetIds = (project.brief.productImages ?? []).flatMap((image) => image.assetId ? [image.assetId] : []);
-  const narrationAssetIds = project.narrationAssetId ? [project.narrationAssetId] : [];
+  const narrationAssetIds = [...new Set([
+    ...(project.narrationAssetId ? [project.narrationAssetId] : []),
+    ...(project.narrationPlan?.beats.flatMap((beat) => beat.assetId ? [beat.assetId] : []) ?? [])
+  ])];
   const backgroundMusicAssetIds = project.backgroundMusicAssetId ? [project.backgroundMusicAssetId] : [];
+  const subclipAssetIds = project.shots.flatMap((shot) => (shot.subclips ?? []).flatMap((subclip) => subclip.assetId ? [subclip.assetId] : []));
   const allowedAssetIds = [...new Set([
     ...keyframeAssetIds,
     heroVideoAssetId,
     ...productAssetIds,
     ...narrationAssetIds,
     ...backgroundMusicAssetIds
+    ,...subclipAssetIds
   ])];
 
   for (const assetId of allowedAssetIds) {
@@ -110,9 +117,12 @@ export async function prepareRenderProject(
     id: shot.id,
     durationSec: shot.durationSec,
     keyframeUrl: assetUrl(keyframeAssetIds[index]!),
-    subtitle: shot.subtitle,
+    subtitle: resolveNarrationSubtitle(project, shot),
     title: shot.goal,
-    keywords: extractShotKeywords(shot, project.brief.sellingPoints)
+    keywords: extractShotKeywords(shot, project.brief.sellingPoints),
+    subclips: (shot.subclips ?? []).flatMap((subclip) => subclip.assetId ? [{
+      id: subclip.id, url: assetUrl(subclip.assetId), durationSec: subclip.durationSec
+    }] : [])
   }));
   const productAssets: AdCompositionProps["productAssets"] = [];
   for (const image of project.brief.productImages ?? []) {
@@ -126,6 +136,10 @@ export async function prepareRenderProject(
   );
   await mkdir(outputDirectory, { recursive: true });
 
+  const narrationBeats = (project.narrationPlan?.beats ?? []).flatMap((beat) => beat.assetId && beat.actualDurationSec ? [{
+    id: beat.id, shotId: beat.shotId, text: beat.text, ...(beat.displayText ? { displayText: beat.displayText } : {}),
+    audioUrl: assetUrl(beat.assetId), durationSec: beat.actualDurationSec
+  }] : []);
   const inputProps = adCompositionPropsSchema.parse({
     projectId,
     width: size.width,
@@ -140,7 +154,8 @@ export async function prepareRenderProject(
     cta: project.strategy.cta,
     brandName: project.brief.productName,
     backgroundMusicUrl: project.backgroundMusicAssetId ? assetUrl(project.backgroundMusicAssetId) : undefined,
-    voiceoverUrl: project.narrationAssetId ? assetUrl(project.narrationAssetId) : undefined
+    voiceoverUrl: narrationBeats.length === 0 && project.narrationAssetId ? assetUrl(project.narrationAssetId) : undefined,
+    narrationBeats
   });
 
   return {
@@ -153,6 +168,13 @@ export async function prepareRenderProject(
 
 export function sumShotDurations(shots: Pick<StoryboardShot, "durationSec">[]) {
   return shots.reduce((sum, shot) => sum + shot.durationSec, 0);
+}
+
+export function resolveNarrationSubtitle(project: GenerationProject, shot: StoryboardShot) {
+  const beat = project.narrationPlan?.beats.find((item) => item.shotId === shot.id);
+  if (!project.narrationPlan) return shot.subtitle;
+  if (!beat?.subtitleEnabled) return "";
+  return beat.displayText ?? beat.text;
 }
 
 export function normalizeShotDurations(

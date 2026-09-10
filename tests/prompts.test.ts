@@ -57,7 +57,7 @@ describe("DeepSeek prompt pipeline", () => {
 
   it("keeps the current primary provider chain", () => {
     const combined = [strategyPrompt, storyboardPrompt, generationPrompt, scorePrompt].join("\n");
-    for (const model of ["deepseek-v4-flash", "qwen-image", "wan2.7-r2v", "remotion"]) {
+    for (const model of ["deepseek-v4-pro", "qwen-image", "wan2.7-i2v", "remotion"]) {
       expect(combined).toContain(model);
     }
     for (const forbidden of ["HappyHorse", "Kling", "Hailuo", "fal.ai", "Seedance", "manual-pippit"]) {

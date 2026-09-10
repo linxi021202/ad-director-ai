@@ -3,8 +3,10 @@
 const CNY_PER_USD = 7.2;
 
 const deepSeekRatesUsdPerMillionTokens: Record<string, { input: number; output: number }> = {
-  "deepseek-v4-flash": { input: 0.14, output: 0.28 },
-  "deepseek-chat": { input: 0.14, output: 0.28 }
+  // Conservative peak, cache-miss rates. Actual off-peak/cache-hit billing can be lower.
+  "deepseek-v4-flash": { input: 0.44, output: 1.32 },
+  "deepseek-v4-pro": { input: 1.32, output: 3.96 },
+  "deepseek-chat": { input: 0.44, output: 1.32 }
 };
 
 export function estimateDeepSeekCost(model: string, usage?: LLMTokenUsage): string | undefined {

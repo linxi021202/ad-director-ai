@@ -21,7 +21,7 @@ import {
 } from "@/lib/heroVideo";
 import { formatFileSize, resolveProductImageUrl } from "@/lib/productImages";
 import { clearProjectGenerationEvents } from "@/lib/projects/clientGenerationEvents";
-import type { AspectRatio, GenerationProject, StoryboardShot } from "@/lib/schemas/project";
+import type { AspectRatio, GenerationProject, ShotFrame, StoryboardShot } from "@/lib/schemas/project";
 import {
   DEFAULT_SHOT_DURATION_SEC,
   MAX_SHOT_COUNT,
@@ -65,7 +65,7 @@ type HeroVideoAssetResponse = {
     exists?: boolean;
     asset?: HeroVideoAssetClient | null;
     deleted?: boolean;
-    status?: "running" | "completed";
+    status?: "running" | "qa-review" | "needs-review" | "completed";
     eventId?: string;
     taskId?: string;
   } | null;
@@ -79,7 +79,7 @@ type GenerateImagesResponse = {
     eventId: string;
     generatedShots?: number;
     requestedShots?: number;
-    images: Array<Omit<KeyframeResult, "status">>;
+    images: Array<KeyframeResult>;
   } | null;
   error?: string | null;
 };
@@ -156,7 +156,7 @@ type HeroVideoState = {
 };
 
 type ProjectSectionId = "overview" | "keyframes" | "hero-shot" | "final";
-type ProjectStepStatus = "completed" | "running" | "pending" | "failed" | "fallback" | "blocked";
+type ProjectStepStatus = "completed" | "running" | "qa-review" | "needs-review" | "pending" | "failed" | "fallback" | "blocked";
 type ProjectWorkflowStep = {
   id: string;
   label: string;
@@ -216,7 +216,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   const targetDurationSec = displayProject.targetDurationSec ?? displayProject.brief.durationSec;
   const durationDiffersFromTarget = projectDurationSec !== targetDurationSec;
   const optimizedVideoPrompt = useMemo(() => buildOptimizedVideoPrompt(heroShot), [heroShot]);
-  const heroFrameUrl = keyframes[heroShot.id]?.localUrl || keyframes[heroShot.id]?.imageUrl || shotPlaceholderUrl(heroShot.index);
+  const heroKeyframe = primaryShotKeyframe(heroShot, keyframes);
+  const heroFrameUrl = heroKeyframe?.localUrl || heroKeyframe?.imageUrl || shotPlaceholderUrl(heroShot.index);
   const heroVideoStatus = getHeroVideoStatus({
     hasHeroShot: Boolean(displayProject.heroShotId && heroShot),
     promptReady: Boolean(heroShot),
@@ -227,8 +228,12 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     fallbackToKeyframe
   });
   const renderIsActive = Boolean(renderStatus && isActiveRenderState(renderStatus.status));
-  const completedKeyframeCount = displayProject.shots.filter((shot) => isUsableKeyframe(keyframes[shot.id])).length;
-  const missingKeyframeShots = displayProject.shots.filter((shot) => !isUsableKeyframe(keyframes[shot.id]));
+  const totalKeyframeCount = displayProject.shots.reduce((sum, shot) => sum + Math.max(1, shot.frames?.length ?? 0), 0);
+  const completedKeyframeCount = displayProject.shots.reduce((sum, shot) => sum + (shot.frames?.length
+    ? shot.frames.filter((frame) => isUsableKeyframe(keyframes[frame.id])).length
+    : Number(isUsableKeyframe(keyframes[shot.id]))), 0);
+  const allKeyframesReady = completedKeyframeCount === displayProject.shots.length;
+  const missingKeyframeShots = displayProject.shots.filter((shot) => !isShotKeyframesComplete(shot, keyframes));
   const productMediaUrl = resolveProductImageUrl(
     (displayProject.brief.productImages ?? []).find((image) => image.role === "main-product")
       ?? displayProject.brief.productImages?.[0]
@@ -302,7 +307,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     const event = [...(project.generationEvents ?? [])].reverse().find((item) =>
       item.provider === "qwen-image" &&
       item.action === "生成关键帧批次" &&
-      ["queued", "running"].includes(item.status)
+      ["queued", "running", "qa-review"].includes(item.status)
     );
     if (!event) return;
 
@@ -320,7 +325,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       setKeyframes((current) => {
         const next = { ...current };
         completed.images.forEach((image) => {
-          next[image.shotId] = { ...image, status: image.fallbackUsed ? "failed" : "ready" };
+          next[keyframeStorageKey(image)] = image;
         });
         return next;
       });
@@ -544,11 +549,11 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       setShotCountRegenerating(false);
     }
   }
-  async function generateImages(mode: "hero-only" | "all-shots", explicitShots?: StoryboardShot[]) {
+  async function generateImages(mode: "hero-only" | "all-shots", explicitShots?: StoryboardShot[], frameIds?: string[]) {
     setImageBatchError(null);
     setActiveBatch(mode);
     const targetShots = explicitShots ?? (mode === "hero-only" ? [heroShot] : displayProject.shots);
-    markShotsLoading(targetShots);
+    markShotsLoading(targetShots, frameIds);
 
     try {
       await resetGenerationLogForNewRun();
@@ -561,6 +566,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           mode,
           aspectRatio: displayProject.brief.aspectRatio,
           productImages: displayProject.brief.productImages ?? []
+          ,...(frameIds?.length ? { frameIds } : {})
         })
       });
       const payload = await readClientApiResponse<NonNullable<GenerateImagesResponse["data"]>>(response);
@@ -575,7 +581,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       setKeyframes((current) => {
         const next = { ...current };
         completed.images.forEach((image) => {
-          next[image.shotId] = { ...image, status: image.fallbackUsed ? "failed" : "ready" };
+          next[keyframeStorageKey(image)] = image;
         });
         return next;
       });
@@ -583,33 +589,35 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     } catch (error) {
       const message = error instanceof Error ? error.message : "关键帧生成失败。";
       setImageBatchError(message);
-      markShotsFailed(targetShots, message);
+      markShotsFailed(targetShots, message, frameIds);
     } finally {
       setActiveBatch(null);
     }
   }
 
-  function markShotsLoading(shots: StoryboardShot[]) {
+  function markShotsLoading(shots: StoryboardShot[], frameIds?: string[]) {
     setKeyframes((current) => {
       const next = { ...current };
       shots.forEach((shot) => {
-        next[shot.id] = { ...(next[shot.id] ?? { shotId: shot.id }), status: "loading" };
+        const ids = (shot.frames?.map((frame) => frame.id) ?? [shot.id]).filter((id) => !frameIds || frameIds.includes(id));
+        ids.forEach((frameId) => { next[frameId] = { ...(next[frameId] ?? { shotId: shot.id, frameId }), status: "loading" }; });
       });
       return next;
     });
   }
 
-  function markShotsFailed(shots: StoryboardShot[], reason: string) {
+  function markShotsFailed(shots: StoryboardShot[], reason: string, frameIds?: string[]) {
     setKeyframes((current) => {
       const next = { ...current };
       shots.forEach((shot) => {
-        next[shot.id] = {
-          ...(next[shot.id] ?? { shotId: shot.id }),
+        const ids = (shot.frames?.map((frame) => frame.id) ?? [shot.id]).filter((id) => !frameIds || frameIds.includes(id));
+        ids.forEach((frameId) => { next[frameId] = {
+          ...(next[frameId] ?? { shotId: shot.id, frameId }),
           status: "failed",
           fallbackUsed: true,
           fallbackReason: reason,
           imageUrl: shotPlaceholderUrl(shot.index)
-        };
+        }; });
       });
       return next;
     });
@@ -652,12 +660,13 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     setFallbackToKeyframe(false);
 
     try {
-      const heroReferenceUrl = keyframes[heroShot.id]?.localUrl || keyframes[heroShot.id]?.imageUrl;
+      const heroReference = primaryShotKeyframe(heroShot, keyframes);
+      const heroReferenceUrl = heroReference?.localUrl || heroReference?.imageUrl;
       if (!heroReferenceUrl) {
-        throw new Error("Wan 2.7 多参考生成需要当前主镜头关键帧。请先重新生成当前主镜头关键帧。");
+        throw new Error("Wan 2.7 I2V 需要当前主镜头关键帧作为唯一首帧。请先重新生成当前主镜头关键帧。");
       }
       if (!(displayProject.brief.productImages ?? []).some((image) => image.role !== "logo" && (image.localUrl || image.remoteUrl || image.url))) {
-        throw new Error("Wan 2.7 多参考生成需要至少一张已保存的真实产品图。请先返回生成页上传产品主图。");
+        throw new Error("生成 Wan 2.7 I2V 首帧前需要至少一张已保存的真实产品图。请先返回生成页上传产品主图。");
       }
       await resetGenerationLogForNewRun();
       const response = await fetch(`/api/projects/${encodeURIComponent(displayProject.id)}/wan-video`, {
@@ -965,7 +974,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
         <section id="project-keyframes" data-project-section="keyframes" className="project-section-v4 keyframe-section-v4" aria-labelledby="project-keyframes-title">
           <header className="project-section-heading-v4">
-            <div><small>关键帧</small><h2 id="project-keyframes-title">{displayProject.shots.length} 镜头关键帧 · 共 {projectDurationSec} 秒</h2><p>已完成 {completedKeyframeCount} / {displayProject.shots.length}</p></div>
+            <div><small>关键帧</small><h2 id="project-keyframes-title">{displayProject.shots.length} 镜头 · {totalKeyframeCount} 张独立帧 · 共 {projectDurationSec} 秒</h2><p>已完成 {completedKeyframeCount} / {totalKeyframeCount} 帧</p></div>
             <div className="project-section-heading-v4__actions">
               <button type="button" className="project-button-v4 project-button-v4--ghost" onClick={() => { setRequestedShotCount(Math.max(MIN_SHOT_COUNT, Math.min(MAX_SHOT_COUNT, displayProject.shots.length))); setShotCountDialogOpen(true); }}>调整分镜数量</button>
               {missingKeyframeShots.length > 0 ? <button type="button" className="project-button-v4 project-button-v4--ai" disabled={activeBatch !== null} onClick={() => void generateImages("all-shots", missingKeyframeShots)}>生成缺失关键帧</button> : null}
@@ -979,9 +988,10 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
                 key={shot.id}
                 shot={shot}
                 aspectRatio={displayProject.brief.aspectRatio}
-                keyframe={keyframes[shot.id]}
+                keyframes={shotKeyframes(shot, keyframes)}
                 isHeroShot={Boolean(displayProject.heroShotId) && shot.id === heroShot.id}
-                onGenerate={() => void generateSingleShot(shot)}
+                onGenerate={(frameId) => void generateSingleShot(shot, frameId)}
+                onToggleLock={(frame) => void toggleFrameLock(shot, frame)}
                 onSetHero={() => void handleSetHeroShot(shot)}
                 onDurationChange={(duration) => void handleShotDurationChange(shot, duration)}
                 durationSaving={durationSavingShotId === shot.id}
@@ -1014,7 +1024,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
             <article className="hero-workflow-v4">
               <div className="hero-status-v4"><i aria-hidden="true" /><div><span>广告视频状态</span><strong>{heroStatusLabel(heroVideoStatus)}</strong><p>{heroStatusMessage(heroVideoStatus)}</p></div></div>
-              <div className="hero-manual-copy-v4"><strong>Wan 2.7 多参考生成</strong><p>复用百炼 API Key，以当前关键帧为首帧，并使用已保存的真实产品图锁定产品外观。</p></div>
+              <div className="hero-manual-copy-v4"><strong>Wan 2.7 单首帧生成</strong><p>真实产品图已融合进当前关键帧；Wan 只接收这一张完整首帧，避免拼贴和分栏画面。</p></div>
 
               <div className="hero-prompts-v4">
                 <PromptSummary title="中文视频提示词" body={optimizedVideoPrompt} copied={copiedPrompt === "optimized"} onCopy={() => void copyPrompt("optimized", optimizedVideoPrompt)} />
@@ -1061,11 +1071,11 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
               )}
 
               <div className="render-control-v4__actions">
-                <button type="button" className={`project-button-v4 ${heroVideo ? "project-button-v4--primary" : "project-button-v4--ai"}`} disabled={!heroVideo || renderIsActive} aria-describedby={!heroVideo ? "render-blocked-reason" : undefined} onClick={() => void startFinalRender()}>{renderIsActive ? "成片生成中" : renderStatus?.status === "failed" ? "重新生成成片" : "生成最终成片"}</button>
+                <button type="button" className={`project-button-v4 ${heroVideo && allKeyframesReady ? "project-button-v4--primary" : "project-button-v4--ai"}`} disabled={!heroVideo || !allKeyframesReady || renderIsActive} aria-describedby={!heroVideo || !allKeyframesReady ? "render-blocked-reason" : undefined} onClick={() => void startFinalRender()}>{renderIsActive ? "成片生成中" : renderStatus?.status === "failed" ? "重新生成成片" : "生成最终成片"}</button>
                 {renderIsActive ? <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={() => void cancelFinalRender()}>取消任务</button> : null}
                 {finalVideo ? <Link className="project-button-v4 project-button-v4--secondary" href={finalVideo.downloadUrl}>下载 MP4</Link> : null}
               </div>
-              {!heroVideo ? <p id="render-blocked-reason" className="render-blocked-v4">生成或导入广告视频后即可生成最终成片。</p> : null}
+              {!heroVideo || !allKeyframesReady ? <p id="render-blocked-reason" className="render-blocked-v4">{!heroVideo ? "生成或导入广告视频后即可生成最终成片。" : "所有关键帧通过一致性检查后才可生成最终成片。"}</p> : null}
               {renderStatus ? <RenderProgress status={renderStatus} /> : null}
               {renderStatus?.warningMessage ? <p className="project-notice-v4 is-warning">{renderStatus.warningMessage}</p> : null}
               {renderError ? <p className="project-notice-v4 is-warning" role="alert">{renderError}</p> : null}
@@ -1120,7 +1130,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       ) : null}
       <ShotDetailsSheet
         shot={detailsShot}
-        keyframe={detailsShot ? keyframes[detailsShot.id] : undefined}
+        keyframe={detailsShot ? primaryShotKeyframe(detailsShot, keyframes) : undefined}
+        project={displayProject}
         initialTab={detailsTab}
         onClose={() => void closeShotDetails()}
         onUpdateShot={updateShot}
@@ -1128,8 +1139,17 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     </main>
   );
 
-  async function generateSingleShot(shot: StoryboardShot) {
-    await generateImages("all-shots", [shot]);
+  async function generateSingleShot(shot: StoryboardShot, frameId?: string) {
+    await generateImages("all-shots", [shot], frameId ? [frameId] : undefined);
+  }
+
+  async function toggleFrameLock(shot: StoryboardShot, frame: ShotFrame) {
+    const frames = (shot.frames ?? []).map((item) => item.id === frame.id ? { ...item, isLocked: !item.isLocked } : item);
+    updateShot(shot.id, { frames });
+    await fetch(`/api/projects/${encodeURIComponent(displayProject.id)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch: { shots: displayProject.shots.map((item) => item.id === shot.id ? { ...item, frames } : item) } })
+    }).catch(() => undefined);
   }
 }
 
@@ -1179,12 +1199,12 @@ async function pollProjectWanVideoUntilComplete(
 
     const result = await readClientApiResponse<NonNullable<HeroVideoAssetResponse["data"]>>(response);
     if (result.success && result.data?.asset) return result.data;
-    if (result.success && result.data?.status === "running") {
+    if (result.success && (result.data?.status === "running" || result.data?.status === "qa-review")) {
       consecutiveTransportErrors = 0;
       continue;
     }
 
-    const retryable = [502, 503, 504].includes(response.status) || result.data?.status === "running";
+    const retryable = [502, 503, 504].includes(response.status) || result.data?.status === "running" || result.data?.status === "qa-review";
     if (retryable && consecutiveTransportErrors < 8) {
       consecutiveTransportErrors += 1;
       continue;
@@ -1293,30 +1313,50 @@ function ProjectWorkflow({ steps }: { steps: ProjectWorkflowStep[] }) {
 
 function ShotCard({
   shot,
-  keyframe,
+  keyframes,
   aspectRatio,
   isHeroShot,
   onGenerate,
   onSetHero,
   onDurationChange,
   durationSaving,
-  onOpenDetails
+  onOpenDetails,
+  onToggleLock
 }: {
   shot: StoryboardShot;
-  keyframe?: KeyframeResult;
+  keyframes: KeyframeResult[];
   aspectRatio: AspectRatio;
   isHeroShot: boolean;
-  onGenerate: () => void;
+  onGenerate: (frameId?: string) => void;
   onSetHero: () => void;
   onDurationChange: (duration: number) => void;
   durationSaving: boolean;
   onOpenDetails: (tab?: ShotDetailsTab) => void;
+  onToggleLock: (frame: ShotFrame) => void;
 }) {
+  const frames = shot.frames ?? [];
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const safeIndex = Math.min(Math.max(0, currentIndex), Math.max(0, frames.length - 1));
+  const currentFrame = frames[safeIndex];
+  const keyframe = currentFrame
+    ? keyframes.find((item) => item.frameId === currentFrame.id)
+    : keyframes[0];
   const imageUrl = keyframe?.localUrl || keyframe?.imageUrl || shotPlaceholderUrl(shot.index);
   const status = keyframeCardStatus(keyframe);
-  const isLoading = keyframe?.status === "loading";
+  const isLoading = keyframe?.status === "loading" || keyframe?.status === "generated" || keyframe?.status === "qa-review";
+  const frameCount = Math.max(1, frames.length);
+  const goPrevious = () => setCurrentIndex((value) => (value - 1 + frameCount) % frameCount);
+  const goNext = () => setCurrentIndex((value) => (value + 1) % frameCount);
   return (
-    <article className={`keyframe-card-v4${isHeroShot ? " is-hero" : ""}`}>
+    <article
+      className={`keyframe-card-v4${isHeroShot ? " is-hero" : ""}`}
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft") { event.preventDefault(); goPrevious(); }
+        if (event.key === "ArrowRight") { event.preventDefault(); goNext(); }
+      }}
+      aria-label={`镜头 ${shot.index} 帧轮播`}
+    >
       <div className="keyframe-card-v4__media">
         <AdaptiveMediaFrame
           aspectRatio={aspectRatio}
@@ -1325,29 +1365,36 @@ function ShotCard({
           src={imageUrl}
           fit="contain"
           showBlurredBackdrop={false}
-          alt={`镜头 ${shot.index}：${shot.subtitle}`}
+          alt={`镜头 ${shot.index} 第 ${safeIndex + 1} 帧：${currentFrame?.description ?? shot.subtitle}`}
         />
         <div className="keyframe-card-v4__badges">
           {isHeroShot ? <span className="is-hero">当前主镜头</span> : null}
+          {shot.exactProductShot ? <span>精确产品镜头</span> : shot.containsProduct ? <span>产品互动镜头</span> : null}
           <span className={`is-${status}`}>{keyframeStatusLabel(status)}</span>
         </div>
+        {frameCount > 1 ? <div className="keyframe-card-v4__carousel" aria-label="帧导航">
+          <button type="button" onClick={goPrevious} aria-label="上一帧" title="上一帧">‹</button>
+          <span>{safeIndex + 1}/{frameCount}</span>
+          <button type="button" onClick={goNext} aria-label="下一帧" title="下一帧">›</button>
+        </div> : null}
       </div>
 
       <div className="keyframe-card-v4__content">
         <header>
-          <div><span>镜头 {shot.index}</span><ShotDurationControl value={shot.durationSec} disabled={durationSaving} onChange={onDurationChange} /></div>
+          <div><span>镜头 {shot.index}</span>{currentFrame ? <em>{shotFrameRoleLabel(currentFrame.role)}</em> : null}<ShotDurationControl value={shot.durationSec} disabled={durationSaving} onChange={onDurationChange} /></div>
           <button type="button" className="keyframe-card-v4__details" onClick={() => onOpenDetails()}>生成详情</button>
         </header>
         <h3>{shot.subtitle}</h3>
-        <p>{shot.visualDescription}</p>
+        <p>{currentFrame?.description ?? shot.visualDescription}</p>
         <div className="keyframe-card-v4__pills" aria-label="镜头参数">
           {[shot.cameraAngle, shot.cameraMovement, aspectRatio].filter(Boolean).slice(0, 3).map((value) => <span key={value}>{value}</span>)}
         </div>
         {keyframe?.fallbackUsed ? <span className="keyframe-card-v4__fallback"><i aria-hidden="true" />已使用本地降级图</span> : null}
         <div className="keyframe-card-v4__actions">
-          <button type="button" className="project-button-v4 project-button-v4--ai" disabled={isLoading} aria-busy={isLoading} onClick={onGenerate}>
-            {isLoading ? "生成中" : keyframe?.status === "ready" && !keyframe.fallbackUsed ? "重新生成" : "生成关键帧"}
+          <button type="button" className="project-button-v4 project-button-v4--ai" disabled={isLoading || currentFrame?.isLocked} aria-busy={isLoading} onClick={() => onGenerate(currentFrame?.id)}>
+            {isLoading ? "生成中" : currentFrame?.isLocked ? "当前帧已锁定" : keyframe?.status === "ready" && !keyframe.fallbackUsed ? "重生当前帧" : "生成当前帧"}
           </button>
+          {currentFrame ? <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={() => onToggleLock(currentFrame)}>{currentFrame.isLocked ? "解锁当前帧" : "锁定当前帧"}</button> : null}
           {isHeroShot
             ? <span className="keyframe-card-v4__hero-state">已选为主镜头</span>
             : <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={onSetHero}>设为主镜头</button>}
@@ -1383,10 +1430,34 @@ function isUsableKeyframe(keyframe?: KeyframeResult) {
   );
 }
 
-type KeyframeCardStatus = "completed" | "running" | "pending" | "fallback";
+function keyframeStorageKey(keyframe: Pick<KeyframeResult, "shotId" | "frameId">) {
+  return keyframe.frameId ?? keyframe.shotId;
+}
+
+function shotKeyframes(shot: StoryboardShot, keyframes: Record<string, KeyframeResult>) {
+  if (!shot.frames?.length) return keyframes[shot.id] ? [keyframes[shot.id]] : [];
+  return shot.frames.flatMap((frame) => keyframes[frame.id] ? [keyframes[frame.id]!] : []);
+}
+
+function primaryShotKeyframe(shot: StoryboardShot, keyframes: Record<string, KeyframeResult>) {
+  return shotKeyframes(shot, keyframes).find(isUsableKeyframe) ?? shotKeyframes(shot, keyframes)[0];
+}
+
+function isShotKeyframesComplete(shot: StoryboardShot, keyframes: Record<string, KeyframeResult>) {
+  if (!shot.frames?.length) return isUsableKeyframe(keyframes[shot.id]);
+  return shot.frames.every((frame) => isUsableKeyframe(keyframes[frame.id]));
+}
+
+function shotFrameRoleLabel(role: ShotFrame["role"]) {
+  return ({ start: "起始", setup: "铺垫", action: "动作", product: "产品", reaction: "反应", transition: "转场", end: "结果" } as const)[role];
+}
+
+type KeyframeCardStatus = "completed" | "running" | "qa-review" | "needs-review" | "pending" | "fallback";
 
 function keyframeCardStatus(keyframe?: KeyframeResult): KeyframeCardStatus {
   if (keyframe?.status === "loading") return "running";
+  if (keyframe?.status === "generated" || keyframe?.status === "qa-review") return "qa-review";
+  if (keyframe?.status === "needs-review") return "needs-review";
   if (isUsableKeyframe(keyframe)) return "completed";
   if (keyframe?.status === "failed" || keyframe?.fallbackUsed) return "fallback";
   return "pending";
@@ -1394,8 +1465,10 @@ function keyframeCardStatus(keyframe?: KeyframeResult): KeyframeCardStatus {
 
 function keyframeStatusLabel(status: KeyframeCardStatus) {
   const labels: Record<KeyframeCardStatus, string> = {
-    completed: "已生成",
+    completed: "可用",
     running: "生成中",
+    "qa-review": "一致性检查",
+    "needs-review": "需人工确认",
     pending: "待生成",
     fallback: "已降级"
   };
@@ -1406,6 +1479,8 @@ function workflowStatusMark(status: ProjectStepStatus) {
   const marks: Record<ProjectStepStatus, string> = {
     completed: "✓",
     running: "•",
+    "qa-review": "•",
+    "needs-review": "!",
     pending: "○",
     failed: "!",
     fallback: "↘",
@@ -1418,6 +1493,8 @@ function workflowStatusLabel(status: ProjectStepStatus) {
   const labels: Record<ProjectStepStatus, string> = {
     completed: "已完成",
     running: "进行中",
+    "qa-review": "一致性检查",
+    "needs-review": "需人工确认",
     pending: "待开始",
     failed: "失败",
     fallback: "已降级",
@@ -1427,7 +1504,7 @@ function workflowStatusLabel(status: ProjectStepStatus) {
 }
 
 function normalizeWorkflowStatus(status: string | undefined): ProjectStepStatus {
-  if (status === "completed" || status === "running" || status === "failed" || status === "fallback" || status === "blocked") return status;
+  if (status === "completed" || status === "running" || status === "qa-review" || status === "needs-review" || status === "failed" || status === "fallback" || status === "blocked") return status;
   return "pending";
 }
 
@@ -1454,8 +1531,8 @@ function buildProjectSteps({
   renderStatus: RenderStatusState | null;
   finalVideo: { outputUrl: string; downloadUrl: string; sizeBytes: number } | null;
 }): ProjectWorkflowStep[] {
-  const completedFrames = project.shots.filter((shot) => isUsableKeyframe(keyframes[shot.id])).length;
-  const fallbackFrames = project.shots.filter((shot) => keyframes[shot.id]?.fallbackUsed || keyframes[shot.id]?.status === "failed").length;
+  const completedFrames = project.shots.filter((shot) => isShotKeyframesComplete(shot, keyframes)).length;
+  const fallbackFrames = project.shots.filter((shot) => shotKeyframes(shot, keyframes).some((frame) => frame.fallbackUsed || frame.status === "failed")).length;
   const keyframeStatus: ProjectStepStatus = activeBatch
     ? "running"
     : completedFrames === project.shots.length
@@ -1569,7 +1646,7 @@ function heroStatusMessage(status: ReturnType<typeof getHeroVideoStatus>) {
 }
 
 function routeNodes() {
-  return [{ name: "DeepSeek", detail: "策略与提示词", tone: "blue" }, { name: "Qwen-Image", detail: "关键帧生成", tone: "violet" }, { name: "Wan 2.7", detail: "多参考视频", tone: "yellow" }, { name: "Remotion", detail: "成片合成", tone: "green" }] as const;
+  return [{ name: "DeepSeek", detail: "策略与提示词", tone: "blue" }, { name: "Qwen-Image", detail: "连续性关键帧", tone: "violet" }, { name: "Wan 2.7", detail: "单首帧视频", tone: "yellow" }, { name: "Remotion", detail: "成片合成", tone: "green" }] as const;
 }
 
 function finalRenderCopy(status: RenderStatusState | null, heroVideo: HeroVideoState | null, durationSec: number, shotCount: number) {
@@ -1603,8 +1680,9 @@ function shotPlaceholderUrl(index: number) {
 
 function projectKeyframesRecord(project: GenerationProject): Record<string, KeyframeResult> {
   return (project.keyframes ?? []).reduce<Record<string, KeyframeResult>>((acc, frame) => {
-    acc[frame.shotId] = {
+    acc[frame.frameId ?? frame.shotId] = {
       shotId: frame.shotId,
+      frameId: frame.frameId,
       imageUrl: frame.imageUrl,
       localUrl: frame.localUrl,
       provider: frame.provider,
@@ -1614,7 +1692,8 @@ function projectKeyframesRecord(project: GenerationProject): Record<string, Keyf
       cacheStatus: frame.cacheStatus,
       fallbackUsed: frame.fallbackUsed,
       fallbackReason: frame.fallbackReason,
-      status: frame.status === "ready" ? "ready" : frame.status === "pending" ? "loading" : "failed"
+      status: frame.status === "ready" ? "ready" : frame.status === "generated" ? "generated" : ["text-qa", "product-qa", "character-qa", "scene-qa", "qa-review"].includes(frame.status) ? "qa-review" : frame.status === "needs-review" ? "needs-review" : frame.status === "pending" ? "loading" : "failed",
+      qaResult: project.keyframeQAResults?.filter((item) => item.shotId === frame.shotId && item.frameId === frame.frameId).sort((a, b) => b.attempt - a.attempt)[0] ?? null
     };
     return acc;
   }, {});

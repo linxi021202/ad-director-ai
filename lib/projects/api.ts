@@ -13,6 +13,7 @@ import {
   requireOwnedAnonymousProject,
   type AnonymousProjectRecord
 } from "./anonymousProjectStore";
+import { StageGateError } from "@/lib/workflow/stageGates";
 
 export const PROJECT_NOT_FOUND_BODY = {
   error: { code: "PROJECT_NOT_FOUND", message: "项目不存在或已失效。" }
@@ -68,6 +69,15 @@ export function projectStoreErrorResponse(error: unknown): NextResponse | null {
       error: { code: "INVALID_PROJECT_REQUEST", message: "项目请求参数无效。" }
     }, {
       status: 400,
+      headers: { "content-type": "application/json; charset=utf-8" }
+    });
+  }
+  if (error instanceof StageGateError) {
+    return NextResponse.json({
+      error: { code: error.code, message: error.message },
+      ...(error.impact ? { data: { impact: error.impact } } : {})
+    }, {
+      status: error.code === "LOCKED_RESOURCE_VERSION_REQUIRED" ? 409 : 400,
       headers: { "content-type": "application/json; charset=utf-8" }
     });
   }

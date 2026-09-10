@@ -14,7 +14,7 @@ export function HeroVideoShot({ src, subtitle, keywords, muted = false }: { src:
         <SafeMedia src={src} type="video" fit="contain" muted={muted} />
       </AbsoluteFill>
       <KeywordOverlay keywords={keywords} />
-      <Subtitle text={subtitle} />
+      {subtitle ? <Subtitle text={subtitle} /> : null}
     </AbsoluteFill>
   );
 }

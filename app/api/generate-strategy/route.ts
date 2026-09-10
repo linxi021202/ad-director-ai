@@ -14,6 +14,7 @@ import { generateStrategy, selectProviderModel } from "../../../lib/providers/pr
 import { productBriefSchema } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, MAX_SHOT_DURATION_SEC, MIN_SHOT_COUNT, MIN_SHOT_DURATION_SEC, resolveShotPlan } from "../../../lib/video/shotConfig";
+import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
 
     projectId = parsed.data.projectId;
     const owned = await requireOwnedAnonymousProject(session.id, projectId);
+    const productSpec = await resolveProjectProductVisualSpec({ sessionId: session.id, project: owned.project });
     const timeline = resolveShotPlan(
       parsed.data.requestedShotCount ?? owned.project.shotCount,
       parsed.data.shotDurationPlan ?? owned.project.shots.map((shot) => shot.durationSec),
@@ -53,7 +55,8 @@ export async function POST(request: Request) {
       sessionId: session.id,
       requestedShotCount: timeline.shotCount,
       targetDurationSec: timeline.targetDurationSec,
-      shotDurationPlan: timeline.shotDurationPlan
+      shotDurationPlan: timeline.shotDurationPlan,
+      productVisualSpec: productSpec.spec
     });
     if (result.data) {
       const diagnostic = result.fallbackUsed || result.error
@@ -65,6 +68,7 @@ export async function POST(request: Request) {
         brief: parsed.data.brief,
         strategy: result.data,
         creativeBible,
+        ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
         aspectRatio: parsed.data.brief.aspectRatio,
         shotCount: timeline.shotCount,
         targetDurationSec: timeline.targetDurationSec,

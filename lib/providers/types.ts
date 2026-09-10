@@ -5,6 +5,7 @@ import type {
   GenerationProject,
   ProductBrief,
   ProductImage,
+  ProductVisualSpec,
   StoryboardShot,
   TaskType
 } from "../schemas/project";
@@ -43,6 +44,10 @@ export type ImageGenerationOptions = {
   qualityMode?: QualityMode;
   sessionId?: string;
   productImage?: ProductImage;
+  continuityImageAssetId?: string;
+  masterReferenceAssetIds?: string[];
+  masterReferenceAssetIdsByShot?: Record<string, string[]>;
+  productVisualSpec?: ProductVisualSpec;
 };
 
 export type VideoGenerationOptions = {
@@ -71,6 +76,7 @@ export type ImageGenerationResult = {
 
 export type ShotImageGenerationResult = {
   shotId: string;
+  frameId?: string;
   imageUrl: string;
   assetId?: string;
   localUrl?: string;
@@ -85,6 +91,7 @@ export type ShotImageGenerationResult = {
   fallbackReason?: string;
   costEstimate?: string;
   referenceUsed?: boolean;
+  errorCode?: string;
   error?: string | null;
 };
 
@@ -97,6 +104,7 @@ export type VideoGenerationResult = {
 export type HeroVideoFromImageInput = {
   imageUrl: string;
   heroImageAssetId?: string;
+  lastImageAssetId?: string;
   productImages?: ProductImage[];
   prompt: string;
   durationSec: number;
@@ -158,6 +166,7 @@ export type ProviderRequestContext = {
   shotDurationPlan?: number[];
   providerTimeoutMs?: number;
   maxProviderAttempts?: number;
+  productVisualSpec?: ProductVisualSpec;
 };
 
 export type TextProvider = {

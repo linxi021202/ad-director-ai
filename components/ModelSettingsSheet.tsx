@@ -236,7 +236,7 @@ export function ModelSettingsSheet({
           })}
 
           <section className="model-provider-card model-provider-local">
-            <div className="model-provider-title"><div><h3>Wan 2.7</h3><p>多参考广告视频生成</p></div><span className={`model-status-dot${status?.wan.apiAvailable ? " is-configured" : ""}`} /></div>
+            <div className="model-provider-title"><div><h3>Wan 2.7</h3><p>单首帧广告视频生成</p></div><span className={`model-status-dot${status?.wan.apiAvailable ? " is-configured" : ""}`} /></div>
             <div className="model-local-status">{status?.wan.apiAvailable ? "已启用 · 共享百炼 API Key" : "共享百炼 API Key · 当前未就绪"}</div>
           </section>
 

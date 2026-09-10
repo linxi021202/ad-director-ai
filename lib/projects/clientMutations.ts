@@ -9,6 +9,7 @@ export type ProjectBriefDraft = {
   brief: ProductBrief;
   shotCount: number;
   targetDurationSec: number;
+  createVersion?: boolean;
 };
 
 type ProjectApiPayload = {
@@ -35,7 +36,8 @@ export async function saveProjectBriefWithConflictRetry(
         saveBrief: {
           brief: { ...draft.brief, durationSec: draft.targetDurationSec },
           shotCount: draft.shotCount,
-          targetDurationSec: draft.targetDurationSec
+          targetDurationSec: draft.targetDurationSec,
+          ...(draft.createVersion ? { createVersion: true } : {})
         }
       })
     });

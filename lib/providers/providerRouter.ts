@@ -43,7 +43,7 @@ function getEnvFlag(name: string): boolean {
 }
 
 function getDeepSeekModel(): string {
-  return process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+  return process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
 }
 
 function getQwenImageModel(): string {
@@ -114,9 +114,9 @@ export function selectProviderModel(input: ProviderRouterInput): ProviderModelSe
       return {
         taskType: "video",
         provider: "wan",
-        model: process.env.WAN_VIDEO_MODEL || "wan2.7-r2v",
+        model: process.env.WAN_VIDEO_MODEL || "wan2.7-i2v",
         backupModel: "qwen-image + remotion-motion",
-        reason: "Wan 2.7 R2V 通过百炼接收当前关键帧和真实产品参考图，并与 Qwen-Image 共用当前会话的 DashScope API Key。",
+        reason: "Wan 2.7 I2V 通过百炼接收一张已融合真实产品的完整关键帧，并与 Qwen-Image 共用当前会话的 DashScope API Key。",
         costEstimate: 12,
         latencyEstimate: "provider-async",
         fallbackMode: "If Wan 2.7 video is unavailable, use Qwen-Image keyframes plus Remotion image motion."
@@ -346,19 +346,21 @@ export async function generateBatchShotImages(
   options: ImageGenerationOptions = { aspectRatio: "9:16", hasChineseText: true },
   onResult?: (result: ShotImageGenerationResult) => void | Promise<void>
 ): Promise<ShotImageGenerationResult[]> {
-  const results = new Array<ShotImageGenerationResult>(shots.length);
-  let cursor = 0;
-  const workerCount = shouldUseRealImage() ? Math.min(2, shots.length) : shots.length;
-
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (cursor < shots.length) {
-      const index = cursor;
-      cursor += 1;
-      const result = await generateShotImage(projectId, shots[index]!, options);
-      results[index] = result;
-      await onResult?.(result);
-    }
-  }));
+  const results: ShotImageGenerationResult[] = [];
+  const previousAssetByGroup = new Map<string, string>();
+  for (const shot of shots) {
+    const groupId = shot.continuityGroupId ?? shot.sceneGroupId;
+    const result = await generateShotImage(projectId, shot, {
+      ...options,
+      masterReferenceAssetIds: options.masterReferenceAssetIdsByShot?.[shot.id] ?? options.masterReferenceAssetIds,
+      continuityImageAssetId: shouldUseRealImage() && groupId
+        ? previousAssetByGroup.get(groupId) ?? options.continuityImageAssetId
+        : undefined
+    });
+    results.push(result);
+    if (groupId && result.assetId && !result.fallbackUsed) previousAssetByGroup.set(groupId, result.assetId);
+    await onResult?.(result);
+  }
 
   return results;
 }

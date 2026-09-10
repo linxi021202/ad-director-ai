@@ -18,8 +18,8 @@ function getAITraceStatus(): AITraceStatus {
   return {
     mode: process.env.AI_MODE === "real" ? "real" : "mock",
     realTextEnabled,
-    textModel: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-    videoModel: process.env.WAN_VIDEO_MODEL || "wan2.7-r2v",
+    textModel: process.env.DEEPSEEK_MODEL || "deepseek-v4-pro",
+    videoModel: process.env.WAN_VIDEO_MODEL || "wan2.7-i2v",
     manualVideoAssetPath: assetPath,
     manualVideoAssetExists: hasPublicAsset(assetPath),
     limits: {

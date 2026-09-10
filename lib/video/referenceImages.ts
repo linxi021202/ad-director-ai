@@ -10,7 +10,7 @@ assertServerOnly("video reference image resolver");
 
 export type HappyHorseReferenceImage = {
   url: string;
-  role: "product" | "scene";
+  role: "product" | "scene" | "last-frame";
 };
 
 const MAX_REFERENCE_IMAGES = 9;
@@ -54,10 +54,11 @@ export async function resolveWanReferenceImages(input: {
   sessionId: string;
   projectId: string;
   heroImageAssetId?: string;
+  lastImageAssetId?: string;
   productImages?: ProductImage[];
   assetBaseUrl?: string;
 }): Promise<HappyHorseReferenceImage[]> {
-  if (!input.heroImageAssetId) throw new Error("Wan 2.7 R2V 需要当前主镜头关键帧作为首帧参考。");
+  if (!input.heroImageAssetId) throw new Error("Wan 2.7 I2V 需要当前主镜头关键帧作为唯一首帧。");
   const productAssetIds = [...(input.productImages ?? [])]
     .filter((image) => image.role !== "logo" && image.assetId)
     .sort((a, b) => Number(b.role === "main-product") - Number(a.role === "main-product"))
@@ -65,13 +66,24 @@ export async function resolveWanReferenceImages(input: {
     .map((image) => image.assetId!);
   if (productAssetIds.length === 0) throw new Error("产品图尚未保存为当前会话的私有资产。");
 
-  const references = [
+  const productReferences = productAssetIds.map((assetId) => ({ assetId, role: "product" as const }));
+  for (const reference of [
     { assetId: input.heroImageAssetId, role: "scene" as const },
-    ...productAssetIds.map((assetId) => ({ assetId, role: "product" as const }))
-  ];
-  for (const reference of references) {
+    ...productReferences
+  ]) {
     await validatePrivateImageAsset(input.sessionId, input.projectId, reference.assetId, reference.role);
   }
+
+  // The real product is already fused into the approved Qwen keyframe. Sending
+  // additional images to Wan can be interpreted as a collage or split screen,
+  // so I2V receives exactly one full-frame source image.
+  if (input.lastImageAssetId) {
+    await validatePrivateImageAsset(input.sessionId, input.projectId, input.lastImageAssetId, "scene");
+  }
+  const references = [
+    { assetId: input.heroImageAssetId, role: "scene" as const },
+    ...(input.lastImageAssetId ? [{ assetId: input.lastImageAssetId, role: "last-frame" as const }] : [])
+  ];
 
   if (input.assetBaseUrl && isExternallyReachableOrigin(input.assetBaseUrl)) {
     const token = await issueRenderAssetToken({
@@ -88,7 +100,7 @@ export async function resolveWanReferenceImages(input: {
   }
 
   return Promise.all(references.map(async (reference) => ({
-    url: await privateAssetDataUrl(input.sessionId, input.projectId, reference.assetId, reference.role),
+    url: await privateAssetDataUrl(input.sessionId, input.projectId, reference.assetId, reference.role === "last-frame" ? "scene" : reference.role),
     role: reference.role
   })));
 }

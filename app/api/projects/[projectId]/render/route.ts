@@ -12,6 +12,7 @@ import {
 } from "@/lib/render/renderManager";
 import { renderRequestSchema } from "@/lib/render/renderProject";
 import { isActiveRenderStatus } from "@/lib/render/renderStateStore";
+import { getInternalRenderOrigin } from "@/lib/render/internalOrigin";
 import { getAnonymousApiSession } from "@/lib/session/api";
 import { getProjectDurationSec } from "@/lib/video/durationConfig";
 
@@ -60,7 +61,7 @@ export async function POST(request: Request, context: RouteContext) {
         project: authorization.record.project
       },
       session.id,
-      new URL(request.url).origin
+      getInternalRenderOrigin()
     );
     await updateOwnedAnonymousProject(session.id, authorization.projectId, {
       status: "generating",

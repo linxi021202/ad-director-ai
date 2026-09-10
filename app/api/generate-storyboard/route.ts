@@ -12,9 +12,12 @@ import {
   updateOwnedAnonymousProject
 } from "../../../lib/projects/anonymousProjectStore";
 import { generateStoryboard, selectProviderModel } from "../../../lib/providers/providerRouter";
+import { generateNarrationPlan } from "../../../lib/providers/deepseekProvider";
+import { buildPartialNarrationPlan } from "../../../lib/audio/narrationPlan";
 import { adStrategySchema, productBriefSchema, type GenerationProject } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, MAX_SHOT_DURATION_SEC, MIN_SHOT_COUNT, MIN_SHOT_DURATION_SEC, resolveShotPlan } from "../../../lib/video/shotConfig";
+import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -40,6 +43,7 @@ export async function POST(request: Request) {
     }
     projectId = parsed.data.projectId;
     const owned = await requireOwnedAnonymousProject(session.id, projectId);
+    const productSpec = await resolveProjectProductVisualSpec({ sessionId: session.id, project: owned.project });
     const timeline = resolveShotPlan(
       parsed.data.requestedShotCount ?? owned.project.shotCount,
       parsed.data.shotDurationPlan ?? owned.project.shots.map((shot) => shot.durationSec),
@@ -59,6 +63,7 @@ export async function POST(request: Request) {
       requestedShotCount: timeline.shotCount,
       targetDurationSec: timeline.targetDurationSec,
       shotDurationPlan: timeline.shotDurationPlan,
+      productVisualSpec: productSpec.spec,
       ...(parsed.data.regenerateExisting ? { providerTimeoutMs: 20_000, maxProviderAttempts: 1 } : {})
     });
     let responseShots = result.data ?? [];
@@ -73,6 +78,7 @@ export async function POST(request: Request) {
       const current = await requireOwnedAnonymousProject(session.id, projectId);
       const updated = await updateOwnedAnonymousProject(session.id, projectId, {
         strategy: parsed.data.strategy,
+        ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
         targetDurationSec: timeline.targetDurationSec,
         brief: { ...parsed.data.brief, durationSec: timeline.targetDurationSec },
         workflowSteps: {
@@ -80,7 +86,13 @@ export async function POST(request: Request) {
           brief: "completed", strategy: "completed", storyboard: result.fallbackUsed ? "fallback" : "completed"
         }
       });
-      responseShots = updated.project.shots;
+      const narration = await generateNarrationPlan(updated.project.brief, updated.project.strategy, updated.project.shots, {
+        sessionId: session.id,
+        maxProviderAttempts: 1
+      });
+      const narrationPlan = narration.success && narration.data ? narration.data : buildPartialNarrationPlan(updated.project);
+      const withNarration = await updateOwnedAnonymousProject(session.id, projectId, { narrationPlan });
+      responseShots = withNarration.project.shots;
       const diagnostic = result.fallbackUsed || result.error
         ? diagnoseProviderFallback(result.fallbackReason ?? result.error)
         : null;
@@ -122,6 +134,7 @@ function collectTimelineAssetIds(project: GenerationProject): string[] {
     project.heroVideo?.assetId,
     project.finalVideo?.assetId,
     project.narrationAssetId,
+    ...(project.narrationPlan?.beats ?? []).map((beat) => beat.assetId),
     project.finalVideoAssetId
   ].filter((assetId): assetId is string => Boolean(assetId))));
 }

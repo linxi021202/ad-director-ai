@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { KeyframeResult } from "@/components/KeyframePreview";
-import type { StoryboardShot } from "@/lib/schemas/project";
+import type { GenerationProject, StoryboardShot } from "@/lib/schemas/project";
 
 export type ShotDetailsTab = "image" | "video" | "trace" | "cost" | "fallback";
 
 type ShotDetailsSheetProps = {
   shot: StoryboardShot | null;
   keyframe?: KeyframeResult;
+  project?: GenerationProject;
   initialTab?: ShotDetailsTab;
   onClose: () => void;
   onUpdateShot: (shotId: string, patch: Partial<StoryboardShot>) => void;
@@ -28,6 +29,7 @@ const tabs: Array<{ id: ShotDetailsTab; label: string }> = [
 export function ShotDetailsSheet({
   shot,
   keyframe,
+  project,
   initialTab = "image",
   onClose,
   onUpdateShot,
@@ -101,7 +103,7 @@ export function ShotDetailsSheet({
           {activeTab === "video" ? (
             <EditablePrompt title="中文视频提示词" value={shot.videoPromptCn} onChange={(value) => onUpdateShot(shot.id, { videoPromptCn: value })} />
           ) : null}
-          {activeTab === "trace" ? <TraceList shot={shot} keyframe={keyframe} /> : null}
+          {activeTab === "trace" ? <TraceList shot={shot} keyframe={keyframe} project={project} /> : null}
           {activeTab === "cost" ? (
             <div className="shot-details-sheet__metrics">
               <article><span>服务商</span><strong>{keyframe?.provider || "待调用"}</strong></article>
@@ -113,7 +115,7 @@ export function ShotDetailsSheet({
           {activeTab === "fallback" ? (
             <div className="shot-details-sheet__message">
               <span className={keyframe?.fallbackUsed ? "is-warning" : "is-success"} />
-              <div><strong>{keyframe?.fallbackUsed ? "已启用降级方案" : "当前未触发降级"}</strong><p>{keyframe?.fallbackReason || shot.fallbackPlan}</p></div>
+              <div><strong>{keyframe?.status === "needs-review" ? "视觉一致性检查未通过" : keyframe?.fallbackUsed ? "已启用降级方案" : "当前未触发降级"}</strong><p>{keyframe?.qaResult?.issues.join("；") || keyframe?.fallbackReason || shot.fallbackPlan}</p></div>
             </div>
           ) : null}
         </section>
@@ -129,13 +131,20 @@ function EditablePrompt({ title, value, onChange }: { title: string; value: stri
   return <label className="shot-details-sheet__prompt"><span>{title}</span><textarea value={value} onChange={(event) => onChange(event.target.value)} rows={8} /></label>;
 }
 
-function TraceList({ shot, keyframe }: { shot: StoryboardShot; keyframe?: KeyframeResult }) {
+function TraceList({ shot, keyframe, project }: { shot: StoryboardShot; keyframe?: KeyframeResult; project?: GenerationProject }) {
+  const qa = project?.keyframeQAResults?.filter((item) => item.shotId === shot.id).sort((a, b) => b.attempt - a.attempt)[0];
+  const characterMasters = project?.characterVisualSpecs?.filter((item) => shot.characterIds?.includes(item.id));
+  const sceneMaster = project?.sceneVisualSpecs?.find((item) => item.id === shot.sceneId);
   return (
     <dl className="shot-details-sheet__trace">
       <div><dt>推荐模型</dt><dd>{shot.recommendedModel}</dd></div>
       <div><dt>视频模式</dt><dd>{generationModeLabel(shot.generationMode)}</dd></div>
       <div><dt>连续性分组</dt><dd>{shot.continuityGroupId || "项目主线"}</dd></div>
-      <div><dt>长期参考</dt><dd>{shot.referenceImageAssetIds?.length ? `${shot.referenceImageAssetIds.length} 个已选参考` : "使用项目身份规则"}</dd></div>
+      <div><dt>产品参考</dt><dd>{shot.containsProduct ? project?.productVisualSpec ? `Product Master 已锁定 · ${shot.exactProductShot ? "精确产品镜头" : "产品互动镜头"}` : "缺少 Product Visual Spec" : "本镜头不含产品"}</dd></div>
+      <div><dt>产品规格</dt><dd>{project?.productVisualSpec ? `${project.productVisualSpec.containerType} · ${project.productVisualSpec.shape} · ${project.productVisualSpec.capStructure}` : "尚未提取"}</dd></div>
+      <div><dt>人物参考</dt><dd>{characterMasters?.length ? characterMasters.map((item) => `${item.id} ${item.locked ? "已锁定" : "待锁定"}`).join("、") : "本镜头无人像 Master"}</dd></div>
+      <div><dt>场景参考</dt><dd>{sceneMaster ? `${sceneMaster.name} ${sceneMaster.locked ? "已锁定" : "待锁定"}` : "使用项目场景规则"}</dd></div>
+      <div><dt>QA 结果</dt><dd>{qa ? `${qa.overallPassed ? "通过" : "未通过"} · 第 ${qa.attempt} 次检查${qa.issues.length ? ` · ${qa.issues.join("；")}` : ""}` : "尚未检查"}</dd></div>
       <div><dt>场景状态</dt><dd>{shot.sceneStateBefore ? "已继承上一镜状态" : "首镜状态"}</dd></div>
       <div><dt>文字安全区</dt><dd>{textSafeZoneLabel(shot.textSafeZone)}</dd></div>
       <div><dt>服务商</dt><dd>{keyframe?.provider || "待调用"}</dd></div>
@@ -147,8 +156,10 @@ function TraceList({ shot, keyframe }: { shot: StoryboardShot; keyframe?: Keyfra
 }
 
 function generationModeLabel(mode: StoryboardShot["generationMode"]) {
+  if (mode === "i2v" || mode === "i2v-first-frame") return "单首帧图生视频";
+  if (mode === "r2v") return "历史项目兼容模式";
   if (mode === "continuation") return "连续动作";
-  if (mode === "first-last-frame") return "首尾帧过渡";
+  if (mode === "first-last-frame" || mode === "i2v-first-last") return "首尾帧过渡";
   if (mode === "remotion-motion") return "关键帧动效";
   return "参考生成";
 }

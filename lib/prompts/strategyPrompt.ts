@@ -1,6 +1,7 @@
 import { productImageReferenceNote, textBriefForPrompt } from "./briefForPrompt";
-import type { ProductBrief } from "../schemas/project";
+import type { ProductBrief, ProductVisualSpec } from "../schemas/project";
 import { resolveShotPlan } from "../video/shotConfig";
+import { serializeProductVisualSpecForPrompt } from "../visual/productVisualSpec";
 
 const forbiddenRules = [
   "禁止明星肖像或暗示明星代言。",
@@ -10,7 +11,7 @@ const forbiddenRules = [
   "禁止医疗或金融夸大承诺。"
 ];
 
-type ShotPlanInput = { requestedShotCount?: number; targetDurationSec?: number; shotDurationPlan?: number[] };
+type ShotPlanInput = { requestedShotCount?: number; targetDurationSec?: number; shotDurationPlan?: number[]; productVisualSpec?: ProductVisualSpec };
 
 export function buildStrategyPrompt(brief: ProductBrief, input: ShotPlanInput = {}): string {
   const timeline = resolveShotPlan(input.requestedShotCount, input.shotDurationPlan, input.targetDurationSec ?? brief.durationSec);
@@ -21,6 +22,8 @@ export function buildStrategyPrompt(brief: ProductBrief, input: ShotPlanInput = 
 商品简报：
 ${JSON.stringify(textBriefForPrompt(brief), null, 2)}
 
+${serializeProductVisualSpecForPrompt(input.productVisualSpec)}
+
 硬性要求：
 ${productImageReferenceNote(brief)}
 - 当前画幅为 ${brief.aspectRatio}，目标平台为 ${brief.platform}。
@@ -29,9 +32,11 @@ ${productImageReferenceNote(brief)}
 - 规划完整商业结构：Hook、Problem、Product Reveal、Benefit、Emotional Payoff、CTA。
 - 不得发明价格、折扣、功效数字、临床数据、认证、排名、百分比或“市场第一”。
 - 事实性广告声明只能来自 verifiedClaims：${JSON.stringify(brief.verifiedClaims ?? [])}。
-- 视频策略只生成 1 个 Wan 2.7 R2V 广告镜头；使用上传的真实产品图保持产品一致性，并使用主镜头关键帧保持构图。
+- 视频策略只生成 1 个 Wan 2.7 I2V 广告镜头；先由真实产品图生成一张完整主镜头关键帧，再仅使用这一张关键帧生成视频。
 - 其他镜头使用 Qwen-Image 关键帧与 Remotion 图片动效，最后由 Remotion 合成完整广告。
-- 后续推荐模型只能是：deepseek-v4-flash、qwen-image、wan2.7-r2v、remotion。
+- 相邻关键帧必须形成明显的叙事推进：改变景别、摄影机轴位或主体动作中的至少两项，禁止连续生成近似背景图。
+- 每个 3–8 秒镜头规划多个按时间依次发生的简单微动作和一条连续运镜；不得规划切镜或同时发生的多个时间点。
+- 后续推荐模型只能是：deepseek-v4-pro、qwen-image、wan2.7-i2v、remotion。
 ${forbiddenRules.map((rule) => `- ${rule}`).join("\n")}
 
 目标 JSON 示例：

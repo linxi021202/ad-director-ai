@@ -400,7 +400,7 @@ async function runRender(
         projectId,
         compositionEventId,
         "Remotion 成片生成失败：" + renderError.message,
-        "RENDER_FAILED"
+        renderError.code
       ).catch(() => undefined);
     }
     await setRenderState(projectId, {
@@ -565,6 +565,12 @@ function isFontLoadFailure(error: unknown) {
 function normalizeRenderError(error: unknown): RenderProjectError {
   if (error instanceof RenderProjectError) return error;
   if (error instanceof Error) {
+    if (/error loading (image|video)|failed to load (image|video)|net::err_/i.test(error.message)) {
+      return new RenderProjectError(
+        "MEDIA_UNREADABLE",
+        mediaLoadFailureMessage(error.message)
+      );
+    }
     return new RenderProjectError(
       "RENDER_FAILED",
       sanitizeRenderError(error.message) || "Remotion 渲染失败。"
@@ -578,7 +584,15 @@ function sanitizeRenderError(message: string) {
     .replaceAll(process.cwd(), "[local-path]")
     .replace(/Bearer [A-Za-z0-9._-]+/g, "Bearer [redacted]")
     .replace(/sk-[A-Za-z0-9_-]+/gi, "[redacted]")
+    .replace(/([?&]token=)[^&\s]+/gi, "$1[redacted]")
     .slice(0, 220);
+}
+
+function mediaLoadFailureMessage(message: string) {
+  const source = /https:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?/i.test(message)
+    ? "渲染器误用了 HTTPS localhost 私有素材地址"
+    : "渲染器无法读取项目私有图片或视频";
+  return `${source}。请重新生成成片；若仍失败，请重新生成或导入日志中对应的素材。`;
 }
 function defaultWorkflow() {
   return {

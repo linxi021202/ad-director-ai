@@ -58,11 +58,7 @@ export function setMainProductImage(images: ProductImage[], id: string): Product
 }
 
 export function removeProductImage(images: ProductImage[], id: string): ProductImage[] {
-  const remaining = images.filter((image) => image.id !== id);
-  if (remaining.length > 0 && !remaining.some((image) => image.role === "main-product")) {
-    return remaining.map((image, index) => index === 0 ? { ...image, role: "main-product" } : image);
-  }
-  return remaining;
+  return images.filter((image) => image.id !== id);
 }
 
 export function formatFileSize(size: number): string {

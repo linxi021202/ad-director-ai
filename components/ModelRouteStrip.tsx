@@ -1,8 +1,8 @@
 import React from "react";
 const nodes = [
   { name: "DeepSeek", detail: "策略、分镜、提示词 · 已完成", tone: "blue" },
-  { name: "Qwen-Image", detail: "广告关键帧 · 可生成", tone: "violet" },
-  { name: "Wan 2.7", detail: "多参考广告视频", tone: "yellow" },
+  { name: "Qwen-Image", detail: "连续性关键帧 · 可生成", tone: "violet" },
+  { name: "Wan 2.7", detail: "单首帧广告视频", tone: "yellow" },
   { name: "Remotion", detail: "完整成片 · 待合成", tone: "green" }
 ] as const;
 

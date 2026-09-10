@@ -25,8 +25,8 @@ ${productImageReferenceNote(brief)}
 - 当前项目包含 ${shots.length} 个镜头，镜头时长总和为 ${totalDurationSec} 秒，目标时长为 ${brief.durationSec} 秒。
 - 每条字幕不超过 16 个中文字符。
 - 画幅必须匹配 ${brief.aspectRatio}，平台表达适合 ${brief.platform}。
-- 只生成 1 个 Wan 2.7 R2V 主镜头视频，其他镜头使用 Qwen-Image 关键帧与 Remotion 图片动效。
-- recommendedModel 只能使用 deepseek-v4-flash、qwen-image、wan2.7-r2v、remotion。
+- 只生成 1 个 Wan 2.7 I2V 主镜头视频，且只允许输入一张完整主镜头关键帧；其他镜头使用 Qwen-Image 关键帧与 Remotion 图片动效。
+- recommendedModel 只能使用 deepseek-v4-pro、qwen-image、wan2.7-i2v、remotion。
 - 禁止明星肖像、影视/动漫/游戏 IP、竞品 Logo、虚假功效和医疗/金融夸大承诺。
 - 若出现允许列表之外的模型，必须降低评分并写入 forbiddenModelsFound。
 
@@ -46,7 +46,7 @@ ${productImageReferenceNote(brief)}
   "fixSuggestions": ["继续压缩字幕，确保移动端可读。"],
   "modelRouteCheck": {
     "allowedOnly": true,
-    "usedModels": ["deepseek-v4-flash", "qwen-image", "wan2.7-r2v", "remotion"],
+    "usedModels": ["deepseek-v4-pro", "qwen-image", "wan2.7-i2v", "remotion"],
     "forbiddenModelsFound": []
   },
   "videoGenerationStrategyCheck": {

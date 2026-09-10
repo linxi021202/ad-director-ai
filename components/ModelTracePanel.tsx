@@ -29,7 +29,7 @@ export function ModelTracePanel({ status, traces = [], compact = false }: ModelT
   const rows: ModelInvocationTrace[] = [
     deepseekTrace,
     { id: "qwen-image", title: "Qwen-Image", stage: "已完成，真实调用关键帧", provider: "百炼", model: "qwen-image", fallbackUsed: false },
-    { id: "wan", title: "Wan 2.7 视频", stage: "多参考生成", provider: "百炼", model: status.videoModel || "wan2.7-r2v", fallbackUsed: false },
+    { id: "wan", title: "Wan 2.7 视频", stage: "单首帧生成", provider: "百炼", model: status.videoModel || "wan2.7-i2v", fallbackUsed: false },
     { id: "remotion", title: "Remotion", stage: "第五阶段计划合成", provider: "计划节点", model: "remotion", fallbackUsed: false }
   ];
 
@@ -39,7 +39,7 @@ export function ModelTracePanel({ status, traces = [], compact = false }: ModelT
         <div>
           <p className="text-sm font-medium text-muted">调用日志</p>
           <h2 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-mist">模型调用审计</h2>
-          {!compact ? <p className="mt-3 max-w-[62ch] text-sm leading-6 text-muted">当前主链路为 DeepSeek 文本、Qwen-Image 关键帧、Wan 2.7 多参考视频和 Remotion 合成；手动导入仅作为备用方式。</p> : null}
+          {!compact ? <p className="mt-3 max-w-[62ch] text-sm leading-6 text-muted">当前主链路为 DeepSeek 文本、Qwen-Image 连续性关键帧、Wan 2.7 单首帧视频和 Remotion 合成；手动导入仅作为备用方式。</p> : null}
         </div>
         <span className="w-fit rounded-full border border-line bg-surface px-3 py-1 text-xs font-semibold text-muted">{realTextMode ? "真实调用" : "模拟数据"}</span>
       </div>
@@ -101,7 +101,6 @@ function formatTokenUsage(usage: ModelInvocationTrace["tokenUsage"]) {
   if (!usage) return "-";
   return `p:${usage.prompt令牌 ?? "-"} c:${usage.completion令牌 ?? "-"} t:${usage.total令牌 ?? "-"}`;
 }
-
 
 
 

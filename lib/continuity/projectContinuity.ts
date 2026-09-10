@@ -4,11 +4,14 @@ import type {
   CreativeBible,
   GenerationProject,
   ProductBrief,
+  ProductVisualSpec,
+  ProductShotType,
   ReferencePack,
   SceneState,
   StoryboardShot,
   VisualContinuityBible
 } from "../schemas/project";
+import { repairShotProductTerminology } from "../visual/productTerminology";
 
 type ContinuityInput = {
   brief: ProductBrief;
@@ -16,6 +19,7 @@ type ContinuityInput = {
   shots: StoryboardShot[];
   previousBible?: VisualContinuityBible;
   previousReferencePack?: ReferencePack;
+  productVisualSpec?: ProductVisualSpec;
 };
 
 export type ProjectContinuityArchitecture = {
@@ -65,7 +69,7 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
       .filter(isAssetId),
     ...(input.previousReferencePack?.productMasters ?? [])
   ]).slice(0, 3);
-  const hasCharacter = input.shots.some(shotContainsCharacter);
+  const hasCharacter = input.shots.some((shot) => shotContainsCharacter(shot) || (shot.characterIds?.length ?? 0) > 0);
   const previousCharacter = input.previousBible?.characters[0];
   const characters = hasCharacter ? [{
     id: previousCharacter?.id ?? "character-main",
@@ -98,40 +102,46 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
   const product = {
     id: productId,
     referenceAssetIds: productMasterIds,
-    geometry: input.previousBible?.products[0]?.geometry ?? `严格遵循${input.brief.productName}真实产品主图的几何结构`,
-    proportions: input.previousBible?.products[0]?.proportions ?? "保持真实产品主图的长宽比例和部件相对尺寸",
-    dominantColors: input.previousBible?.products[0]?.dominantColors ?? ["真实产品主图颜色", "项目统一辅助色"],
-    materials: input.previousBible?.products[0]?.materials ?? ["遵循真实产品材质", "不发明新包装材质"],
-    capShape: input.previousBible?.products[0]?.capShape ?? "遵循真实产品主图",
-    labelRegion: input.previousBible?.products[0]?.labelRegion ?? "保留原包装标签区域，不重新生成可读小字",
+    geometry: input.productVisualSpec?.shape ?? input.previousBible?.products[0]?.geometry ?? `严格遵循${input.brief.productName}真实产品主图的几何结构`,
+    proportions: input.productVisualSpec?.proportions ?? input.previousBible?.products[0]?.proportions ?? "保持真实产品主图的长宽比例和部件相对尺寸",
+    dominantColors: input.productVisualSpec?.colors.map((color) => color.hex ? `${color.name} ${color.hex}` : color.name) ?? input.previousBible?.products[0]?.dominantColors ?? ["真实产品主图颜色", "项目统一辅助色"],
+    materials: input.productVisualSpec?.materials ?? input.previousBible?.products[0]?.materials ?? ["遵循真实产品材质", "不发明新包装材质"],
+    capShape: input.productVisualSpec?.capStructure ?? input.previousBible?.products[0]?.capShape ?? "遵循真实产品主图",
+    labelRegion: input.productVisualSpec ? `${input.productVisualSpec.labelLayout}；Logo ${input.productVisualSpec.logoPosition}` : input.previousBible?.products[0]?.labelRegion ?? "保留原包装标签区域，不重新生成可读小字",
     immutableTraits: unique([
       ...(input.previousBible?.products[0]?.immutableTraits ?? []),
       "same product geometry and proportions",
       "same dominant colors and materials",
       "same cap, label region and package silhouette",
-      "no invented logo, label, button or product structure"
+      "no invented logo, label, button or product structure",
+      ...(input.productVisualSpec?.forbiddenVariations ?? [])
     ]),
     readablePackagingTextPolicy: productMasterIds.length > 0
       ? "preserve-original-only" as const
       : "blank-generated-label" as const
   };
 
+  const terminologySafeShots = input.shots.map((shot) => repairShotProductTerminology(shot, input.productVisualSpec));
+  const continuityGrouped = new Map<string, StoryboardShot[]>();
   const grouped = new Map<string, StoryboardShot[]>();
-  input.shots.forEach((shot) => {
-    const groupId = shot.continuityGroupId ?? inferContinuityGroup(shot, input.shots.length);
-    grouped.set(groupId, [...(grouped.get(groupId) ?? []), shot]);
+  terminologySafeShots.forEach((shot) => {
+    const continuityGroupId = shot.continuityGroupId ?? inferContinuityGroup(shot, input.shots.length);
+    const sceneGroupId = stripSceneTimeSuffix(inferSceneStateGroupId(shot, shot.sceneGroupId ?? continuityGroupId));
+    continuityGrouped.set(continuityGroupId, [...(continuityGrouped.get(continuityGroupId) ?? []), shot]);
+    grouped.set(sceneGroupId, [...(grouped.get(sceneGroupId) ?? []), shot]);
   });
-  const previousScenes = new Map((input.previousBible?.scenes ?? []).map((scene) => [scene.id, scene]));
+  const previousScenes = new Map((input.previousBible?.scenes ?? []).map((scene) => [stripSceneTimeSuffix(scene.id), scene]));
   const scenes = Array.from(grouped.entries()).map(([groupId, shots]) => {
-    const sceneId = shots[0]?.sceneId ?? `scene-${groupId}`;
+    const sceneId = stripSceneTimeSuffix(shots[0]?.sceneId ?? `scene-${groupId}`);
     const previous = previousScenes.get(sceneId);
+    const stateTimes = unique(shots.map((shot) => sceneTimeOfDay(inferSceneStateGroupId(shot, shot.sceneGroupId ?? groupId))));
     return {
       id: sceneId,
       name: previous?.name ?? groupName(groupId),
       architecture: previous?.architecture ?? compact(shots[0]?.visualDescription ?? "统一商业广告场景"),
       furniture: previous?.furniture ?? [],
       heroProps: previous?.heroProps ?? [input.brief.productName],
-      timeOfDay: previous?.timeOfDay ?? "保持同组镜头时间连续",
+      timeOfDay: stateTimes.join(" → ") || previous?.timeOfDay || "保持同一 Scene Identity",
       lightingDirection: previous?.lightingDirection ?? "保持同组主光方向一致",
       lightingQuality: previous?.lightingQuality ?? "商业摄影质感，光线变化连续",
       palette: previous?.palette ?? ["遵循项目主色", "同组镜头综合色调一致"],
@@ -147,11 +157,17 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
 
   const sceneByGroup = new Map(Array.from(grouped.keys()).map((groupId, index) => [groupId, scenes[index]!]));
   const previousStateByGroup = new Map<string, SceneState>();
-  const enrichedShots = input.shots.map((shot) => {
+  const enrichedShots = terminologySafeShots.map((shot, shotIndex) => {
     const continuityGroupId = shot.continuityGroupId ?? inferContinuityGroup(shot, input.shots.length);
-    const scene = sceneByGroup.get(continuityGroupId)!;
-    const characterIds = shot.characterIds ?? (shotContainsCharacter(shot) && characters[0] ? [characters[0].id] : []);
-    const productIds = shot.productIds ?? [productId];
+    const sceneStateId = inferSceneStateGroupId(shot, shot.sceneStateId ?? shot.sceneGroupId ?? continuityGroupId);
+    const sceneGroupId = stripSceneTimeSuffix(sceneStateId);
+    const scene = sceneByGroup.get(sceneGroupId)!;
+    const characterIds = (shotContainsCharacter(shot) || (shot.characterIds?.length ?? 0) > 0) && characters[0] ? [characters[0].id] : [];
+    const containsProduct = shot.containsProduct ?? shotContainsProduct(shot);
+    const productShotType = containsProduct ? (shot.productShotType ?? inferProductShotType(shot, input.shots.length)) : "not-visible";
+    const productFidelityMode = containsProduct ? "exact" as const : "not-visible" as const;
+    const exactProductShot = containsProduct && productShotType === "packshot";
+    const productIds = containsProduct ? (shot.productIds?.length ? shot.productIds : [productId]) : [];
     const defaultState: SceneState = {
       shotId: shot.id,
       characterStates: characterIds.map((characterId) => ({ characterId, wardrobeState: "保持人物 Master 造型" })),
@@ -159,24 +175,33 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
       propStates: []
     };
     const inheritedBefore = inheritSceneState(
-      previousStateByGroup.get(continuityGroupId),
+      previousStateByGroup.get(sceneGroupId),
       shot.sceneStateBefore ?? defaultState,
       shot.id
     );
     const after = inheritSceneState(inheritedBefore, shot.sceneStateAfter ?? inheritedBefore, shot.id);
-    previousStateByGroup.set(continuityGroupId, after);
+    previousStateByGroup.set(sceneGroupId, after);
     const permanentReferences = unique([
-      ...productMasterIds,
+      ...(containsProduct ? productMasterIds : []),
       ...characterIds.flatMap((id) => characters.find((character) => character.id === id)?.referenceAssetIds ?? []),
       ...scene.referenceAssetIds
     ]).slice(0, 3);
     return {
       ...shot,
       continuityGroupId,
-      sceneGroupId: shot.sceneGroupId ?? continuityGroupId,
+      sceneGroupId,
       sceneId: scene.id,
+      sceneStateId,
+      ...(shotIndex > 0 && enrichedSceneChanged(terminologySafeShots[shotIndex - 1]!, shot)
+        ? { sceneTransitionReason: shot.sceneTransitionReason ?? inferSceneTransitionReason(terminologySafeShots[shotIndex - 1]!, shot) }
+        : shot.sceneTransitionReason ? { sceneTransitionReason: shot.sceneTransitionReason } : {}),
       characterIds,
       productIds,
+      containsProduct,
+      exactProductShot,
+      productFidelityMode,
+      productShotType,
+      lowRiskProductFallback: productShotType === "human-product-interaction",
       referenceImageAssetIds: shot.referenceImageAssetIds?.length ? shot.referenceImageAssetIds : permanentReferences,
       referenceVideoAssetIds: shot.referenceVideoAssetIds ?? [],
       sceneStateBefore: inheritedBefore,
@@ -190,7 +215,9 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
         "Previous Shot 只作为动作状态辅助，不得替代 Master References",
         "生成画面不得包含任何可读文字、数字、Logo、字幕、CTA 或伪文字"
       ]),
-      shotDirection: shot.shotDirection ?? [shot.visualDescription, `${shot.cameraAngle}；${shot.cameraMovement}`],
+      shotDirection: productShotType === "human-product-interaction"
+        ? ["人物坐在稳定位置，只做伸手靠近动作", "真实产品位于无遮挡前景，保持正面或四分之三角度", "一次缓慢推近，不开盖、不饮用、不走动、不快速旋转"]
+        : shot.shotDirection ?? [shot.visualDescription, `${shot.cameraAngle}；${shot.cameraMovement}`],
       videoPromptEn: shot.videoPromptEn ?? `${shot.imagePromptEn} Motion is limited to one primary action and one camera move. ${NO_READABLE_TEXT_EN}`,
       negativePromptCn: shot.negativePromptCn ?? NO_READABLE_TEXT_CN,
       negativePromptEn: shot.negativePromptEn ?? NO_READABLE_TEXT_EN,
@@ -199,7 +226,7 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
     } satisfies StoryboardShot;
   });
 
-  const continuityGroups = Array.from(grouped.entries()).map(([groupId, shots]) => {
+  const continuityGroups = Array.from(continuityGrouped.entries()).map(([groupId, shots]) => {
     const enrichedGroupShots = enrichedShots.filter((shot) => shot.continuityGroupId === groupId);
     return {
       id: groupId,
@@ -207,7 +234,7 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
       shotIds: shots.map((shot) => shot.id),
       characterIds: unique(enrichedGroupShots.flatMap((shot) => shot.characterIds ?? [])),
       productIds: unique(enrichedGroupShots.flatMap((shot) => shot.productIds ?? [])),
-      sceneId: sceneByGroup.get(groupId)?.id,
+      sceneId: enrichedGroupShots[0]?.sceneId,
       immutableTraits: ["产品身份", "人物身份与服装", "场景结构与主要道具", "主光方向与综合色调"]
     };
   });
@@ -233,7 +260,7 @@ export function buildProjectContinuity(input: ContinuityInput): ProjectContinuit
     characters,
     products: [product],
     scenes,
-    wardrobeRules: ["同一人物在同一 Continuity Group 中保持服装、发型与配饰不变"],
+    wardrobeRules: ["同一人物跨 Scene State 仍保持同一 Character Master、服装、发型与配饰；只有 Storyboard 明确声明换装理由时才允许改变"],
     propRules: ["主要道具的位置和状态必须继承上一镜 Scene State"],
     colorPalette: ["真实产品主色优先", "同组镜头综合色调一致", "跨组变化必须服务叙事"],
     lightingRules: ["同组保持主光方向和光质连续", "只允许叙事明确要求的渐进式光线变化"],
@@ -267,7 +294,8 @@ export function ensureProjectContinuity(project: GenerationProject): ProjectCont
     strategy: project.strategy,
     shots: project.shots,
     previousBible: project.visualContinuityBible,
-    previousReferencePack: project.referencePack
+    previousReferencePack: project.referencePack,
+    productVisualSpec: project.productVisualSpec
   });
 }
 
@@ -328,6 +356,7 @@ function groupName(groupId: string) {
 
 function inferGenerationMode(shot: StoryboardShot, shotCount: number) {
   if (shot.index === shotCount || /remotion/i.test(shot.recommendedModel)) return "remotion-motion" as const;
+  if (/wan2\.7-i2v/i.test(shot.recommendedModel)) return "i2v-first-frame" as const;
   if (/wan2\.7-r2v|happyhorse/i.test(shot.recommendedModel)) return "r2v" as const;
   return "remotion-motion" as const;
 }
@@ -339,6 +368,59 @@ function estimateMotionComplexity(shot: StoryboardShot) {
 
 function shotContainsCharacter(shot: StoryboardShot) {
   return /人物|主角|角色|上班族|人群|手持|伸手|face|person|character|worker/i.test(`${shot.goal} ${shot.visualDescription}`);
+}
+
+export function shotContainsProduct(shot: StoryboardShot) {
+  if (shot.containsProduct !== undefined) return shot.containsProduct;
+  return /产品|商品|包装|瓶|罐|盒|饮用|喝|手持|拿取|packshot|product|package|bottle|can|carton/i.test(
+    `${shot.goal} ${shot.visualDescription} ${shot.imagePromptCn} ${shot.imagePromptEn}`
+  );
+}
+
+export function inferExactProductShot(shot: StoryboardShot, shotCount: number) {
+  if (shot.exactProductShot !== undefined) return shot.exactProductShot;
+  return shot.index === shotCount || /结尾|CTA|正面包装(?:展示)?|packshot|exact product|100% 产品准确/i.test(
+    `${shot.goal} ${shot.visualDescription} ${shot.imagePromptCn}`
+  );
+}
+
+export function inferProductShotType(shot: StoryboardShot, shotCount: number): ProductShotType {
+  if (!shotContainsProduct(shot)) return "not-visible";
+  const text = `${shot.goal} ${shot.visualDescription} ${shot.imagePromptCn} ${shot.videoPromptCn}`;
+  if (inferExactProductShot(shot, shotCount) || /产品单独|产品特写|hero product|product close-up|转台|静态产品/i.test(text)) return "packshot";
+  if (/拿|握|喝|饮用|递出|开盖|手持|伸手|holds?|drinks?|opens?|hand/i.test(text)) return "human-product-interaction";
+  return "product-in-scene";
+}
+
+function inferSceneStateGroupId(shot: StoryboardShot, base: string) {
+  const text = `${shot.goal} ${shot.visualDescription} ${shot.imagePromptCn}`;
+  if (/深夜|夜间|夜景|night/i.test(text)) return `${stripSceneTimeSuffix(base)}-night`;
+  if (/白天|日间|晨光|明亮|恢复|daylight|daytime|bright|fresh|recovery/i.test(text)) return `${stripSceneTimeSuffix(base)}-day`;
+  return base;
+}
+
+function stripSceneTimeSuffix(value: string) {
+  return value.replace(/-(?:night|day)$/i, "");
+}
+
+function sceneTimeOfDay(groupId: string) {
+  if (/-night$/i.test(groupId)) return "night";
+  if (/-day$/i.test(groupId)) return "day";
+  return "保持同一 Scene State 的时间连续";
+}
+
+function enrichedSceneChanged(previous: StoryboardShot, current: StoryboardShot) {
+  const previousGroup = inferSceneStateGroupId(previous, previous.sceneGroupId ?? previous.continuityGroupId ?? "scene");
+  const currentGroup = inferSceneStateGroupId(current, current.sceneGroupId ?? current.continuityGroupId ?? "scene");
+  return previousGroup !== currentGroup;
+}
+
+function inferSceneTransitionReason(previous: StoryboardShot, current: StoryboardShot) {
+  const text = `${previous.visualDescription} ${current.visualDescription}`;
+  if (/夜|night/i.test(text) && /白天|日间|晨光|daylight|daytime/i.test(text)) {
+    return "叙事状态转折：从夜间压力空间转向日间或明亮空间；人物身份与默认服装保持不变。";
+  }
+  return "Storyboard 明确切换 Scene State；人物 Character Master 与默认服装继续锁定。";
 }
 
 function compact(value: string) {

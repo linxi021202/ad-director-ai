@@ -9,6 +9,7 @@ import { authorizeOwnedProject } from "@/lib/projects/api";
 import { mutateOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
 import { productImageRoleSchema } from "@/lib/schemas/project";
 import { getAnonymousApiSession } from "@/lib/session/api";
+import { extractProductVisualSpec } from "@/lib/visual/productVisualSpec";
 
 export async function POST(request: Request) {
   const sessionResult = await getAnonymousApiSession();
@@ -77,6 +78,25 @@ export async function POST(request: Request) {
       await deletePrivateAsset(session.id, authorization.projectId, replacedAssetId).catch(() => undefined);
     }
 
+    let visualSpecStatus: "ready" | "pending" | "not-required" = role === "main-product" ? "pending" : "not-required";
+    let visualSpecError: string | undefined;
+    if (role === "main-product") {
+      const inspectedSpec = await extractProductVisualSpec({
+        sessionId: session.id,
+        projectId: authorization.projectId,
+        productAssetId: asset.id
+      });
+      if (inspectedSpec.success) {
+        updated = await mutateOwnedAnonymousProject(session.id, authorization.projectId, (project) => ({
+          ...project,
+          productVisualSpec: inspectedSpec.spec
+        }));
+        visualSpecStatus = "ready";
+      } else {
+        visualSpecError = inspectedSpec.error;
+      }
+    }
+
     return response(true, {
       assetId: asset.id,
       localUrl,
@@ -84,7 +104,9 @@ export async function POST(request: Request) {
       width: inspected.width,
       height: inspected.height,
       mimeType: inspected.mimeType,
-      sizeBytes: asset.sizeBytes
+      sizeBytes: asset.sizeBytes,
+      visualSpecStatus,
+      ...(visualSpecError ? { visualSpecError } : {})
     }, null, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";

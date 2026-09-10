@@ -7,6 +7,8 @@ import { z } from "zod";
 
 import { coldBrewDemo } from "@/lib/mock/coldBrewDemo";
 import { ensureProjectContinuity } from "@/lib/continuity/projectContinuity";
+import { buildPartialNarrationPlan } from "@/lib/audio/narrationPlan";
+import { ensureStoryboardArchitecture } from "@/lib/storyboard/shotArchitecture";
 import {
   adStrategySchema,
   aspectRatioSchema,
@@ -18,17 +20,43 @@ import {
   generationStatusSchema,
   heroVideoMetadataSchema,
   keyframeMetadataSchema,
+  keyframeQAResultSchema,
+  narrationPlanSchema,
   platformSchema,
   productBriefSchema,
+  productVisualSpecSchema,
   projectPromptSchema,
   referencePackSchema,
+  characterVisualSpecSchema,
+  sceneVisualSpecSchema,
+  visualAnchorWorkspaceSchema,
+  stageIdSchema,
+  stageStatesSchema,
   storyboardShotSchema,
+  dependencyNodeSchema,
+  versionedResourceSchema,
+  videoQAResultSchema,
   visualContinuityBibleSchema,
   workflowStepsSchema,
   type GenerationProject,
+  type StageId,
   type StoryboardShot,
+  type VersionedResourceType,
   type WorkflowSteps
 } from "@/lib/schemas/project";
+import { ensureVisualAnchorWorkspace } from "@/lib/visual/visualAnchors";
+import {
+  STAGE_LABELS,
+  STAGE_RESOURCE,
+  StageGateError,
+  calculateDependencyImpact,
+  createResourceVersionInProject,
+  currentResourceVersion,
+  ensureStageWorkflow,
+  lockStageInProject,
+  setStageStatusInProject,
+  type DependencyImpact
+} from "@/lib/workflow/stageGates";
 import { ANONYMOUS_SESSION_MAX_AGE_SECONDS } from "@/lib/session/anonymousSessionShared";
 import {
   DEFAULT_SHOT_COUNT,
@@ -66,14 +94,24 @@ export const anonymousProjectPatchSchema = z.object({
   creativeBible: creativeBibleSchema.optional(),
   visualContinuityBible: visualContinuityBibleSchema.optional(),
   referencePack: referencePackSchema.optional(),
+  productVisualSpec: productVisualSpecSchema.optional(),
+  characterVisualSpecs: z.array(characterVisualSpecSchema).max(12).optional(),
+  sceneVisualSpecs: z.array(sceneVisualSpecSchema).max(12).optional(),
+  visualAnchorWorkspace: visualAnchorWorkspaceSchema.optional(),
+  keyframeQAResults: z.array(keyframeQAResultSchema).max(120).optional(),
+  videoQAResults: z.array(videoQAResultSchema).max(4).optional(),
+  narrationPlan: narrationPlanSchema.optional(),
   shots: z.array(storyboardShotSchema).min(1).max(12).optional(),
   prompts: z.array(projectPromptSchema).max(12).optional(),
   aspectRatio: aspectRatioSchema.optional(),
   durationSec: z.number().int().positive().max(120).optional(),
   platform: platformSchema.optional(),
   workflowSteps: workflowStepsSchema.optional(),
+  stageStates: stageStatesSchema.optional(),
+  resourceVersions: z.array(versionedResourceSchema).max(500).optional(),
+  dependencyGraph: z.array(dependencyNodeSchema).max(1000).optional(),
   heroShotId: z.string().min(1).nullable().optional(),
-  keyframes: z.array(keyframeMetadataSchema).max(12).optional(),
+  keyframes: z.array(keyframeMetadataSchema).max(60).optional(),
   heroVideo: heroVideoMetadataSchema.nullable().optional(),
   finalVideo: finalVideoMetadataSchema.nullable().optional(),
   narrationAssetId: z.string().uuid().nullable().optional(),
@@ -284,7 +322,8 @@ export async function updateOwnedAnonymousProject(
 const savedBriefInputSchema = z.object({
   brief: productBriefSchema,
   shotCount: z.number().int().min(MIN_SHOT_COUNT).max(MAX_SHOT_COUNT),
-  targetDurationSec: z.number().int().positive().max(60)
+  targetDurationSec: z.number().int().positive().max(60),
+  createVersion: z.boolean().optional()
 }).strict();
 
 export async function saveOwnedProjectBrief(
@@ -298,6 +337,17 @@ export async function saveOwnedProjectBrief(
   if (targetDurationSec !== input.targetDurationSec) throw new ShotConfigurationError("INVALID_TARGET_DURATION");
 
   return mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
+    const normalized = ensureStageWorkflow(project);
+    const briefChanged = !sameBriefRevision(normalized, input);
+    const briefWasLocked = normalized.stageStates?.brief.status === "locked";
+    if (briefWasLocked && briefChanged && !input.createVersion) {
+      const currentVersion = currentResourceVersion(normalized.resourceVersions ?? [], "brief")?.version ?? 1;
+      throw new StageGateError(
+        "LOCKED_RESOURCE_VERSION_REQUIRED",
+        "商品简报已锁定，修改将创建新版本。",
+        calculateDependencyImpact(normalized.dependencyGraph ?? [], "brief", currentVersion, currentVersion + 1)
+      );
+    }
     const previousShotCount = project.shotCount ?? project.shots.length;
     const storyboardExists = project.workflowSteps?.storyboard === "completed" || project.workflowSteps?.storyboard === "fallback";
     if (storyboardExists && previousShotCount !== input.shotCount) {
@@ -328,8 +378,8 @@ export async function saveOwnedProjectBrief(
             previewUrl: undefined
           };
         });
-    const next: GenerationProject = {
-      ...project,
+    let next: GenerationProject = {
+      ...normalized,
       brief: { ...input.brief, durationSec: targetDurationSec, productImages: incomingProductImages },
       shotCount: input.shotCount,
       targetDurationSec,
@@ -354,6 +404,42 @@ export async function saveOwnedProjectBrief(
     if (targetChanged) {
       delete next.finalVideoAssetId;
       delete next.narrationAssetId;
+      delete next.narrationPlan;
+    }
+    if (briefChanged) {
+      const currentBriefVersion = currentResourceVersion(next.resourceVersions ?? [], "brief");
+      if (!currentBriefVersion) {
+        const created = createResourceVersionInProject(next, {
+          resourceId: "brief",
+          resourceType: "brief",
+          stageId: "brief",
+          label: "商品简报 V1",
+          snapshot: briefSnapshot(next)
+        });
+        next = created.project;
+      } else if (briefWasLocked || hasDownstreamStageOutput(next)) {
+        const created = createResourceVersionInProject(next, {
+          resourceId: "brief",
+          resourceType: "brief",
+          stageId: "brief",
+          label: `商品简报 V${currentBriefVersion.version + 1}`,
+          snapshot: briefSnapshot(next)
+        });
+        next = appendVersionEvents(created.project, created.impact, "商品简报", currentBriefVersion.version + 1);
+      } else {
+        next = {
+          ...next,
+          stageStates: { ...next.stageStates!, brief: { status: "ready", updatedAt: Date.now() } },
+          resourceVersions: (next.resourceVersions ?? []).map((item) => item.id === currentBriefVersion.id
+            ? { ...item, snapshot: briefSnapshot(next), createdAt: Date.now() }
+            : item)
+        };
+      }
+    } else {
+      next = {
+        ...next,
+        stageStates: { ...next.stageStates!, brief: { status: "ready", updatedAt: Date.now() } }
+      };
     }
     return next;
   }, expectedVersion);
@@ -528,6 +614,7 @@ export async function updateOwnedShotDurations(
     };
     delete next.finalVideoAssetId;
     delete next.narrationAssetId;
+    delete next.narrationPlan;
     return next;
   }, expectedVersion);
 }
@@ -552,6 +639,67 @@ export function updateOwnedWorkflowState(
   expectedVersion?: number
 ): Promise<AnonymousProjectRecord> {
   return updateOwnedAnonymousProject(sessionId, projectId, { workflowSteps }, expectedVersion);
+}
+
+export function lockOwnedProjectStage(
+  sessionId: string,
+  projectId: string,
+  stageId: StageId,
+  expectedVersion?: number
+): Promise<AnonymousProjectRecord> {
+  return mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
+    const next = lockStageInProject(project, stageId);
+    return appendSystemEvent(next, {
+      stage: stageId,
+      action: "锁定阶段",
+      message: `${STAGE_LABELS[stageId]}已由用户锁定。`
+    });
+  }, expectedVersion);
+}
+
+export function setOwnedProjectStageStatus(
+  sessionId: string,
+  projectId: string,
+  stageId: StageId,
+  status: "draft" | "running" | "ready" | "failed",
+  expectedVersion?: number,
+  errorCode?: string
+): Promise<AnonymousProjectRecord> {
+  return mutateOwnedAnonymousProject(sessionId, projectId, (project) =>
+    setStageStatusInProject(project, stageId, status, Date.now(), errorCode), expectedVersion);
+}
+
+export async function calculateOwnedProjectDependencyImpact(
+  sessionId: string,
+  projectId: string,
+  resourceId: string
+): Promise<DependencyImpact> {
+  const record = await requireOwnedAnonymousProject(sessionId, projectId);
+  const project = ensureStageWorkflow(record.project);
+  const current = currentResourceVersion(project.resourceVersions ?? [], resourceId);
+  const currentVersion = current?.version ?? 1;
+  return calculateDependencyImpact(project.dependencyGraph ?? [], resourceId, currentVersion, currentVersion + 1);
+}
+
+export function createOwnedProjectResourceVersion(
+  sessionId: string,
+  projectId: string,
+  input: {
+    resourceId: string;
+    resourceType: VersionedResourceType;
+    stageId: StageId;
+    label?: string;
+  },
+  expectedVersion?: number
+): Promise<AnonymousProjectRecord> {
+  return mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
+    const normalized = ensureStageWorkflow(project);
+    const created = createResourceVersionInProject(normalized, {
+      ...input,
+      snapshot: stageSnapshot(normalized, input.stageId)
+    });
+    return appendVersionEvents(created.project, created.impact, STAGE_LABELS[input.stageId], created.version.version);
+  }, expectedVersion);
 }
 
 export function resetAnonymousProjectQueuesForTests(): void {
@@ -600,7 +748,7 @@ function buildProject(id: string, now: number, input: AnonymousProjectCreateInpu
     briefSavedAt: isTemplate ? now : undefined,
     briefRevision: isTemplate ? 1 : 0,
     brief,
-    shots: continuity.shots,
+    shots: ensureStoryboardArchitecture(continuity.shots),
     creativeBible: continuity.creativeBible,
     visualContinuityBible: continuity.visualContinuityBible,
     referencePack: continuity.referencePack,
@@ -619,7 +767,8 @@ function buildProject(id: string, now: number, input: AnonymousProjectCreateInpu
     createdAt: new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString()
   });
-  return sanitizeProjectForStorage(project);
+  project.narrationPlan = buildPartialNarrationPlan(project);
+  return sanitizeProjectForStorage(ensureVisualAnchorWorkspace(ensureStageWorkflow(project, now), new Date(now).toISOString()));
 }
 
 function sanitizeProjectForStorage(project: GenerationProject): GenerationProject {
@@ -639,9 +788,38 @@ function normalizeProjectTimeline(project: GenerationProject): GenerationProject
   const shotCount = project.shotCount ?? project.shots.length;
   const targetDurationSec = clampTargetDuration(shotCount, project.targetDurationSec ?? project.brief.durationSec ?? totalDurationSec);
   const continuity = ensureProjectContinuity(project);
-  return {
+  const architectureShots = ensureStoryboardArchitecture(continuity.shots);
+  const firstFrameIdByShot = new Map(architectureShots.map((shot) => [shot.id, shot.frames?.[0]?.id]));
+  const keyframes = project.keyframes?.map((keyframe) => ({
+    ...keyframe,
+    frameId: keyframe.frameId ?? firstFrameIdByShot.get(keyframe.shotId)
+  }));
+  const keyframeQAResults = project.keyframeQAResults?.map((result) => ({
+    ...result,
+    frameId: result.frameId ?? firstFrameIdByShot.get(result.shotId)
+  }));
+  const shots = architectureShots.map((shot) => {
+    const first = shot.frames?.[0];
+    const legacy = keyframes?.find((keyframe) => keyframe.shotId === shot.id && keyframe.frameId === first?.id);
+    if (!first || !legacy?.assetId) return shot;
+    return {
+      ...shot,
+      primaryKeyframeAssetId: shot.primaryKeyframeAssetId ?? legacy.assetId,
+      frames: shot.frames?.map((frame, index) => index === 0 ? {
+        ...frame,
+        assetId: frame.assetId ?? legacy.assetId,
+        status: legacy.status === "ready" ? "ready" as const
+          : legacy.status === "needs-review" ? "needs-review" as const
+            : legacy.status === "failed" || legacy.status === "fallback" ? "failed" as const
+              : frame.status
+      } : frame)
+    };
+  });
+  const staged = ensureStageWorkflow({
     ...project,
-    shots: continuity.shots,
+    shots,
+    keyframes,
+    keyframeQAResults,
     creativeBible: continuity.creativeBible,
     visualContinuityBible: continuity.visualContinuityBible,
     referencePack: continuity.referencePack,
@@ -651,7 +829,8 @@ function normalizeProjectTimeline(project: GenerationProject): GenerationProject
     briefRevision: project.briefRevision ?? 0,
     brief: { ...project.brief, durationSec: targetDurationSec },
     durationSec: totalDurationSec
-  };
+  });
+  return ensureVisualAnchorWorkspace(staged);
 }
 
 function resizeProjectShots(source: StoryboardShot[], shotCount: number, durations: number[]): StoryboardShot[] {
@@ -719,7 +898,7 @@ async function writeRecordAtomic(sessionId: string, record: AnonymousProjectReco
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporary, destination);
+    await renameWithTransientRetry(temporary, destination);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await rm(temporary, { force: true }).catch(() => undefined);
@@ -755,6 +934,100 @@ function ownershipSalt(): string {
   return "ad-director-local-ownership-salt";
 }
 
+function sameBriefRevision(project: GenerationProject, input: z.infer<typeof savedBriefInputSchema>): boolean {
+  const current = {
+    brief: comparableBrief(project.brief),
+    shotCount: project.shotCount ?? project.shots.length,
+    targetDurationSec: project.targetDurationSec ?? project.brief.durationSec
+  };
+  const incoming = {
+    brief: comparableBrief({ ...input.brief, durationSec: input.targetDurationSec }),
+    shotCount: input.shotCount,
+    targetDurationSec: input.targetDurationSec
+  };
+  return JSON.stringify(current) === JSON.stringify(incoming);
+}
+
+function comparableBrief(brief: GenerationProject["brief"]) {
+  return {
+    ...brief,
+    productImages: brief.productImages?.map(({ previewUrl: _previewUrl, remoteUrl: _remoteUrl, url: _url, ...image }) => image)
+  };
+}
+
+function briefSnapshot(project: GenerationProject) {
+  return {
+    brief: project.brief,
+    shotCount: project.shotCount ?? project.shots.length,
+    targetDurationSec: project.targetDurationSec ?? project.brief.durationSec
+  };
+}
+
+function hasDownstreamStageOutput(project: GenerationProject): boolean {
+  const states = ensureStageWorkflow(project).stageStates!;
+  return (["creative", "anchors", "storyboard", "keyframes", "video", "final"] as StageId[])
+    .some((stageId) => states[stageId].status !== "blocked" && states[stageId].status !== "draft");
+}
+
+function stageSnapshot(project: GenerationProject, stageId: StageId): unknown {
+  const resourceId = STAGE_RESOURCE[stageId].resourceId;
+  if (resourceId === "brief") return briefSnapshot(project);
+  if (resourceId === "creative-direction") return { strategy: project.strategy, creativeBible: project.creativeBible };
+  if (resourceId === "visual-anchors") return {
+    productVisualSpec: project.productVisualSpec,
+    characterVisualSpecs: project.characterVisualSpecs,
+    sceneVisualSpecs: project.sceneVisualSpecs,
+    visualAnchorWorkspace: project.visualAnchorWorkspace,
+    visualContinuityBible: project.visualContinuityBible,
+    referencePack: project.referencePack
+  };
+  if (resourceId === "storyboard") return { shots: project.shots, narrationPlan: project.narrationPlan };
+  if (resourceId === "keyframes") return { keyframes: project.keyframes, keyframeQAResults: project.keyframeQAResults };
+  if (resourceId === "shot-videos") return { heroVideo: project.heroVideo, narrationAssetId: project.narrationAssetId, videoQAResults: project.videoQAResults };
+  return { finalVideo: project.finalVideo, finalVideoAssetId: project.finalVideoAssetId };
+}
+
+function appendVersionEvents(project: GenerationProject, impact: DependencyImpact, label: string, version: number): GenerationProject {
+  let next = appendSystemEvent(project, {
+    stage: stageForResource(impact.resourceId),
+    action: "创建资源版本",
+    message: `${label}已创建 V${version}，旧版本继续保留。`
+  });
+  if (impact.affectedStages.length > 0) {
+    next = appendSystemEvent(next, {
+      stage: stageForResource(impact.resourceId),
+      action: "标记下游过期",
+      message: `依赖影响已计算：${impact.affectedStages.map((stageId) => STAGE_LABELS[stageId]).join("、")}标记为 outdated，未自动删除或重新生成。`
+    });
+  }
+  return next;
+}
+
+function appendSystemEvent(
+  project: GenerationProject,
+  input: { stage: StageId; action: string; message: string }
+): GenerationProject {
+  const now = Date.now();
+  const event = generationEventSchema.parse({
+    id: randomUUID(),
+    runId: randomUUID(),
+    projectId: project.id,
+    stage: input.stage,
+    provider: "system",
+    action: input.action,
+    status: "completed",
+    message: input.message,
+    startedAt: now,
+    completedAt: now
+  });
+  return { ...project, generationEvents: [...(project.generationEvents ?? []).slice(-199), event] };
+}
+
+function stageForResource(resourceId: string): StageId {
+  return (Object.entries(STAGE_RESOURCE) as Array<[StageId, { resourceId: string }]>)
+    .find(([, resource]) => resource.resourceId === resourceId)?.[0] ?? "brief";
+}
+
 function storageRoot(): string {
   return path.resolve(process.env.STORAGE_ROOT?.trim() || path.join(process.cwd(), "storage"));
 }
@@ -786,4 +1059,18 @@ function isTransientUrl(value: string | undefined): boolean {
 
 function isMissingFile(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+async function renameWithTransientRetry(source: string, destination: string): Promise<void> {
+  const retryableCodes = new Set(["EPERM", "EBUSY", "EACCES"]);
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (!retryableCodes.has(code) || attempt === 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 12 * (attempt + 1)));
+    }
+  }
 }

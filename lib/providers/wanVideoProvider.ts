@@ -5,7 +5,7 @@ import { resolveWanReferenceImages } from "../video/referenceImages";
 import type { VideoProvider } from "./types";
 import { getWanVideoCapability } from "./wanVideoCapability";
 
-const MANUAL_MESSAGE = "Wan 2.7 真实调用当前不可用，可从视频库导入完整广告视频作为备用路径。";
+const MANUAL_MESSAGE = "Wan 2.7 I2V 真实调用当前不可用，可从视频库导入完整广告视频作为备用路径。";
 
 export const wanVideoProvider: VideoProvider = {
   provider: "wan",
@@ -18,7 +18,7 @@ export const wanVideoProvider: VideoProvider = {
       model: config.video.model,
       costEstimate: 0,
       latencyEstimate: "not-applicable",
-      error: `${MANUAL_MESSAGE} 请通过多参考图生成入口调用。`
+      error: `${MANUAL_MESSAGE} 请通过单关键帧图生视频入口调用。`
     };
   },
   async generateHeroVideoFromImage(input) {
@@ -41,6 +41,7 @@ export const wanVideoProvider: VideoProvider = {
         sessionId: input.sessionId!,
         projectId: input.projectId,
         heroImageAssetId: input.heroImageAssetId,
+        lastImageAssetId: input.lastImageAssetId,
         productImages: input.productImages,
         assetBaseUrl: input.assetBaseUrl
       });

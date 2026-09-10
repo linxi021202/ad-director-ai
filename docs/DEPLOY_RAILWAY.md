@@ -29,7 +29,7 @@ MAX_CONCURRENT_RENDERS=1
 MAX_RENDER_QUEUE_SIZE=6
 
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MODEL=deepseek-v4-pro
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com
 QWEN_IMAGE_MODEL=qwen-image
 QWEN_IMAGE_EDIT_MODEL=qwen-image-2.0

@@ -5,8 +5,8 @@ type ModelRouteFlowProps = { routes: ModelRoute[]; aiStatus?: AITraceStatus };
 
 const stages = [
   { task: "文本", model: "DeepSeek", note: "已完成，真实调用" },
-  { task: "关键帧", model: "Qwen-Image", note: "已完成，真实调用关键帧" },
-  { task: "广告视频", model: "Wan 2.7 R2V", note: "真实产品多参考生成" },
+  { task: "关键帧", model: "Qwen-Image", note: "真实产品与上一镜连续性参考" },
+  { task: "广告视频", model: "Wan 2.7 I2V", note: "单张完整首帧生成" },
   { task: "合成", model: "Remotion", note: "第五阶段计划合成" }
 ];
 
@@ -17,7 +17,7 @@ export function ModelRouteFlow({ routes, aiStatus }: ModelRouteFlowProps) {
       <div className="max-w-[65ch]">
         <p className="text-sm font-medium text-muted">模型路由</p>
         <h2 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-mist">模型主链路</h2>
-        <p className="mt-3 text-sm leading-6 text-muted">DeepSeek 负责文本与提示词，Qwen-Image 负责关键帧，Wan 2.7 负责多参考视频生成，Remotion 负责确定性成片合成。</p>
+        <p className="mt-3 text-sm leading-6 text-muted">DeepSeek 负责文本与提示词，Qwen-Image 负责连续性关键帧，Wan 2.7 只根据完整主镜头首帧生成视频，Remotion 负责确定性成片合成。</p>
       </div>
 
       <div className="mt-6 grid gap-3 md:grid-cols-4">
@@ -52,4 +52,3 @@ function RouteRow({ route }: { route: ModelRoute }) {
     </article>
   );
 }
-

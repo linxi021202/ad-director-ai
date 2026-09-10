@@ -3,7 +3,7 @@ import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
 import { qwenImageProvider, QWEN_IMAGE_PLACEHOLDER_URL } from "../lib/providers/qwenImageProvider";
 import { wanVideoProvider } from "../lib/providers/wanVideoProvider";
-import { generatePrompts, generateShotImage, runTextTask, scoreAdPlan, selectProviderModel } from "../lib/providers/providerRouter";
+import { generateBatchShotImages, generatePrompts, generateShotImage, runTextTask, scoreAdPlan, selectProviderModel } from "../lib/providers/providerRouter";
 
 const qwenProviderWithShotImage = qwenImageProvider as typeof qwenImageProvider & { generateShotImage: NonNullable<typeof qwenImageProvider.generateShotImage> };
 
@@ -84,7 +84,7 @@ describe("providerRouter", () => {
     const result = await runTextTask({ taskType: "strategy", brief: coldBrewDemo.brief });
 
     expect(route.provider).toBe("deepseek");
-    expect(route.model).toBe("deepseek-v4-flash");
+    expect(route.model).toBe("deepseek-v4-pro");
     expect(spy).toHaveBeenCalledWith(coldBrewDemo.brief);
     expect(result.success).toBe(true);
     expect(result.provider).toBe("deepseek");
@@ -130,7 +130,7 @@ describe("providerRouter", () => {
       fixSuggestions: ["继续压缩字幕。"],
       modelRouteCheck: {
         allowedOnly: true,
-        usedModels: ["deepseek-v4-flash" as const, "qwen-image" as const, "wan2.7-r2v" as const, "remotion" as const],
+        usedModels: ["deepseek-v4-pro" as const, "qwen-image" as const, "wan2.7-i2v" as const, "remotion" as const],
         forbiddenModelsFound: []
       },
       videoGenerationStrategyCheck: {
@@ -155,7 +155,7 @@ describe("providerRouter", () => {
       success: false,
       data: null,
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-v4-pro",
       latencyMs: 20,
       fallbackUsed: false,
       error: "json validation failed"
@@ -178,7 +178,7 @@ describe("providerRouter", () => {
       success: false,
       data: null,
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-v4-pro",
       latencyMs: 20,
       fallbackUsed: false,
       error: "DEEPSEEK_TIMEOUT：DeepSeek 在 20 秒内未响应。"
@@ -217,7 +217,7 @@ describe("providerRouter", () => {
       const route = selectProviderModel({ taskType });
 
       expect(route.provider).toBe("deepseek");
-      expect(route.model).toBe("deepseek-v4-flash");
+      expect(route.model).toBe("deepseek-v4-pro");
       expect(route.fallbackMode).toContain("mockTextProvider");
     }
   });
@@ -266,6 +266,65 @@ describe("providerRouter", () => {
     expect(result.fallbackUsed).toBe(false);
   });
 
+  it("passes the previous successful keyframe to the next shot in the same continuity group", async () => {
+    process.env.AI_MODE = "real";
+    process.env.ENABLE_REAL_IMAGE = "true";
+    process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
+    const firstAssetId = "11111111-1111-4111-8111-111111111111";
+    const secondAssetId = "22222222-2222-4222-8222-222222222222";
+    const shots = coldBrewDemo.shots.slice(0, 2).map((shot) => ({ ...shot, continuityGroupId: "office-main" }));
+    const spy = vi.spyOn(qwenProviderWithShotImage, "generateShotImage").mockImplementation(async (_projectId, shot) => ({
+      shotId: shot.id,
+      imageUrl: `/api/assets/${shot.id}`,
+      assetId: shot.index === shots[0]!.index ? firstAssetId : secondAssetId,
+      localUrl: `/api/assets/${shot.id}`,
+      prompt: shot.imagePromptCn,
+      provider: "dashscope",
+      model: "qwen-image-2.0",
+      latencyMs: 10,
+      size: "1152*2048",
+      cacheStatus: "cached",
+      fallbackUsed: false,
+      referenceUsed: true,
+      error: null
+    }));
+
+    await generateBatchShotImages("project-1", shots, { aspectRatio: "9:16", hasChineseText: true });
+
+    expect(spy.mock.calls[0]?.[2]?.continuityImageAssetId).toBeUndefined();
+    expect(spy.mock.calls[1]?.[2]?.continuityImageAssetId).toBe(firstAssetId);
+  });
+
+  it("preserves a stored continuity reference when regenerating one shot", async () => {
+    process.env.AI_MODE = "real";
+    process.env.ENABLE_REAL_IMAGE = "true";
+    process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
+    const storedAssetId = "33333333-3333-4333-8333-333333333333";
+    const shot = { ...coldBrewDemo.shots[1]!, continuityGroupId: "office-main" };
+    const spy = vi.spyOn(qwenProviderWithShotImage, "generateShotImage").mockResolvedValue({
+      shotId: shot.id,
+      imageUrl: "/api/assets/regenerated",
+      assetId: "44444444-4444-4444-8444-444444444444",
+      localUrl: "/api/assets/regenerated",
+      prompt: shot.imagePromptCn,
+      provider: "dashscope",
+      model: "qwen-image-2.0",
+      latencyMs: 10,
+      size: "1152*2048",
+      cacheStatus: "cached",
+      fallbackUsed: false,
+      referenceUsed: true,
+      error: null
+    });
+
+    await generateBatchShotImages("project-1", [shot], {
+      aspectRatio: "9:16",
+      continuityImageAssetId: storedAssetId
+    });
+
+    expect(spy.mock.calls[0]?.[2]?.continuityImageAssetId).toBe(storedAssetId);
+  });
+
   it("falls back to placeholder image when qwenImageProvider fails", async () => {
     process.env.AI_MODE = "real";
     process.env.ENABLE_REAL_IMAGE = "true";
@@ -281,13 +340,13 @@ describe("providerRouter", () => {
     expect(result.fallbackReason).toContain("Qwen-Image route failed unexpectedly");
   });
 
-  it("routes new video generation to Wan 2.7 R2V", () => {
-    process.env.WAN_VIDEO_MODEL = "wan2.7-r2v";
+  it("routes new video generation to Wan 2.7 I2V", () => {
+    process.env.WAN_VIDEO_MODEL = "wan2.7-i2v";
 
     const route = selectProviderModel({ taskType: "video", costMode: "lowCost" });
 
     expect(route.provider).toBe("wan");
-    expect(route.model).toBe("wan2.7-r2v");
+    expect(route.model).toBe("wan2.7-i2v");
     expect(route.reason).toContain("Wan 2.7");
   });
 
@@ -315,7 +374,7 @@ describe("providerRouter", () => {
       apiAvailable: false,
       manualImportAvailable: true,
       status: "waiting-manual-import",
-      error: "Wan 2.7 真实调用当前不可用，可从视频库导入完整广告视频作为备用路径。"
+      error: "Wan 2.7 I2V 真实调用当前不可用，可从视频库导入完整广告视频作为备用路径。"
     });
   });  it("does not return legacy video vendors in the primary route", () => {
     const forbidden = /HappyHorse|Kling|Hailuo|fal\\.ai|happyhorse|kling|hailuo/;
@@ -339,7 +398,7 @@ function enableRealTextMode() {
   process.env.AI_MODE = "real";
   process.env.ENABLE_REAL_TEXT = "true";
   process.env.DEEPSEEK_API_KEY = "test-key";
-  process.env.DEEPSEEK_MODEL = "deepseek-v4-flash";
+  process.env.DEEPSEEK_MODEL = "deepseek-v4-pro";
 }
 
 function realTextSuccess<TData>(data: TData) {
@@ -347,7 +406,7 @@ function realTextSuccess<TData>(data: TData) {
     success: true,
     data,
     provider: "deepseek" as const,
-    model: "deepseek-v4-flash",
+    model: "deepseek-v4-pro",
     latencyMs: 12,
     tokenUsage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
     costEstimate: "estimated CNY 0.0010",

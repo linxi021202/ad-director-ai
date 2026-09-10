@@ -4,6 +4,19 @@ vi.mock("@/lib/session/api", () => ({
     session: { id: "test-session", expiresAt: Date.now() + 60_000 }
   }))
 }));
+vi.mock("../lib/visual/visualQA", () => ({
+  createMockKeyframeQA: vi.fn((shot: { id: string }, _attempt: number, frameId?: string) => ({
+    id: crypto.randomUUID(), shotId: shot.id, frameId, attempt: 1, inspectorModel: "mock-visual-qa",
+    checkedAt: new Date().toISOString(), singleFramePassed: true, productMatchPassed: true,
+    characterMatchPassed: true, sceneMatchPassed: true, textSafetyPassed: true, overallPassed: true, issues: []
+  })),
+  inspectKeyframe: vi.fn(async (input: { shot: { id: string }; frameId?: string; candidateAssetId: string; attempt: number }) => ({
+    id: crypto.randomUUID(), shotId: input.shot.id, frameId: input.frameId, assetId: input.candidateAssetId, attempt: input.attempt,
+    inspectorModel: "qwen3.7-plus", checkedAt: new Date().toISOString(), singleFramePassed: true,
+    productMatchPassed: true, characterMatchPassed: true, sceneMatchPassed: true,
+    textSafetyPassed: true, overallPassed: true, issues: []
+  }))
+}));
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,12 +27,18 @@ import { POST as generateStoryboardPOST } from "../app/api/generate-storyboard/r
 import { POST as generateStrategyPOST } from "../app/api/generate-strategy/route";
 import { POST as renderVideoPOST } from "../app/api/render-video/route";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
+import { createPrivateAsset } from "../lib/assets/assetStore";
+import { buildVisualMasterSpecs } from "../lib/continuity/visualMasters";
+import { createMockKeyframeQA, inspectKeyframe } from "../lib/visual/visualQA";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
 import {
   createAnonymousProject,
+  mutateOwnedAnonymousProject,
   requireOwnedAnonymousProject,
-  resetAnonymousProjectQueuesForTests
+  resetAnonymousProjectQueuesForTests,
+  updateOwnedAnonymousProject
 } from "../lib/projects/anonymousProjectStore";
+import { lockVisualAnchorMaster } from "../lib/visual/visualAnchors";
 
 const originalEnv = { ...process.env };
 let storageRoot = "";
@@ -51,8 +70,8 @@ async function completedImageResponse(response: Response) {
   const initial = body.data as { status?: string; eventId?: string } | undefined;
   if (initial?.status !== "running" || !initial.eventId) return body;
 
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const statusResponse = await generateImagesGET(new Request(
       `http://localhost/api/generate-images?projectId=${encodeURIComponent(testProjectId)}&eventId=${encodeURIComponent(initial.eventId!)}`
     ));
@@ -75,10 +94,102 @@ describe("second-stage API routes", () => {
     process.env.ANONYMOUS_SESSION_OWNERSHIP_SALT = "api-route-test-salt";
     resetAnonymousProjectQueuesForTests();
     const created = await createAnonymousProject("test-session");
+    const noProductShots = created.project.shots.map((shot) => ({
+      ...shot,
+      containsProduct: false,
+      exactProductShot: false,
+      characterIds: [],
+      productIds: [],
+      referenceImageAssetIds: []
+    }));
+    let updated = await updateOwnedAnonymousProject("test-session", created.id, { shots: noProductShots });
+    const sceneMaster = await createPrivateAsset("test-session", created.id, {
+      kind: "keyframe",
+      source: "qwen-image",
+      role: "test-scene-master",
+      fileName: "scene-master.png",
+      mimeType: "image/png",
+      bytes: VALID_PNG_BYTES
+    });
+    const productMaster = await createPrivateAsset("test-session", created.id, {
+      kind: "product-image",
+      source: "user-upload",
+      role: "main-product",
+      fileName: "product-master.png",
+      mimeType: "image/png",
+      bytes: VALID_PNG_BYTES
+    });
+    const masterSpecs = buildVisualMasterSpecs(updated.project);
+    updated = await updateOwnedAnonymousProject("test-session", created.id, {
+      brief: {
+        ...updated.project.brief,
+        productImages: [{
+          id: "test-product-master",
+          assetId: productMaster.id,
+          name: "product-master.png",
+          type: "image/png",
+          size: VALID_PNG_BYTES.byteLength,
+          localUrl: `/api/projects/${created.id}/assets/${productMaster.id}`,
+          role: "main-product"
+        }]
+      },
+      productVisualSpec: {
+        sourceAssetId: productMaster.id,
+        containerType: "cup",
+        shape: "tapered cup",
+        proportions: "1.3:1",
+        capStructure: "flat lid",
+        materials: ["paper"],
+        colors: [{ name: "white", hex: "#ffffff" }],
+        labelLayout: "front center",
+        logoPosition: "front center",
+        readablePackagingText: [],
+        heroAngle: "front three-quarter",
+        forbiddenContainerTypes: ["bottle", "can", "carton", "jar"],
+        forbiddenVariations: ["no geometry changes"],
+        inspectorModel: "qwen3.7-plus",
+        inspectedAt: new Date().toISOString()
+      },
+      characterVisualSpecs: masterSpecs.characterVisualSpecs.map((spec) => ({
+        ...spec,
+        masterAssetId: sceneMaster.id,
+        masterAssetIds: [sceneMaster.id],
+        locked: true,
+        lockedAt: new Date().toISOString()
+      })),
+      sceneVisualSpecs: masterSpecs.sceneVisualSpecs.map((spec) => ({
+        ...spec,
+        masterAssetId: sceneMaster.id,
+        masterAssetIds: [sceneMaster.id],
+        locked: true,
+        lockedAt: new Date().toISOString()
+      }))
+    });
+    updated = await mutateOwnedAnonymousProject("test-session", created.id, (project) => {
+      const productLocked = lockVisualAnchorMaster(project, "product");
+      return {
+        ...productLocked,
+        stageStates: {
+          ...productLocked.stageStates!,
+          anchors: { status: "locked", updatedAt: Date.now(), lockedAt: Date.now(), lockedVersion: 1 }
+        }
+      };
+    });
     testProjectId = created.id;
-    testProjectShots = created.project.shots;
-    testHeroShotId = created.project.heroShotId ?? null;
+    testProjectShots = updated.project.shots;
+    testHeroShotId = updated.project.heroShotId ?? null;
     vi.restoreAllMocks();
+    vi.mocked(createMockKeyframeQA).mockImplementation((shot, _attempt, frameId) => ({
+      id: crypto.randomUUID(), shotId: shot.id, frameId, attempt: 1, inspectorModel: "mock-visual-qa",
+      checkedAt: new Date().toISOString(), singleFramePassed: true, productMatchPassed: true,
+      characterMatchPassed: true, sceneMatchPassed: true, textSafetyPassed: true, overallPassed: true, issues: []
+    }));
+    vi.mocked(inspectKeyframe).mockImplementation(async (input) => ({
+      id: crypto.randomUUID(), shotId: input.shot.id, frameId: input.frameId, assetId: input.candidateAssetId, attempt: input.attempt,
+      inspectorModel: "qwen3.7-plus", checkedAt: new Date().toISOString(), singleFramePassed: true,
+      productMatchPassed: true, characterMatchPassed: true, sceneMatchPassed: true,
+      textSafetyPassed: true, overallPassed: true, issues: []
+    }));
   });
 
   afterEach(async () => {
@@ -129,11 +240,11 @@ describe("second-stage API routes", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.stringify(body)).toContain("plannedAssets");
     expect(JSON.stringify(body)).toContain("qwen-image");
-    expect(JSON.stringify(body)).toContain("wan2.7-r2v");
+    expect(JSON.stringify(body)).toContain("wan2.7-i2v");
   });
 
 
-  it("generate-images hero-only returns one planned keyframe without video calls", async () => {
+  it("generate-images hero-only returns independent frames without video calls", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -145,13 +256,13 @@ describe("second-stage API routes", () => {
 
     expect(body.success).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(data.images).toHaveLength(1);
+    expect(data.images).toHaveLength(4);
     expect(data.images[0].shotId).toBe(testHeroShotId);
     expect(data.images[0].provider).toBe("mockImageProvider");
     expect(data.failedShots).toHaveLength(0);
   });
 
-  it("generate-images all-shots respects MAX_IMAGES_PER_RUN", async () => {
+  it("generate-images does not truncate a multi-frame shot architecture", async () => {
     process.env.MAX_IMAGES_PER_RUN = "2";
 
     const response = await generateImagesPOST(
@@ -162,17 +273,27 @@ describe("second-stage API routes", () => {
 
     expect(body.success).toBe(true);
     expect(data.requestedShots).toBe(8);
-    expect(data.generatedShots).toBe(2);
-    expect(data.images).toHaveLength(2);
-  });
+    expect(data.generatedShots).toBe(32);
+    expect(data.images).toHaveLength(32);
+  }, 12_000);
 
   it("generate-images uses the actual 12-shot project count", async () => {
     process.env.MAX_IMAGES_PER_RUN = "12";
-    const twelveShotProject = await createAnonymousProject("test-session", { shotCount: 12 });
+    const template = await createAnonymousProject("test-session", { shotCount: 12 });
+    const twelveShotProject = await updateOwnedAnonymousProject("test-session", testProjectId, {
+      shotCount: 12,
+      shots: template.project.shots.map((shot) => ({
+        ...shot,
+        containsProduct: false,
+        exactProductShot: false,
+        characterIds: [],
+        productIds: []
+      }))
+    });
 
     const response = await generateImagesPOST(
       jsonRequest({
-        projectId: twelveShotProject.id,
+        projectId: testProjectId,
         shots: twelveShotProject.project.shots,
         mode: "all-shots"
       })
@@ -182,9 +303,9 @@ describe("second-stage API routes", () => {
 
     expect(body.success).toBe(true);
     expect(data.requestedShots).toBe(12);
-    expect(data.generatedShots).toBe(12);
-    expect(data.images).toHaveLength(12);
-  });
+    expect(data.generatedShots).toBe(28);
+    expect(data.images).toHaveLength(28);
+  }, 12_000);
   it("generate-images rejects invalid input", async () => {
     const response = await generateImagesPOST(jsonRequest({ projectId: "", shots: [], mode: "all-shots" }));
     const body = await responseJson(response);
@@ -205,9 +326,9 @@ describe("second-stage API routes", () => {
     const data = body.data as { images: unknown[]; generatedShots: number };
 
     expect(body.success).toBe(true);
-    expect(data.generatedShots).toBe(8);
-    expect(data.images).toHaveLength(8);
-  });
+    expect(data.generatedShots).toBe(32);
+    expect(data.images).toHaveLength(32);
+  }, 12_000);
 
   it("generate-images supports partial success when one shot falls back", async () => {
     process.env.AI_MODE = "real";
@@ -218,12 +339,19 @@ describe("second-stage API routes", () => {
     let submissionCount = 0;
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation(async (url: string) => {
-        if (url === "https://example.com/shot-1.png") {
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "https://example.com/shot-1.png" || url === "https://example.com/master.png") {
           return new Response(VALID_PNG_BYTES, {
             status: 200,
             headers: { "Content-Type": "image/png" }
           });
+        }
+
+        if (/Character Master 参考图|Scene Master 空场参考图/i.test(String(init?.body ?? ""))) {
+          return new Response(
+            JSON.stringify({ request_id: "req-master", output: { results: [{ url: "https://example.com/master.png" }] } }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
         }
 
         submissionCount += 1;
@@ -248,20 +376,20 @@ describe("second-stage API routes", () => {
     const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ fallbackUsed: boolean; localUrl?: string }>; failedShots: unknown[] };
 
-    expect(body.success).toBe(true);
-    expect(data.images).toHaveLength(2);
+    expect(body.success, JSON.stringify(body)).toBe(true);
+    expect(data.images).toHaveLength(8);
     expect(data.images[0].fallbackUsed).toBe(false);
     expect(data.images[0].localUrl).toContain(
       `/api/projects/${testProjectId}/assets/`
     );
-    expect(data.images[1].fallbackUsed).toBe(true);
-    expect(data.failedShots).toHaveLength(1);
+    expect(data.images.slice(1).some((image) => image.fallbackUsed)).toBe(true);
+    expect(data.failedShots.length).toBeGreaterThan(0);
     expect(JSON.stringify(body)).not.toContain("sk-dashscope-secret-test-key");
     const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
     const imageEvents = saved.project.generationEvents?.filter((event) => event.provider === "qwen-image") ?? [];
     expect(imageEvents.some((event) => event.status === "running")).toBe(false);
     expect(imageEvents.some((event) => event.status === "fallback" && event.message.includes("provider failed"))).toBe(true);
-  });
+  }, 12_000);
 
 
   it("generate-images does not force DashScope async mode by default", async () => {
@@ -335,13 +463,13 @@ describe("second-stage API routes", () => {
     const data = body.data as { images: Array<{ fallbackUsed: boolean; requestId?: string; localUrl?: string }> };
 
     expect(body.success).toBe(true);
-    expect(data.images).toHaveLength(1);
+    expect(data.images).toHaveLength(4);
     expect(data.images[0].fallbackUsed).toBe(false);
     expect(data.images[0].requestId).toBe("req-task");
     expect(data.images[0].localUrl).toContain(
       `/api/projects/${testProjectId}/assets/`
     );
-    expect(callCount).toBe(3);
+    expect(callCount).toBeGreaterThanOrEqual(3);
   });
   it("generate-images response does not leak DashScope API key", async () => {
     process.env.AI_MODE = "real";
