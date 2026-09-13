@@ -2,165 +2,112 @@
 
 import type { ReactNode } from "react";
 import type { GenerationProject, StageId, StageState, StageStates } from "@/lib/schemas/project";
-import {
-  STAGE_LABELS,
-  STAGE_ORDER,
-  STAGE_RESOURCE,
-  calculateDependencyImpact,
-  canRunStage,
-  currentResourceVersion
-} from "@/lib/workflow/stageGates";
-import { getProjectDurationSec } from "@/lib/video/shotConfig";
+import { STAGE_LABELS, calculateDependencyImpact, canRunStage, currentResourceVersion, STAGE_RESOURCE } from "@/lib/workflow/stageGates";
+import { resolveProjectPlanningConstraints } from "@/lib/projects/planningConstraints";
 import { getVisualAnchorReadiness } from "@/lib/visual/visualAnchors";
+import { getActionBlockers, type WorkflowAction } from "@/lib/workflow/actionBlockers";
+import { GuardedActionButton } from "@/components/workflow/GuardedActionButton";
 
-export function StageDirectorRail({
-  activeStage,
-  states,
-  onSelect
-}: {
-  activeStage: StageId;
-  states: StageStates;
-  onSelect: (stageId: StageId) => void;
-}) {
-  return (
-    <nav className="stage-director-rail" aria-label="广告制作阶段">
-      <ol>
-        {STAGE_ORDER.map((stageId, index) => {
-          const state = states[stageId];
-          return (
-            <li key={stageId} className={`is-${state.status}${activeStage === stageId ? " is-active" : ""}`}>
-              <button type="button" aria-current={activeStage === stageId ? "step" : undefined} onClick={() => onSelect(stageId)}>
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                <strong>{STAGE_LABELS[stageId]}</strong>
-                <small>{stageStatusLabel(state.status)}</small>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-    </nav>
-  );
+const MAJOR_STEPS: Array<{ label: string; stages: StageId[] }> = [
+  { label: "商品与创意", stages: ["brief", "creative"] },
+  { label: "人物与场景", stages: ["anchors"] },
+  { label: "分镜制作", stages: ["storyboard", "keyframes"] },
+  { label: "视频与成片", stages: ["video", "final"] }
+];
+
+export function StageDirectorRail({ activeStage, states, onSelect }: { activeStage: StageId; states: StageStates; onSelect: (stageId: StageId) => void }) {
+  return <nav className="stage-director-rail" aria-label="广告制作进度"><ol>{MAJOR_STEPS.map((step, index) => {
+    const active = step.stages.includes(activeStage);
+    const status = majorStatus(step.stages.map((stage) => states[stage]));
+    return <li key={step.label} className={`is-${status}${active ? " is-active" : ""}`}><button type="button" aria-current={active ? "step" : undefined} onClick={() => onSelect(resolveMajorTarget(step.stages, states, activeStage))}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step.label}</strong><small>{stageStatusLabel(status)}</small></button></li>;
+  })}</ol></nav>;
 }
 
-export function StageContextPanel({ project, activeStage, open, onClose }: { project: GenerationProject; activeStage: StageId; open?: boolean; onClose?: () => void }) {
-  const shots = project.shots;
-  return (
-    <aside className={`stage-context-panel${open ? " is-open" : ""}`} aria-label="阶段导航">
-      <header><div><span>Context</span><h2>{contextTitle(activeStage)}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭阶段导航" onClick={onClose}>×</button> : null}</header>
-      {activeStage === "brief" ? (
-        <dl className="stage-context-summary">
-          <ContextMetric label="项目" value={project.brief.productName || "未命名商品"} />
-          <ContextMetric label="平台" value={platformLabel(project.brief.platform)} />
-          <ContextMetric label="画幅" value={project.brief.aspectRatio} />
-          <ContextMetric label="镜头" value={`${shots.length} 个`} />
-          <ContextMetric label="目标 / 实际" value={`${project.targetDurationSec ?? project.brief.durationSec}s / ${getProjectDurationSec(project)}s`} />
-        </dl>
-      ) : null}
-      {activeStage === "creative" ? (
-        <div className="stage-context-list"><span className="is-current">当前方向</span><button type="button">候选方向 01</button><button type="button" disabled>候选方向 02</button><button type="button" disabled>候选方向 03</button></div>
-      ) : null}
-      {activeStage === "anchors" ? (
-        <div className="stage-context-list"><span>身份基准</span><a href="#anchor-product">产品基准</a>{(project.characterVisualSpecs ?? []).map((spec) => <a key={spec.id} href={`#anchor-character-${spec.id}`}>{spec.role}<small>{spec.locked ? "Locked" : "待确认"}</small></a>)}{(project.sceneVisualSpecs ?? []).map((spec) => <a key={spec.id} href={`#anchor-scene-${spec.id}`}>{spec.name}<small>{spec.locked ? "Locked" : "待确认"}</small></a>)}</div>
-      ) : null}
-      {activeStage === "storyboard" || activeStage === "keyframes" || activeStage === "video" ? (
-        <div className="stage-shot-navigator"><span>{activeStage === "video" ? "镜头生成" : "Shot Navigator"}</span>{shots.map((shot) => <a key={shot.id} href={`#${activeStage}-shot-${shot.id}`}>Shot {String(shot.index).padStart(2, "0")}<small>{shot.durationSec}s</small></a>)}</div>
-      ) : null}
-      {activeStage === "final" ? (
-        <div className="stage-context-list"><span>Final Sections</span><button type="button">准备度</button><button type="button">Ending</button><button type="button">商业质检</button></div>
-      ) : null}
-      <footer><small>实际时间轴</small><strong>{getProjectDurationSec(project)} 秒</strong></footer>
-    </aside>
-  );
-}
-
-export function StageInspector({
-  project,
-  activeStage,
-  state,
-  busy,
-  onLock,
-  onOpenModels,
-  open,
-  onClose,
-  children
-}: {
-  project: GenerationProject;
-  activeStage: StageId;
-  state: StageState;
-  busy: boolean;
-  onLock: () => void;
-  onOpenModels: () => void;
-  open?: boolean;
-  onClose?: () => void;
-  children?: ReactNode;
-}) {
-  const states = project.stageStates!;
-  const gate = canRunStage(states, activeStage);
-  const resource = STAGE_RESOURCE[activeStage];
-  const version = currentResourceVersion(project.resourceVersions ?? [], resource.resourceId);
-  const impact = version
-    ? calculateDependencyImpact(project.dependencyGraph ?? [], resource.resourceId, version.version, version.version + 1)
-    : null;
-  const dependencies = (project.dependencyGraph ?? []).find((node) => node.resourceId === resource.resourceId)?.dependsOn ?? [];
+export function StageContextPanel({ project, activeStage, onSelect, open, onClose }: { project: GenerationProject; activeStage: StageId; onSelect?: (stageId: StageId) => void; open?: boolean; onClose?: () => void }) {
+  const constraints = resolveProjectPlanningConstraints(project);
+  const step = MAJOR_STEPS.find((item) => item.stages.includes(activeStage))!;
   const anchorReadiness = activeStage === "anchors" ? getVisualAnchorReadiness(project) : null;
-  return (
-    <aside className={`stage-inspector${open ? " is-open" : ""}`} aria-label="阶段检查器">
-      <header><div><span>Stage Inspector</span><h2>{STAGE_LABELS[activeStage]}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭阶段检查器" onClick={onClose}>×</button> : null}</header>
-      <section className="stage-inspector-status">
-        <div><span>状态</span><strong className={`is-${state.status}`}>{stageStatusLabel(state.status)}</strong></div>
-        <div><span>当前版本</span><strong>{version ? `V${version.version}` : "尚未创建"}</strong></div>
-        <div><span>锁定</span><strong>{state.status === "locked" ? "用户已确认" : "等待确认"}</strong></div>
-      </section>
-      <section className="stage-inspector-section">
-        <h3>依赖</h3>
-        {dependencies.length ? dependencies.map((item) => <p key={`${item.resourceId}-${item.version}`}>{resourceLabel(item.resourceId)} <span>V{item.version}</span></p>) : <p>无上游依赖</p>}
-        {!gate.allowed ? <div className="stage-gate-blocked">{gate.reason}</div> : null}
-      </section>
-      <section className="stage-inspector-section">
-        <h3>修改影响</h3>
-        {impact && impact.affectedStages.length ? <p>{impact.affectedStages.map((item) => STAGE_LABELS[item]).join("、")}</p> : <p>当前没有已生成的下游资产。</p>}
-        {impact?.affectedShotIds.length ? <small>{impact.affectedShotIds.length} 个镜头 · {impact.affectedFrameIds.length} 帧 · {impact.affectedVideoIds.length} 个视频</small> : null}
-      </section>
-      {anchorReadiness ? <section className="stage-inspector-section stage-anchor-readiness"><h3>Anchor Gate</h3><p><span>产品</span><strong>{anchorReadiness.productLocked ? "Locked" : "待确认"}</strong></p><p><span>人物</span><strong>{anchorReadiness.missingCharacterIds.length ? `缺 ${anchorReadiness.missingCharacterIds.length}` : "Locked"}</strong></p><p><span>场景</span><strong>{anchorReadiness.missingSceneIds.length ? `缺 ${anchorReadiness.missingSceneIds.length}` : "Locked"}</strong></p>{!anchorReadiness.ready ? <small>全部 Required Masters 锁定后，才可锁定视觉基准。</small> : null}</section> : null}
-      {state.status === "ready" ? <button type="button" className="stage-lock-button" disabled={busy || !gate.allowed} onClick={onLock}>{busy ? "锁定中" : `锁定${STAGE_LABELS[activeStage]}`}</button> : null}
-      {state.status === "locked" ? <div className="stage-locked-note">Locked 内容不会被 AI 静默覆盖。</div> : null}
-      <details className="stage-provider-details"><summary>Provider Readiness</summary><button type="button" onClick={onOpenModels}>管理模型配置</button></details>
-      <details className="stage-provider-details"><summary>Generation Trace</summary><p>完整服务端事件保留在项目日志中。</p></details>
-      {children}
-    </aside>
-  );
+  return <aside className={`stage-context-panel${open ? " is-open" : ""}`} aria-label="项目导航">
+    <header><div><span>当前步骤</span><h2>{step.label}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭项目导航" onClick={onClose}>×</button> : null}</header>
+    {activeStage === "brief" ? <p className="stage-context-copy">先完成商品信息，再生成并选择创意方向。</p> : null}
+    <div className="stage-context-list"><span>本步骤内容</span>{step.stages.map((stage) => <button type="button" className={stage === activeStage ? "is-current" : ""} key={stage} onClick={() => onSelect?.(stage)}>{userStageLabel(stage)}<small>{stageStatusLabel(project.stageStates?.[stage].status ?? "draft")}</small></button>)}</div>
+    {anchorReadiness ? <div className="stage-context-list"><span>确认进度</span><a href="#anchor-product">产品图<small>{anchorReadiness.productLocked ? "已确认" : "待确认"}</small></a><a href="#anchor-characters">人物<small>{anchorReadiness.missingCharacterIds.length ? `${anchorReadiness.missingCharacterIds.length} 项待确认` : "已确认"}</small></a><a href="#anchor-scenes">场景<small>{anchorReadiness.missingSceneIds.length ? `${anchorReadiness.missingSceneIds.length} 项待确认` : "已确认"}</small></a></div> : null}
+    {(activeStage === "storyboard" || activeStage === "keyframes" || activeStage === "video") ? <div className="stage-shot-navigator"><span>镜头列表</span>{project.shots.map((shot) => <a key={shot.id} href={`#${activeStage}-shot-${shot.id}`}>镜头 {String(shot.index).padStart(2, "0")}<small>{shot.durationSec} 秒</small></a>)}</div> : null}
+    <footer className="stage-project-summary"><small>{project.brief.productName}</small><strong>{constraints.shotCount} 镜头 · {constraints.targetDurationSec} 秒 · {constraints.aspectRatio}</strong></footer>
+  </aside>;
+}
+
+export function StageInspector({ project, activeStage, state, busy, onLock, onOpenModels, canConfirm = true, open, onClose, children }: { project: GenerationProject; activeStage: StageId; state: StageState; busy: boolean; onLock: () => void; onOpenModels: () => void; canConfirm?: boolean; open?: boolean; onClose?: () => void; children?: ReactNode }) {
+  const states = project.stageStates!;
+  const allowed = canRunStage(states, activeStage);
+  const remaining = remainingTasks(project, activeStage, state);
+  const next = nextStep(activeStage, state);
+  const resource = STAGE_RESOURCE[activeStage];
+  const record = currentResourceVersion(project.resourceVersions ?? [], resource.resourceId);
+  const impact = record ? calculateDependencyImpact(project.dependencyGraph ?? [], resource.resourceId, record.version, record.version + 1) : null;
+  const blockers = getActionBlockers(project, actionForStage(activeStage));
+  return <aside className={`stage-inspector${open ? " is-open" : ""}`} aria-label="步骤状态">
+    <header><div><span>制作状态</span><h2>{userStageLabel(activeStage)}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭状态面板" onClick={onClose}>×</button> : null}</header>
+    <section className="stage-inspector-status"><div><span>当前状态</span><strong className={`is-${state.status}`}>{stageStatusLabel(state.status)}</strong></div></section>
+    <section className="stage-inspector-section"><h3>还需要</h3><p>{remaining}</p></section>
+    <section className="stage-inspector-section"><h3>下一步</h3><p>{next}</p>{!allowed.allowed ? <div className="stage-gate-blocked">{friendlyGateReason(activeStage)}</div> : null}</section>
+    {state.status === "ready" && canConfirm ? <GuardedActionButton className="stage-lock-button" blockers={blockers} busy={busy} busyLabel="确认中…" onAction={onLock}>{confirmLabel(activeStage)}</GuardedActionButton> : null}
+    {state.status === "locked" ? <div className="stage-locked-note">这一步已经确认，后续生成会继续使用当前内容。</div> : null}
+    <details className="stage-provider-details"><summary>生成详情</summary><p>{record ? `已保存第 ${record.version} 次内容记录。` : "尚未生成内容记录。"}</p>{impact?.affectedStages.length ? <p>再次修改会让后续 {impact.affectedStages.length} 个步骤需要更新。</p> : null}<button type="button" onClick={onOpenModels}>模型设置</button></details>
+    {children}
+  </aside>;
+}
+
+function actionForStage(stage: StageId): WorkflowAction {
+  return ({ brief: "CONFIRM_PRODUCT", creative: "GENERATE_CHARACTER", anchors: "CONFIRM_VISUAL_SETUP", storyboard: "CONFIRM_STORYBOARD", keyframes: "GENERATE_VIDEO", video: "GENERATE_FINAL", final: "GENERATE_FINAL" } as const)[stage];
 }
 
 export function stageStatusLabel(status: StageState["status"]): string {
-  return ({
-    draft: "编辑中",
-    running: "执行中",
-    ready: "待确认",
-    locked: "已锁定",
-    outdated: "需更新",
-    failed: "失败",
-    blocked: "待解锁"
-  } as const)[status];
+  return ({ draft: "未开始", running: "生成中", ready: "待确认", locked: "已确认", outdated: "需要更新", failed: "失败", blocked: "未开始" } as const)[status];
 }
 
-function ContextMetric({ label, value }: { label: string; value: string }) {
-  return <div><dt>{label}</dt><dd>{value}</dd></div>;
+function majorStatus(states: StageState[]): StageState["status"] {
+  if (states.some((state) => state.status === "failed")) return "failed";
+  if (states.some((state) => state.status === "running")) return "running";
+  if (states.some((state) => state.status === "outdated")) return "outdated";
+  if (states.every((state) => state.status === "locked")) return "locked";
+  if (states.some((state) => state.status === "ready")) return "ready";
+  return "draft";
 }
 
-function contextTitle(stageId: StageId): string {
-  if (stageId === "brief") return "项目摘要";
-  if (stageId === "creative") return "创意候选";
-  if (stageId === "anchors") return "视觉身份";
-  if (stageId === "final") return "成片检查";
-  return "镜头导航";
+function resolveMajorTarget(stages: StageId[], states: StageStates, active: StageId): StageId {
+  if (stages.includes(active)) return active;
+  return stages.find((stage) => !["locked", "blocked"].includes(states[stage].status)) ?? stages.at(-1)!;
 }
 
-function platformLabel(platform: GenerationProject["brief"]["platform"]): string {
-  return ({ douyin: "抖音", xiaohongshu: "小红书", ecommerce: "电商" } as const)[platform];
+function userStageLabel(stage: StageId) {
+  return ({ brief: "商品信息", creative: "创意方向", anchors: "人物与场景", storyboard: "文字分镜", keyframes: "关键帧", video: "视频生成", final: "成片检查" } as const)[stage];
 }
 
-function resourceLabel(resourceId: string): string {
-  const stage = (Object.entries(STAGE_RESOURCE) as Array<[StageId, { resourceId: string }]>)
-    .find(([, resource]) => resource.resourceId === resourceId)?.[0];
-  return stage ? STAGE_LABELS[stage] : resourceId;
+function remainingTasks(project: GenerationProject, stage: StageId, state: StageState) {
+  if (state.status === "locked") return "没有待办";
+  if (stage === "brief") return "保存商品信息并生成创意";
+  if (stage === "creative") return project.creativeWorkspace ? "选择并确认一套创意" : "生成三套创意方向";
+  if (stage === "anchors") {
+    const readiness = getVisualAnchorReadiness(project);
+    const count = Number(!readiness.productLocked) + readiness.missingCharacterIds.length + readiness.missingSceneIds.length;
+    return count ? `确认 ${count} 项视觉设定` : "确认整套视觉设定";
+  }
+  if (stage === "storyboard") return "检查镜头数量、节奏和内容";
+  if (stage === "keyframes") return "生成并确认当前镜头关键帧";
+  if (stage === "video") return "生成选中镜头的视频";
+  return "检查并导出成片";
+}
+
+function nextStep(stage: StageId, state: StageState) {
+  if (state.status !== "locked") return `完成并确认${userStageLabel(stage)}`;
+  return ({ brief: "选择创意方向", creative: "生成人物与场景", anchors: "生成文字分镜", storyboard: "制作当前镜头关键帧", keyframes: "生成视频", video: "合成并检查成片", final: "项目已完成" } as const)[stage];
+}
+
+function confirmLabel(stage: StageId) {
+  return ({ brief: "确认商品信息", creative: "确认创意", anchors: "确认视觉设定", storyboard: "确认分镜并继续", keyframes: "确认关键帧", video: "确认视频", final: "确认成片" } as const)[stage];
+}
+
+function friendlyGateReason(stage: StageId) {
+  return ({ brief: "", creative: "请先确认商品信息。", anchors: "请先确认创意方向。", storyboard: "请先确认视觉设定。", keyframes: "请先确认文字分镜。", video: "请先确认关键帧。", final: "请先确认视频。" } as const)[stage];
 }

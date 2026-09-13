@@ -1,238 +1,109 @@
 "use client";
 
+import Link from "next/link";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
-import type { GenerationProject, VisualAnchorCandidateKind } from "@/lib/schemas/project";
+import type { GenerationProject, VisualAnchorCandidate, VisualAnchorCandidateKind } from "@/lib/schemas/project";
 import { currentMasterAssetId, getVisualAnchorReadiness } from "@/lib/visual/visualAnchors";
+import { getActionBlockers } from "@/lib/workflow/actionBlockers";
+import { GuardedActionButton } from "@/components/workflow/GuardedActionButton";
 
 type Props = {
   project: GenerationProject;
   busyTarget: string | null;
   onInitialize: () => void;
+  onGenerateAll: () => void;
+  onConfirmProduct: () => void;
   onGenerateCandidates: (kind: VisualAnchorCandidateKind, targetId: string) => void;
   onSetCurrent: (kind: VisualAnchorCandidateKind, targetId: string, candidateId: string) => void;
-  onLockMaster: (kind: "product" | VisualAnchorCandidateKind, targetId?: string) => void;
+  onConfirmSelection: () => void;
 };
 
-export function VisualAnchorsCanvas({
-  project,
-  busyTarget,
-  onInitialize,
-  onGenerateCandidates,
-  onSetCurrent,
-  onLockMaster
-}: Props) {
+export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGenerateAll, onConfirmProduct, onGenerateCandidates, onSetCurrent, onConfirmSelection }: Props) {
   const workspace = project.visualAnchorWorkspace;
   const readiness = getVisualAnchorReadiness(project);
   const mainProduct = project.brief.productImages?.find((image) => image.role === "main-product")
     ?? project.brief.productImages?.find((image) => image.role !== "logo");
-  const references = project.brief.productImages?.filter((image) => image.role === "reference") ?? [];
+  const characters = (project.characterVisualSpecs ?? []).filter((item) => workspace?.requiredCharacterIds.includes(item.id));
+  const scenes = (project.sceneVisualSpecs ?? []).filter((item) => workspace?.requiredSceneIds.includes(item.id));
+  const hasCandidates = characters.every((spec) => activeCandidates(workspace?.characterCandidates, spec.id).length > 0)
+    && scenes.every((spec) => activeCandidates(workspace?.sceneCandidates, spec.id).length > 0);
 
   return (
-    <section className="visual-anchor-canvas" aria-label="视觉基准工作区">
-      <header className="visual-anchor-toolbar">
-        <div>
-          <h2>Identity Gate</h2>
-          <p>先确认不会变化的身份，再让后续镜头改变构图、动作、表情和光线。</p>
-        </div>
-        <button type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={onInitialize}>
-          {busyTarget === "initialize" ? "整理中" : "刷新基准需求"}
-        </button>
-      </header>
-
-      <section className="anchor-gate-summary" aria-label="视觉基准完成度">
-        <AnchorGateMetric label="Product Master" ready={readiness.productLocked} detail={productMissingLabel(readiness.missingProductReason)} />
-        <AnchorGateMetric label="Character Masters" ready={readiness.missingCharacterIds.length === 0} detail={readiness.missingCharacterIds.length ? `还需确认 ${readiness.missingCharacterIds.length} 个` : "全部已锁定"} />
-        <AnchorGateMetric label="Scene Masters" ready={readiness.missingSceneIds.length === 0} detail={readiness.missingSceneIds.length ? `还需确认 ${readiness.missingSceneIds.length} 个` : "全部已锁定"} />
-      </section>
+    <section className="visual-anchor-canvas" aria-label="视觉设定">
+      <div className="visual-anchor-intro">
+        <div><h2>产品、人物与场景</h2><p>确认后，这些形象会贯穿后续分镜和关键帧。</p></div>
+        {!workspace ? <button type="button" className="button-primary-v3" disabled={busyTarget !== null} onClick={onInitialize}>{busyTarget ? "准备中" : "准备人物与场景"}</button>
+          : !hasCandidates ? <GuardedActionButton className="button-primary-v3" blockers={getActionBlockers(project, "GENERATE_CHARACTER")} busy={busyTarget !== null} busyLabel="生成中…" onAction={onGenerateAll}>生成人物与场景候选</GuardedActionButton>
+            : readiness.ready ? <span className="anchor-complete-state">人物与场景已确认</span>
+              : <GuardedActionButton className="button-primary-v3" blockers={getActionBlockers(project, "CONFIRM_VISUAL_SETUP")} busy={busyTarget !== null} busyLabel="确认中…" onAction={onConfirmSelection}>确认人物与场景，继续制作分镜</GuardedActionButton>}
+      </div>
 
       <section className="anchor-work-section anchor-product-section" id="anchor-product">
-        <AnchorSectionHeader
-          label="Product Master"
-          title="产品身份基准"
-          version={workspace?.productMaster.version ?? 1}
-          locked={Boolean(workspace?.productMaster.locked)}
-        />
+        <SectionTitle label="真实商品" title="产品图" status={readiness.productLocked ? "已确认" : mainProduct?.assetId ? "待确认" : "未开始"} />
         <div className="anchor-product-layout">
           <div className="anchor-product-media">
-            {mainProduct?.assetId ? (
-              <AdaptiveMediaFrame
-                aspectRatio="1:1"
-                stage="product"
-                src={`/api/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(mainProduct.assetId)}`}
-                mediaType="image"
-                fit="contain"
-                showBlurredBackdrop={false}
-                alt={mainProduct.name}
-              />
-            ) : <div className="anchor-media-empty"><strong>缺少真实产品图片</strong><span>返回商品简报上传主产品。</span></div>}
+            {mainProduct?.assetId ? <AdaptiveMediaFrame aspectRatio="1:1" stage="product" src={assetUrl(project.id, mainProduct.assetId)} mediaType="image" fit="contain" showBlurredBackdrop={false} alt={mainProduct.name} />
+              : <div className="anchor-media-empty"><strong>还没有主产品图</strong><span>请先回到商品信息上传真实图片。</span></div>}
           </div>
           <div className="anchor-product-spec">
-            <p className="anchor-purpose-copy">产品身份基准。只能来自用户上传的真实产品图片，不由 AI 重新设计。</p>
-            <dl>
-              <SpecRow label="保真模式" value="Exact" />
-              <SpecRow label="容器类型" value={project.productVisualSpec?.containerType ?? "等待分析"} />
-              <SpecRow label="轮廓" value={project.productVisualSpec?.shape ?? "等待分析"} />
-              <SpecRow label="比例" value={project.productVisualSpec?.proportions ?? "等待分析"} />
-              <SpecRow label="材质" value={project.productVisualSpec?.materials.join("、") ?? "等待分析"} />
-            </dl>
-            <div className="anchor-reference-strip">
-              <span>补充参考</span>
-              <p>可选。同一产品的侧面、45°或细节照片。</p>
-              <strong>{references.length} / 2</strong>
+            <strong>{mainProduct?.assetId ? "已使用你上传的真实产品图" : "请上传真实产品图"}</strong>
+            <p>{mainProduct?.assetId ? "后续广告将以这张真实商品图作为产品外观参考。" : "保存产品原图后即可确认产品，外观分析不会阻止后续操作。"}</p>
+            <div className="anchor-inline-actions">
+              {mainProduct?.assetId ? <a href={assetUrl(project.id, mainProduct.assetId)} target="_blank" rel="noreferrer">查看原图</a> : null}
+              <Link href={`/generate?projectId=${encodeURIComponent(project.id)}&stage=brief`}>更换产品图</Link>
             </div>
-            {!workspace?.productMaster.locked ? (
-              <button
-                type="button"
-                className="button-primary-v3"
-                disabled={busyTarget !== null || !mainProduct?.assetId || project.productVisualSpec?.sourceAssetId !== mainProduct.assetId}
-                onClick={() => onLockMaster("product")}
-              >
-                {busyTarget === "lock:product" ? "锁定中" : "锁定 Product Master"}
-              </button>
-            ) : <p className="anchor-lock-confirmation">已锁定真实产品像素与 Product Visual Spec。</p>}
+            {!readiness.productLocked ? <GuardedActionButton className="button-secondary-v3" blockers={getActionBlockers(project, "CONFIRM_PRODUCT")} busy={busyTarget === "lock:product"} busyLabel="确认中…" onAction={onConfirmProduct}>确认产品</GuardedActionButton> : <span className="anchor-lock-confirmation">产品已确认</span>}
+            <details className="stage-provider-details"><summary>生成详情</summary><p>{project.productVisualSpec ? "已识别外形、材质与主要颜色，用于加强背景和光线适配。" : "图片分析未完成也不会阻止你继续选择人物和场景。"}</p></details>
           </div>
         </div>
       </section>
 
-      {(project.characterVisualSpecs ?? []).map((spec) => {
-        const brief = workspace?.characterBriefs.find((item) => item.id === spec.id);
-        const selectedAssetId = currentMasterAssetId(spec);
-        const candidates = workspace?.characterCandidates.filter((item) => item.targetId === spec.id && (item.status !== "outdated" || item.assetId === selectedAssetId)) ?? [];
-        return (
-          <section className="anchor-work-section" id={`anchor-character-${spec.id}`} key={spec.id}>
-            <AnchorSectionHeader label="Character Master" title={spec.role} version={spec.version ?? 1} locked={spec.locked} />
-            <div className="anchor-identity-grid">
-              <div className="anchor-brief-panel">
-                <h3>Character Brief</h3>
-                <dl>
-                  <SpecRow label="年龄观感" value={brief?.apparentAgeRange ?? spec.apparentAgeRange ?? "待确认"} />
-                  <SpecRow label="脸部" value={brief?.faceAppearance ?? spec.faceAppearance ?? spec.faceDescription} />
-                  <SpecRow label="发型" value={`${spec.hairstyle} · ${spec.hairColor}`} />
-                  <SpecRow label="服装" value={brief?.wardrobe ?? spec.wardrobe.join("、")} />
-                  <SpecRow label="体型" value={spec.bodyBuild} />
-                </dl>
-                <div className="anchor-state-list">
-                  <span>Identity / State 分离</span>
-                  {(brief?.states ?? spec.states ?? []).map((state) => <p key={state.id}><strong>{state.label}</strong>{state.description}</p>)}
-                </div>
-              </div>
-              <div className="anchor-candidate-panel">
-                <CandidateHeader
-                  count={candidates.length}
-                  label="人物候选"
-                  actionLabel="生成人物候选 · 3 张"
-                  busy={busyTarget === `generate:character:${spec.id}`}
-                  disabled={busyTarget !== null}
-                  onGenerate={() => onGenerateCandidates("character", spec.id)}
-                />
-                <div className="anchor-candidate-grid">
-                  {candidates.length ? candidates.map((candidate) => (
-                    <AnchorCandidate
-                      key={candidate.id}
-                      projectId={project.id}
-                      candidate={candidate}
-                      selected={selectedAssetId === candidate.assetId}
-                      locked={spec.locked && selectedAssetId === candidate.assetId}
-                      busy={busyTarget !== null}
-                      onSelect={() => onSetCurrent("character", spec.id, candidate.id)}
-                    />
-                  )) : <CandidateEmpty kind="人物" />}
-                </div>
-                {selectedAssetId && !spec.locked ? <button type="button" className="button-primary-v3" disabled={busyTarget !== null} onClick={() => onLockMaster("character", spec.id)}>{busyTarget === `lock:character:${spec.id}` ? "锁定中" : "锁定 Character Master"}</button> : null}
-              </div>
-            </div>
-          </section>
-        );
-      })}
+      <section className="anchor-work-section" id="anchor-characters">
+        <SectionTitle label="广告角色" title="人物" status={characters.length === 0 ? "不需要" : readiness.missingCharacterIds.length ? "待确认" : "已确认"} />
+        {characters.length === 0 ? <div className="anchor-friendly-empty"><strong>这个创意不需要出镜人物</strong><span>后续会以商品和场景推进叙事。</span></div> : characters.map((spec) => {
+          const brief = workspace?.characterBriefs.find((item) => item.id === spec.id);
+          const candidates = activeCandidates(workspace?.characterCandidates, spec.id);
+          return <div className="visual-choice-module" key={spec.id}>
+            <header><div><h3>{spec.role}</h3><p>{brief?.apparentAgeRange} · {brief?.wardrobe ?? spec.wardrobe.join("、")}</p></div><button type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("character", spec.id)}>{busyTarget === `generate:character:${spec.id}` ? "生成中" : candidates.length ? "换一组" : "生成人物候选"}</button></header>
+            <CandidateGrid projectId={project.id} candidates={candidates} selectedAssetId={currentMasterAssetId(spec)} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("character", spec.id, candidateId)} />
+          </div>;
+        })}
+      </section>
 
-      {(project.sceneVisualSpecs ?? []).map((spec) => {
-        const selectedAssetId = currentMasterAssetId(spec);
-        const candidates = workspace?.sceneCandidates.filter((item) => item.targetId === spec.id && (item.status !== "outdated" || item.assetId === selectedAssetId)) ?? [];
-        return (
-          <section className="anchor-work-section" id={`anchor-scene-${spec.id}`} key={spec.id}>
-            <AnchorSectionHeader label="Scene Master" title={spec.name} version={spec.version ?? 1} locked={spec.locked} />
-            <div className="anchor-identity-grid">
-              <div className="anchor-brief-panel">
-                <h3>Scene Identity</h3>
-                <p className="anchor-purpose-copy">摄影机可以变化，空间结构和主要物体关系保持固定。</p>
-                <dl>
-                  <SpecRow label="空间结构" value={spec.architecture} />
-                  <SpecRow label="固定家具" value={spec.furniture.join("、") || "无"} />
-                  <SpecRow label="主要道具" value={spec.heroProps.join("、") || "无"} />
-                </dl>
-                <div className="scene-layout-map">
-                  <span>Spatial Anchors</span>
-                  {spec.layout?.anchors.map((anchor) => <p key={anchor.id}><strong>{anchor.id}</strong><em>{anchor.semanticPosition}</em></p>)}
-                </div>
-                <div className="anchor-state-list">
-                  <span>Scene States</span>
-                  {spec.states?.map((state) => <p key={state.id}><strong>{state.label}</strong>{state.lighting}</p>)}
-                </div>
-              </div>
-              <div className="anchor-candidate-panel">
-                <CandidateHeader
-                  count={candidates.length}
-                  label="场景候选"
-                  actionLabel="生成场景候选 · 3 张"
-                  busy={busyTarget === `generate:scene:${spec.id}`}
-                  disabled={busyTarget !== null}
-                  onGenerate={() => onGenerateCandidates("scene", spec.id)}
-                />
-                <div className="anchor-candidate-grid is-scene">
-                  {candidates.length ? candidates.map((candidate) => (
-                    <AnchorCandidate
-                      key={candidate.id}
-                      projectId={project.id}
-                      candidate={candidate}
-                      selected={selectedAssetId === candidate.assetId}
-                      locked={spec.locked && selectedAssetId === candidate.assetId}
-                      busy={busyTarget !== null}
-                      onSelect={() => onSetCurrent("scene", spec.id, candidate.id)}
-                    />
-                  )) : <CandidateEmpty kind="场景" />}
-                </div>
-                {selectedAssetId && !spec.locked ? <button type="button" className="button-primary-v3" disabled={busyTarget !== null} onClick={() => onLockMaster("scene", spec.id)}>{busyTarget === `lock:scene:${spec.id}` ? "锁定中" : "锁定 Scene Master"}</button> : null}
-              </div>
-            </div>
-          </section>
-        );
-      })}
+      <section className="anchor-work-section" id="anchor-scenes">
+        <SectionTitle label="拍摄空间" title="场景" status={readiness.missingSceneIds.length ? "待确认" : "已确认"} />
+        {scenes.map((spec) => {
+          const candidates = activeCandidates(workspace?.sceneCandidates, spec.id);
+          return <div className="visual-choice-module" key={spec.id}>
+            <header><div><h3>{spec.name}</h3><p>{spec.architecture}</p></div><button type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("scene", spec.id)}>{busyTarget === `generate:scene:${spec.id}` ? "生成中" : candidates.length ? "换一组" : "生成场景候选"}</button></header>
+            <CandidateGrid projectId={project.id} candidates={candidates} selectedAssetId={currentMasterAssetId(spec)} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("scene", spec.id, candidateId)} />
+            <details className="stage-provider-details"><summary>场景变化范围</summary><p>构图和机位可以变化，场景状态只改变光线、天气和少量道具状态。</p></details>
+          </div>;
+        })}
+      </section>
     </section>
   );
 }
 
-function AnchorSectionHeader({ label, title, version, locked }: { label: string; title: string; version: number; locked: boolean }) {
-  return <header className="anchor-section-header"><div><span>{label}</span><h2>{title}</h2></div><div><em>V{version}</em><strong className={locked ? "is-locked" : ""}>{locked ? "Locked" : "待确认"}</strong></div></header>;
+function CandidateGrid({ projectId, candidates, selectedAssetId, busy, onSelect }: { projectId: string; candidates: VisualAnchorCandidate[]; selectedAssetId?: string; busy: boolean; onSelect: (candidateId: string) => void }) {
+  if (candidates.length === 0) return <div className="anchor-friendly-empty"><strong>还没有候选图</strong><span>生成后会在这里出现独立图片，不会使用拼图。</span></div>;
+  return <div className={`anchor-candidate-grid${candidates[0]?.kind === "scene" ? " is-scene" : ""}`}>{candidates.map((candidate) => {
+    const selected = candidate.assetId === selectedAssetId;
+    return <article className={`anchor-candidate${selected ? " is-selected" : ""}`} key={candidate.id}>
+      <AdaptiveMediaFrame aspectRatio={candidate.kind === "scene" ? "16:9" : "9:16"} stage="auto" src={assetUrl(projectId, candidate.assetId)} mediaType="image" fit="cover" alt={candidate.label} />
+      <footer><div><strong>{candidate.label}</strong><span>{candidate.recommended ? "系统推荐" : selected ? "已选择" : "可选择"}</span></div><button type="button" disabled={busy || selected} onClick={() => onSelect(candidate.id)}>{selected ? "已选择" : "选择"}</button></footer>
+    </article>;
+  })}</div>;
 }
 
-function CandidateHeader({ count, label, actionLabel, busy, disabled, onGenerate }: { count: number; label: string; actionLabel: string; busy: boolean; disabled: boolean; onGenerate: () => void }) {
-  return <header className="anchor-candidate-header"><div><h3>{label}</h3><span>{count ? `${count} 个独立资产` : "尚未生成"}</span></div><button type="button" className="button-secondary-v3" disabled={disabled} onClick={onGenerate}>{busy ? "生成中" : actionLabel}</button></header>;
+function SectionTitle({ label, title, status }: { label: string; title: string; status: string }) {
+  return <header className="anchor-section-header"><div><span>{label}</span><h2>{title}</h2></div><strong className={status === "已确认" ? "is-locked" : ""}>{status}</strong></header>;
 }
 
-function AnchorCandidate({ projectId, candidate, selected, locked, busy, onSelect }: { projectId: string; candidate: NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterCandidates"][number]; selected: boolean; locked: boolean; busy: boolean; onSelect: () => void }) {
-  return (
-    <article className={`anchor-candidate${selected ? " is-selected" : ""}${locked ? " is-locked" : ""}`}>
-      <AdaptiveMediaFrame aspectRatio={candidate.kind === "scene" ? "16:9" : "9:16"} stage="auto" src={`/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(candidate.assetId)}`} mediaType="image" fit="cover" alt={candidate.label} />
-      <footer><div><strong>{candidate.label}</strong><span>{locked ? "Locked Master" : selected ? "Current" : `Asset ${candidate.assetId.slice(0, 8)}`}</span></div>{!locked ? <button type="button" disabled={busy || selected} onClick={onSelect}>{selected ? "Current" : "Set Current"}</button> : null}</footer>
-    </article>
-  );
+function activeCandidates(candidates: VisualAnchorCandidate[] | undefined, targetId: string) {
+  return candidates?.filter((item) => item.targetId === targetId && item.status !== "outdated") ?? [];
 }
 
-function CandidateEmpty({ kind }: { kind: string }) {
-  return <div className="anchor-candidate-empty"><strong>尚无{kind}候选</strong><span>每个候选都会生成独立 assetId，不使用拼图。</span></div>;
-}
-
-function AnchorGateMetric({ label, ready, detail }: { label: string; ready: boolean; detail: string }) {
-  return <div className={ready ? "is-ready" : ""}><i aria-hidden="true" /><span>{label}</span><strong>{ready ? "Ready" : detail}</strong></div>;
-}
-
-function SpecRow({ label, value }: { label: string; value: string }) {
-  return <div><dt>{label}</dt><dd>{value}</dd></div>;
-}
-
-function productMissingLabel(reason: ReturnType<typeof getVisualAnchorReadiness>["missingProductReason"]) {
-  if (reason === "PRODUCT_REFERENCE_REQUIRED") return "缺少真实主产品";
-  if (reason === "PRODUCT_VISUAL_SPEC_REQUIRED") return "等待视觉身份分析";
-  if (reason === "PRODUCT_MASTER_NOT_LOCKED") return "等待用户锁定";
-  return "已锁定";
+function assetUrl(projectId: string, assetId: string) {
+  return `/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}`;
 }

@@ -21,7 +21,7 @@ export const STAGE_ORDER: StageId[] = [
 ];
 
 export const STAGE_LABELS: Record<StageId, string> = {
-  brief: "商品简报",
+  brief: "广告需求",
   creative: "创意方向",
   anchors: "视觉基准",
   storyboard: "文字分镜",

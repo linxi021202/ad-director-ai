@@ -18,9 +18,10 @@ describe("generate right status rail", () => {
     expect(css).toContain("grid-template-columns:minmax(0,1fr) auto");
   });
 
-  it("keeps log and settings actions in separate footers", () => {
-    expect(workflow).toContain('className="trace-footer-v3"');
-    expect(workflow).toContain('className="status-rail-footer"');
+  it("keeps technical logs and model settings inside one collapsed details area", () => {
+    expect(workflow).not.toContain('className="trace-footer-v3"');
+    expect(workflow).not.toContain('className="status-rail-footer"');
+    expect(readFileSync("components/StageDirectorRail.tsx", "utf8")).toContain('<summary>生成详情</summary>');
   });
 
   it("protects right-rail text from overflow", () => {

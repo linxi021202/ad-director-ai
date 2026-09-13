@@ -33,6 +33,13 @@ export const productBriefSchema = z.object({
   verifiedClaims: z.array(z.string().trim().min(1).max(160)).max(20).optional()
 });
 
+export const projectPlanningConstraintsSchema = z.object({
+  shotCount: z.number().int().min(MIN_SHOT_COUNT).max(MAX_SHOT_COUNT),
+  targetDurationSec: z.number().int().min(MIN_TARGET_DURATION_SEC).max(MAX_TARGET_DURATION_SEC),
+  aspectRatio: aspectRatioSchema,
+  platform: platformSchema
+}).strict();
+
 export const commercialStructureSchema = z.object({
   hook: z.string().min(1),
   problem: z.string().min(1).optional(),
@@ -76,6 +83,81 @@ export const creativeBibleSchema = z.object({
   productImportance: z.enum(["hero", "strong", "supporting"]),
   commercialStructure: commercialStructureSchema,
   forbiddenConcepts: z.array(z.string().min(1)).max(30)
+}).strict();
+
+const creativeText = (minimum: number) => z.string().trim().min(minimum);
+
+export const creativeDirectionSchema = z.object({
+  id: z.string().min(1),
+  title: creativeText(4),
+  oneLineIdea: creativeText(16),
+  audienceTension: creativeText(18),
+  coreInsight: creativeText(24),
+  bigIdea: creativeText(24),
+  creativeMechanism: creativeText(24),
+  visualMetaphor: creativeText(24),
+  storyArc: creativeText(30),
+  openingHook: creativeText(20),
+  productEntrance: creativeText(20),
+  visualHook: creativeText(20),
+  productRole: creativeText(18),
+  emotionalTurn: creativeText(18),
+  heroMoment: creativeText(20),
+  endingIdea: creativeText(18),
+  visualStyle: creativeText(20),
+  cameraLanguage: creativeText(20),
+  pacingStrategy: creativeText(20),
+  whyItWorks: creativeText(24),
+  differenceFromBrief: creativeText(28),
+  executionRisk: creativeText(12),
+  continuityStrategy: creativeText(20)
+}).strict().superRefine((direction, context) => {
+  const length = Object.entries(direction)
+    .filter(([key]) => key !== "id")
+    .reduce((sum, [, value]) => sum + String(value).replace(/\s/g, "").length, 0);
+  if (length < 500 || length > 900) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["oneLineIdea"],
+      message: "CREATIVE_TOO_SHALLOW：每个创意方向的完整内容必须为 500-900 个字符。"
+    });
+  }
+});
+
+const creativeDirectionSetBaseSchema = z.object({
+  candidates: z.array(creativeDirectionSchema).length(3),
+  recommendedCandidateId: z.string().min(1)
+}).strict();
+
+function validateCreativeDirectionSet(
+  set: z.infer<typeof creativeDirectionSetBaseSchema>,
+  context: z.RefinementCtx
+) {
+  if (!set.candidates.some((candidate) => candidate.id === set.recommendedCandidateId)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["recommendedCandidateId"], message: "推荐项必须来自候选列表。" });
+  }
+  for (const key of ["creativeMechanism", "storyArc", "heroMoment"] as const) {
+    const values = set.candidates.map((candidate) => candidate[key].replace(/\s|[，。；、,.!！?？]/g, "").toLowerCase());
+    if (new Set(values).size !== 3) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: `三个创意方向的 ${key} 必须明显不同。` });
+    }
+  }
+}
+
+export const creativeDirectionSetPayloadSchema = creativeDirectionSetBaseSchema.superRefine(validateCreativeDirectionSet);
+
+export const creativeCandidateSetSchema = creativeDirectionSetBaseSchema.extend({
+  id: z.string().uuid(),
+  version: z.number().int().positive(),
+  selectedCandidateId: z.string().min(1).optional(),
+  confirmedCandidateId: z.string().min(1).optional(),
+  createdAt: z.string().datetime()
+}).strict().superRefine(validateCreativeDirectionSet);
+
+export const creativeWorkspaceSchema = z.object({
+  sets: z.array(creativeCandidateSetSchema).max(12),
+  currentSetId: z.string().uuid(),
+  updatedAt: z.string().datetime()
 }).strict();
 
 const referenceAssetIdsSchema = z.array(z.string().uuid()).max(12);
@@ -231,6 +313,7 @@ export const visualAnchorCandidateSchema = z.object({
   label: z.string().min(1).max(120),
   prompt: z.string().min(1),
   status: visualAnchorCandidateStatusSchema,
+  recommended: z.boolean().optional(),
   version: z.number().int().positive(),
   createdAt: z.string().datetime()
 }).strict();
@@ -389,6 +472,9 @@ export const microBeatPurposeSchema = z.enum(["orient", "reveal", "demonstrate",
 export const microBeatSchema = z.object({
   id: z.string().min(1), shotId: z.string().min(1), index: z.number().int().nonnegative(), purpose: microBeatPurposeSchema,
   startSec: z.number().nonnegative(), endSec: z.number().positive(), action: z.string().min(1), stateChange: z.string().min(1),
+  characterAction: z.string().min(1).optional(), handAction: z.string().min(1).optional(), gazeAction: z.string().min(1).optional(),
+  productAction: z.string().min(1).optional(), cameraAction: z.string().min(1).optional(), environmentAction: z.string().min(1).optional(),
+  expressionChange: z.string().min(1).optional(), continuityConstraint: z.string().min(1).optional(),
   complexity: z.number().int().min(1).max(4), frameId: z.string().min(1).optional()
 }).strict();
 export const shotSubclipSchema = z.object({
@@ -405,7 +491,21 @@ export const storyboardShotSchema = z.object({
   index: z.number().int().positive(),
   durationSec: z.number().int().min(MIN_SHOT_DURATION_SEC).max(MAX_SHOT_DURATION_SEC).default(DEFAULT_SHOT_DURATION_SEC),
   goal: z.string().min(1),
+  title: z.string().min(1).optional(),
+  narrativePurpose: z.string().min(1).optional(),
+  commercialPurpose: z.string().min(1).optional(),
+  previousState: z.string().min(1).optional(),
+  newInformation: z.string().min(1).optional(),
+  resultingState: z.string().min(1).optional(),
   visualDescription: z.string().min(1),
+  visualSummary: z.string().min(1).optional(),
+  compositionIntent: z.string().min(1).optional(),
+  emotionalIntent: z.string().min(1).optional(),
+  productVisibilityIntent: z.string().min(1).optional(),
+  transitionIn: z.string().min(1).optional(),
+  transitionOut: z.string().min(1).optional(),
+  continuityNotes: z.array(z.string().min(1)).max(30).optional(),
+  riskNotes: z.array(z.string().min(1)).max(20).optional(),
   cameraAngle: z.string().min(1),
   cameraMovement: z.string().min(1),
   subtitle: z.string().min(1),
@@ -444,6 +544,67 @@ export const storyboardShotSchema = z.object({
   narrativeProgression: narrativeProgressionSchema.optional(),
   primaryKeyframeAssetId: z.string().uuid().optional(),
   keyframeAssetId: z.string().uuid().optional()
+});
+
+export const detailedStoryboardShotSchema = storyboardShotSchema.extend({
+  title: z.string().trim().min(4),
+  narrativePurpose: z.string().trim().min(60),
+  commercialPurpose: z.string().trim().min(30),
+  previousState: z.string().trim().min(20),
+  newInformation: z.string().trim().min(20),
+  resultingState: z.string().trim().min(20),
+  visualSummary: z.string().trim().min(120),
+  compositionIntent: z.string().trim().min(30),
+  emotionalIntent: z.string().trim().min(20),
+  productVisibilityIntent: z.string().trim().min(20),
+  transitionIn: z.string().trim().min(12),
+  transitionOut: z.string().trim().min(12),
+  microBeats: z.array(microBeatSchema.extend({
+    characterAction: z.string().trim().min(12),
+    continuityConstraint: z.string().trim().min(12)
+  })).min(2).max(9),
+  continuityNotes: z.array(z.string().trim().min(8)).min(4).max(30),
+  riskNotes: z.array(z.string().trim().min(6)).min(1).max(20)
+});
+
+const detailedFramePromptSchema = z.object({
+  frameId: z.string().min(1), timestampSec: z.number().nonnegative(), role: z.string().min(1), frozenMoment: z.string().min(20),
+  subject: z.string().min(12), subjectPosition: z.string().min(8), characterPose: z.string().min(8), facialExpression: z.string().min(6),
+  gazeDirection: z.string().min(5), handState: z.string().min(8), productPosition: z.string().min(8), productOrientation: z.string().min(8),
+  productScale: z.string().min(5), environment: z.string().min(12), foreground: z.string().min(6), middleGround: z.string().min(6),
+  background: z.string().min(6), composition: z.string().min(12), cameraHeight: z.string().min(5), cameraAngle: z.string().min(5),
+  lens: z.string().min(3), focalLength: z.string().min(3), aperture: z.string().min(3), depthOfField: z.string().min(6),
+  lightingDirection: z.string().min(6), lightingQuality: z.string().min(6), keyLight: z.string().min(6), fillLight: z.string().min(6),
+  practicalLights: z.string().min(6), shadowBehavior: z.string().min(6), reflections: z.string().min(6), materialDetails: z.string().min(12),
+  colorDesign: z.string().min(8), atmosphere: z.string().min(8), spatialDepth: z.string().min(8),
+  continuityConstraints: z.array(z.string().min(6)).min(3), forbiddenChanges: z.array(z.string().min(6)).min(3),
+  imagePromptCn: z.string().trim().min(350), imagePromptEn: z.string().trim().min(120),
+  negativePromptCn: z.string().trim().min(40), negativePromptEn: z.string().trim().min(20)
+}).strict();
+
+export const promptQualityScoresSchema = z.object({
+  creativeDepth: z.number().min(0).max(10), visualSpecificity: z.number().min(0).max(10), productConsistency: z.number().min(0).max(10),
+  characterContinuity: z.number().min(0).max(10), sceneContinuity: z.number().min(0).max(10), actionExecutability: z.number().min(0).max(10),
+  textRisk: z.number().min(0).max(10), deformationRisk: z.number().min(0).max(10)
+}).strict();
+
+export const detailedShotPromptPackageSchema = z.object({
+  shotId: z.string().min(1),
+  continuityContext: z.object({
+    product: z.string().min(10), character: z.string().min(10), wardrobe: z.string().min(8), scene: z.string().min(10), sceneState: z.string().min(8),
+    majorProps: z.array(z.string().min(1)), previousShotState: z.string().min(8), immutableElements: z.array(z.string().min(4)).min(3), allowedChanges: z.array(z.string().min(4)).min(1)
+  }).strict(),
+  directingNotesCn: z.string().trim().min(120), directingNotesEn: z.string().trim().min(60),
+  framePrompts: z.array(detailedFramePromptSchema).min(1).max(5),
+  videoPromptCn: z.string().trim().min(300), videoPromptEn: z.string().trim().min(120),
+  negativePromptCn: z.string().trim().min(60), negativePromptEn: z.string().trim().min(30),
+  narrationDirection: z.string().min(1).optional(), textSafeZone: z.string().min(1), qaChecklist: z.array(z.string().min(6)).min(6),
+  qualityScores: promptQualityScoresSchema
+}).strict().superRefine((value, context) => {
+  const scores = value.qualityScores;
+  if (scores.creativeDepth < 8 || scores.visualSpecificity < 8 || scores.actionExecutability < 8 || scores.textRisk > 2 || scores.deformationRisk > 3) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["qualityScores"], message: "PROMPT_DEPTH_VALIDATION_FAILED" });
+  }
 });
 
 export const taskTypeSchema = z.enum([
@@ -727,6 +888,7 @@ export const finalVideoMetadataSchema = z.object({
 
 export const generationProjectSchema = z.object({
   id: z.string().min(1),
+  planningConstraints: projectPlanningConstraintsSchema.optional(),
   shotCount: z.number().int().min(MIN_SHOT_COUNT).max(MAX_SHOT_COUNT).optional(),
   targetDurationSec: z.number().int().min(MIN_TARGET_DURATION_SEC).max(MAX_TARGET_DURATION_SEC).optional(),
   briefStatus: briefStatusSchema.optional(),
@@ -734,6 +896,7 @@ export const generationProjectSchema = z.object({
   briefRevision: z.number().int().nonnegative().optional(),
   brief: productBriefSchema,
   strategy: adStrategySchema,
+  creativeWorkspace: creativeWorkspaceSchema.optional(),
   creativeBible: creativeBibleSchema.optional(),
   visualContinuityBible: visualContinuityBibleSchema.optional(),
   referencePack: referencePackSchema.optional(),
@@ -744,6 +907,7 @@ export const generationProjectSchema = z.object({
   keyframeQAResults: z.array(keyframeQAResultSchema).max(120).optional(),
   videoQAResults: z.array(videoQAResultSchema).max(4).optional(),
   narrationPlan: narrationPlanSchema.optional(),
+  shotPromptPackages: z.array(detailedShotPromptPackageSchema).max(MAX_SHOT_COUNT).optional(),
   shots: z.array(storyboardShotSchema).min(1),
   modelRoutes: z.array(modelRouteSchema).min(1),
   costEstimates: z.array(costModeEstimateSchema).min(1),
@@ -783,8 +947,16 @@ export type AspectRatio = z.infer<typeof aspectRatioSchema>;
 export type ProductImageRole = z.infer<typeof productImageRoleSchema>;
 export type ProductImage = z.infer<typeof productImageSchema>;
 export type ProductBrief = z.infer<typeof productBriefSchema>;
+export type ProjectPlanningConstraints = z.infer<typeof projectPlanningConstraintsSchema>;
 export type AdStrategy = z.infer<typeof adStrategySchema>;
 export type CreativeBible = z.infer<typeof creativeBibleSchema>;
+export type CreativeDirection = z.infer<typeof creativeDirectionSchema>;
+export type CreativeDirectionSetPayload = z.infer<typeof creativeDirectionSetPayloadSchema>;
+export type CreativeCandidateSet = z.infer<typeof creativeCandidateSetSchema>;
+export type CreativeWorkspace = z.infer<typeof creativeWorkspaceSchema>;
+export type DetailedStoryboardShot = z.infer<typeof detailedStoryboardShotSchema>;
+export type DetailedShotPromptPackage = z.infer<typeof detailedShotPromptPackageSchema>;
+export type PromptQualityScores = z.infer<typeof promptQualityScoresSchema>;
 export type CharacterIdentity = z.infer<typeof characterIdentitySchema>;
 export type ProductIdentity = z.infer<typeof productIdentitySchema>;
 export type SceneIdentity = z.infer<typeof sceneIdentitySchema>;

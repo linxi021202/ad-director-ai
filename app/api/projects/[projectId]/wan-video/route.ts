@@ -76,7 +76,7 @@ export async function POST(request: Request, context: RouteContext) {
     }
     const productImage = selectPrimaryProductImage(project.brief.productImages);
     if (shotContainsProduct(shot) && (!productImage?.assetId || project.productVisualSpec?.sourceAssetId !== productImage.assetId)) {
-      return response(false, null, { errorCode: "PRODUCT_REFERENCE_REQUIRED" }, "PRODUCT_REFERENCE_REQUIRED：主镜头缺少当前 Product Master 或其视觉规格。", 409);
+      return response(false, null, { errorCode: "PRODUCT_REFERENCE_REQUIRED" }, "缺少产品参考：主镜头需要已确认的产品原图或外观分析。", 409);
     }
 
     const event = await startGenerationEvent(session.id, projectId, {

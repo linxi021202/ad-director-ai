@@ -33,7 +33,21 @@ export function buildStoryboardPrompt(brief: ProductBrief, strategy: AdStrategy,
         index,
         durationSec,
         goal: isClosing ? "完成品牌记忆和行动召唤" : isHero ? "呈现核心状态转变" : `推进广告叙事第 ${index} 段`,
+        title: `镜头 ${index} 导演标题`,
+        narrativePurpose: `详细说明镜头 ${index} 如何承接前一状态、引入一项新信息并为下一镜建立明确动作动机，避免只写展示产品或人物动作。`,
+        commercialPurpose: `说明该镜头在注意力、卖点证明、产品记忆或行动转化中的具体商业职责。`,
+        previousState: `镜头 ${index} 开始前人物、产品与场景的已知状态。`,
+        newInformation: `本镜头只新增的一项清晰叙事或产品信息。`,
+        resultingState: `镜头结束后可被下一镜直接继承的状态。`,
         visualDescription: `具体描述镜头 ${index} 的人物、产品、环境、光线、构图和动作；承接前一镜头状态并为后一镜头建立自然转场；画面内不生成文字。`,
+        visualSummary: `用完整段落描述镜头 ${index} 的确定空间、人物姿态、视线、手部、真实产品位置、前中后景、主光方向、材质和单一连续动作，并说明画面如何从前一镜状态推进到结束状态。`,
+        compositionIntent: "说明主体位置、视觉重心、前中后景和文字安全区的构图意图。",
+        emotionalIntent: "说明本镜头希望观众感知到的明确情绪变化。",
+        productVisibilityIntent: "说明产品何时出现、占画面比例、朝向和商业可读性。",
+        transitionIn: "说明从上一镜进入本镜的视觉或动作衔接。",
+        transitionOut: "说明本镜结束状态如何连接下一镜。",
+        continuityNotes: ["人物身份与服装继承", "产品结构与朝向继承", "场景空间与道具继承", "主光方向与综合色调继承"],
+        riskNotes: ["避免手部、产品结构和动作复杂度风险"],
         cameraAngle: "中景或产品近景",
         cameraMovement: isHero ? "围绕主体完成一次连续推近" : "一次连续且克制的运镜",
         subtitle: isClosing ? "即刻开启轻负担" : `镜头${index}字幕`,
@@ -92,7 +106,15 @@ export function buildStoryboardPrompt(brief: ProductBrief, strategy: AdStrategy,
           startSec: Number((durationSec * beatIndex / beatCount).toFixed(2)),
           endSec: Number((durationSec * (beatIndex + 1) / beatCount).toFixed(2)),
           action: `只执行第 ${beatIndex + 1} 个简单可见微动作`,
+          characterAction: "具体描述人物身体与姿态发生的单一小幅变化",
+          handAction: "明确左手与右手各自状态",
+          gazeAction: "明确视线起点和终点",
+          productAction: "明确产品是否静止、被接触或发生小幅位移",
+          cameraAction: "只使用一条连续且克制的摄影机运动",
+          environmentAction: "只描述一项环境动态或光线变化",
+          expressionChange: "描述可见但克制的表情变化",
           stateChange: `从时间锚点 ${beatIndex + 1} 推进到下一状态`,
+          continuityConstraint: "保持同一人物、服装、产品、空间结构和主光方向",
           complexity: beatIndex === 0 || beatIndex === beatCount - 1 ? 1 : 2,
           frameId: `${shotId}-frame-${Math.min(frameCount, Math.floor(beatIndex * frameCount / beatCount) + 1)}`
         })),
@@ -119,11 +141,11 @@ export function buildStoryboardPrompt(brief: ProductBrief, strategy: AdStrategy,
     }
   };
 
-  return `你是短视频广告分镜导演。请根据商品简报和广告策略生成完整分镜。
+  return `你是短视频广告分镜导演。这里是独立 PASS B，只生成 Detailed Storyboard，不生成完整 Qwen/Wan Prompt。
 
 只输出合法 json，不要输出 Markdown、解释、注释或代码围栏。所有面向用户的字段必须使用简体中文。
 
-商品简报：
+广告需求：
 ${JSON.stringify(textBriefForPrompt(brief), null, 2)}
 
 ${serializeProductVisualSpecForPrompt(input.productVisualSpec)}
@@ -136,6 +158,9 @@ ${JSON.stringify(strategy, null, 2)}
 - 请精确输出 ${shotCount} 个镜头，不多输出、不少输出；index 必须从 1 连续递增到 ${shotCount}。
 - durationSec 必须依次原样使用 ${durations.join("、")}，不得自行修改用户设置的时长，总时长为 ${timeline.totalDurationSec} 秒。
 - 每个镜头时长必须为 3–8 秒，并共同构成完整叙事。
+- 每个镜头必须包含 title、narrativePurpose、commercialPurpose、previousState、newInformation、resultingState、visualSummary、compositionIntent、emotionalIntent、productVisibilityIntent、transitionIn、transitionOut、continuityNotes 和 riskNotes。
+- narrativePurpose 至少提供一段可执行的导演说明；visualSummary 应有约 150-300 个中文字符，不能只写“展示产品”。
+- 普通 5 秒镜头安排 4-6 个 microBeats。每个 beat 必须具体写 characterAction、handAction、gazeAction、productAction、cameraAction、environmentAction、expressionChange、stateChange 与 continuityConstraint；动作复杂度保持 1-4。
 - 每个镜头都要明确当前镜头序号、当前镜头时长、前一镜头状态与后一镜头衔接目标。
 - 为每个镜头输出 continuityGroupId、sceneGroupId、sceneId、sceneStateBefore、sceneStateAfter、continuityConstraints 与 shotDirection。
 - 同一 continuityGroupId 必须复用同一人物、产品、场景、服装、主要道具、主光方向和综合色调。

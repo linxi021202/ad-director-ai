@@ -12,7 +12,7 @@ type ProductInputFormProps = {
 export function ProductInputForm({ product, projectId, onProductImagesChange }: ProductInputFormProps) {
   return (
     <form className="product-input-form">
-      <h2>商品简报</h2>
+      <h2>广告需求</h2>
       <section className="form-section">
         <header className="form-section__header"><h3>基础信息</h3></header>
         <div className="form-section__fields">

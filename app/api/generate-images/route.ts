@@ -114,7 +114,7 @@ export async function POST(request: Request) {
         data: null,
         trace: { route: "generate-images", stage: "visual-anchor-gate", anchorReadiness },
         fallbackUsed: false,
-        error: "VISUAL_ANCHOR_NOT_LOCKED：请先确认并锁定 Product、Character 与 Scene Masters。"
+        error: "视觉设定尚未确认：请先确认产品、主角和主要场景。"
       }, 400);
     }
     const publicStatus = getPublicAIStatus();

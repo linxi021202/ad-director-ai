@@ -265,7 +265,7 @@ export async function runTextTask(input: RunTextTaskInput, context?: ProviderReq
 
   return runMockTextTask(
     input,
-    `DeepSeek ${textTaskLabel(input.taskType)}失败：${primary.error ?? "原因未知"}。已使用与当前商品简报和时间轴一致的本地模板继续。`
+    `DeepSeek ${textTaskLabel(input.taskType)}失败：${primary.error ?? "原因未知"}。已使用与当前广告需求和时间轴一致的本地模板继续。`
   , context);
 }
 

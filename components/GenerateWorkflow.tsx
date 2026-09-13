@@ -12,10 +12,13 @@ import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWo
 import { CreativeDirectorFlow } from "@/components/CreativeDirectorFlow";
 import { WorkflowFlowRail, idleWorkflowSteps, type WorkflowStepKey, type WorkflowStepState, type WorkflowStepStatus } from "@/components/WorkflowFlowRail";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
+import { UsageGuideSheet } from "@/components/workspace/UsageGuideSheet";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ProductImageUploader } from "@/components/ProductImageUploader";
 import { StageContextPanel, StageDirectorRail, StageInspector, stageStatusLabel } from "@/components/StageDirectorRail";
 import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
+import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
+import { StoryboardTimeline } from "@/components/storyboard/StoryboardTimeline";
 import { buildOptimizedVideoPrompt, resolveHeroShot } from "@/lib/heroVideo";
 import type { AdStrategy, AspectRatio, GenerationEvent, GenerationProject, ProductBrief, StageId, StageStates, StoryboardShot, VisualAnchorCandidateKind } from "@/lib/schemas/project";
 import { normalizeProjectDuration } from "@/lib/projectDuration";
@@ -210,6 +213,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsProvider, setSettingsProvider] = useState<ProviderId | undefined>();
   const [settingsGuidance, setSettingsGuidance] = useState<string | null>(null);
+  const [usageGuideOpen, setUsageGuideOpen] = useState(false);
+  const [usageGuideIntro, setUsageGuideIntro] = useState(false);
   const { status: modelStatus, setStatus: setModelStatus } = useModelSettingsStatus();
   const previewProject = useMemo<GenerationProject>(() => ({
     ...activeProject,
@@ -218,6 +223,14 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       aspectRatio: briefDraft.brief.aspectRatio
     }
   }), [activeProject, briefDraft.brief.aspectRatio]);
+
+  useEffect(() => {
+    const key = "ad-director-usage-guide-seen-v1";
+    if (window.localStorage.getItem(key)) return;
+    window.localStorage.setItem(key, "1");
+    setUsageGuideIntro(true);
+    setUsageGuideOpen(true);
+  }, []);
 
   function trackServerVersion(version: number) {
     activeVersionRef.current = Math.max(activeVersionRef.current, version);
@@ -312,7 +325,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     updateWorkflowState({ brief: "pending" });
   }
 
-  async function saveBrief(createVersion = false) {
+  async function saveBrief(createVersion = false): Promise<GenerationProject | undefined> {
     if (briefSaveStatus === "saving" || isGenerating) return;
     if (activeProject.stageStates?.brief.status === "locked" && !createVersion) {
       const resource = currentResourceVersion(activeProject.resourceVersions ?? [], "brief");
@@ -354,9 +367,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       setBriefNotice(null);
       if (activeStage === "brief") router.replace(`/generate?projectId=${encodeURIComponent(refreshed.id)}`);
       else router.replace(stageUrl(refreshed.id, activeStage));
+      return refreshed;
     } catch (saveError) {
       setBriefSaveStatus("error");
-      setError(saveError instanceof Error ? saveError.message : "商品简报保存失败，请重试。");
+      setError(saveError instanceof Error ? saveError.message : "广告需求保存失败，请重试。");
     }
   }
 
@@ -531,7 +545,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     const shotDurationPlan = allocateShotDurations(requestedShotCount, targetDurationSec);
     setError(null);
     if (briefSaveStatus !== "saved") {
-      setError("请先保存商品简报。");
+      setError("请先保存广告需求。");
       return;
     }
     const missing = missingRequiredProvider();
@@ -664,7 +678,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
           throw new Error("KEYFRAME_QA_REQUIRED：主镜头关键帧尚未通过一致性检查，不能进入 Wan 2.7。");
         }
         if (!(workingProject.brief.productImages ?? []).some((image) => image.role !== "logo" && (image.localUrl || image.remoteUrl || image.url))) {
-          throw new Error("生成 Wan 2.7 I2V 首帧前需要至少一张已保存的真实产品图。请先在商品简报上传产品主图。");
+          throw new Error("生成 Wan 2.7 I2V 首帧前需要至少一张已保存的真实产品图。请先在广告需求中上传产品主图。");
         }
         setTraceLabel("Wan 2.7 广告视频调用中");
         setStep("heroShot", "running");
@@ -744,14 +758,41 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     return applyProjectUpdate(result.data);
   }
 
+  async function postCreativeAction(body: Record<string, unknown>, expectedVersion = activeVersionRef.current) {
+    const response = await fetch(`/api/projects/${encodeURIComponent(activeProject.id)}/creative-directions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, expectedVersion })
+    });
+    const result = await readClientApiResponse<ProjectPatchData>(response);
+    if (!response.ok || !result.success || !result.data) throw new Error(result.error || "创意方向更新失败。");
+    return applyProjectUpdate(result.data);
+  }
+
   async function lockCurrentStage() {
     if (stageLocking) return;
     setStageLocking(true);
     setError(null);
     try {
-      const refreshed = await postWorkflowAction({ action: "lock-stage", stageId: activeStage });
+      let refreshed = await postWorkflowAction({ action: "lock-stage", stageId: activeStage });
+      if (activeStage === "storyboard") {
+        setTraceLabel("正在逐镜头扩写图片与视频提示词");
+        const expanded = await postApi<{ shots: StoryboardShot[]; failures: string[] }>("/api/generate-assets", {
+          projectId: refreshed.id,
+          brief: refreshed.brief,
+          strategy: refreshed.strategy,
+          shots: refreshed.shots
+        });
+        const snapshot = await fetchServerProject(refreshed.id);
+        trackServerVersion(snapshot.version);
+        refreshed = ensureStageWorkflow(normalizeProjectDuration(snapshot.project));
+        setActiveProject(refreshed);
+        if (!expanded.success) {
+          throw new Error(expanded.error || "部分镜头的详细提示词未通过质量检查，请重试当前步骤。");
+        }
+      }
       const nextStage = STAGE_ORDER[STAGE_ORDER.indexOf(activeStage) + 1];
-      setTraceLabel(`${STAGE_LABELS[activeStage]}已锁定`);
+      setTraceLabel(`${STAGE_LABELS[activeStage]}已确认`);
       if (nextStage) selectStage(nextStage);
       else setActiveProject(refreshed);
     } catch (lockError) {
@@ -763,7 +804,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
   async function runCreativeStage() {
     if (isGenerating) return;
-    if (mode === "custom" && !modelStatus?.deepseek.configured) {
+    if (!modelStatus?.deepseek.configured) {
       const guidance = "生成创意方向前需要配置 DeepSeek。";
       setError(guidance);
       openModelSettings("deepseek", guidance);
@@ -772,29 +813,68 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setIsGenerating(true);
     setError(null);
     try {
-      await postWorkflowAction({ action: "set-stage-status", stageId: "creative", status: "running" });
-      if (mode === "custom") {
-        const requestedShotCount = getEffectiveShotCount(activeProject);
-        const targetDurationSec = activeProject.targetDurationSec ?? activeProject.brief.durationSec;
-        const response = await postApi<{ strategy: AdStrategy }>("/api/generate-strategy", {
-          projectId: activeProject.id,
-          brief: activeProject.brief,
-          requestedShotCount,
-          targetDurationSec,
-          shotDurationPlan: allocateShotDurations(requestedShotCount, targetDurationSec)
-        });
-        if (!response.success || !response.data?.strategy) throw new Error(response.error || "创意方向生成失败。");
-      }
-      const snapshot = await fetchServerProject(activeProject.id);
-      applyProjectUpdate(snapshot);
-      await postWorkflowAction({ action: "set-stage-status", stageId: "creative", status: "ready" }, snapshot.version);
+      await postCreativeAction({ action: "generate" });
       setGenerated(true);
-      setTraceLabel("创意方向已就绪，等待用户确认");
+      setTraceLabel("三套创意方向已生成，等待选择");
+      selectStage("creative");
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "创意方向生成失败。");
     } finally {
       setIsGenerating(false);
       await refreshServerEvents(activeProject.id);
+    }
+  }
+
+  async function saveBriefAndGenerateCreative() {
+    if (isGenerating || briefSaveStatus === "saving") return;
+    setIsGenerating(true);
+    setError(null);
+    try {
+      let current = briefSaveStatus === "saved" ? activeProject : await saveBrief();
+      if (!current) return;
+      if (current.stageStates?.brief.status !== "locked") {
+        current = await postWorkflowAction({ action: "lock-stage", stageId: "brief" });
+      }
+      if (!modelStatus?.deepseek.configured) {
+        const guidance = "商品信息已保存。配置 DeepSeek 后即可生成三套创意方向。";
+        setError(guidance);
+        openModelSettings("deepseek", guidance);
+        selectStage("creative");
+        return;
+      }
+      await postCreativeAction({ action: "generate" });
+      setTraceLabel("三套创意方向已生成，等待选择");
+      selectStage("creative");
+    } catch (stageError) {
+      setError(stageError instanceof Error ? stageError.message : "商品信息保存或创意生成失败。");
+    } finally {
+      setIsGenerating(false);
+      await refreshServerEvents(activeProject.id);
+    }
+  }
+
+  async function selectCreativeCandidate(candidateId: string) {
+    try {
+      await postCreativeAction({ action: "select", candidateId });
+    } catch (stageError) {
+      setError(stageError instanceof Error ? stageError.message : "创意选择失败。");
+    }
+  }
+
+  async function confirmCreativeCandidate(candidateId: string) {
+    if (isGenerating) return;
+    setIsGenerating(true);
+    setError(null);
+    try {
+      const confirmed = await postCreativeAction({ action: "confirm", candidateId });
+      const prepared = await postAnchorAction({ action: "initialize" }, "initialize") ?? confirmed;
+      selectStage("anchors");
+      if (modelStatus?.qwenImage.configured) await generateAllVisualCandidates(prepared);
+      else setError("创意已确认。配置 Qwen-Image 后即可生成人物与场景候选。");
+    } catch (stageError) {
+      setError(stageError instanceof Error ? stageError.message : "创意确认失败。");
+    } finally {
+      setIsGenerating(false);
     }
   }
 
@@ -845,6 +925,52 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }
 
+  async function generateAllVisualCandidates(source: GenerationProject = activeProject) {
+    if (!modelStatus?.qwenImage.configured) {
+      const guidance = "生成人物与场景候选前需要配置 Qwen-Image。";
+      setError(guidance);
+      openModelSettings("qwen-image", guidance);
+      return source;
+    }
+    let latest = source;
+    const failures: string[] = [];
+    const characters = latest.visualAnchorWorkspace?.requiredCharacterIds ?? [];
+    const scenes = latest.visualAnchorWorkspace?.requiredSceneIds ?? [];
+    for (const targetId of characters) {
+      try {
+        latest = await postAnchorAction({ action: "generate-candidates", kind: "character", targetId, count: 3 }, `generate:character:${targetId}`) ?? latest;
+      } catch {
+        failures.push("人物");
+      }
+    }
+    for (const targetId of scenes) {
+      try {
+        latest = await postAnchorAction({ action: "generate-candidates", kind: "scene", targetId, count: 3 }, `generate:scene:${targetId}`) ?? latest;
+      } catch {
+        failures.push("场景");
+      }
+    }
+    setTraceLabel(failures.length ? "部分视觉候选生成失败，可在对应模块重试" : "人物与场景候选已生成，等待选择");
+    if (failures.length) setError(`${Array.from(new Set(failures)).join("和")}候选有部分失败，成功图片已保留，请在对应区域重试。`);
+    return latest;
+  }
+
+  async function confirmVisualSelection() {
+    if (anchorBusyTarget || isGenerating) return;
+    setIsGenerating(true);
+    setError(null);
+    try {
+      const confirmed = await postAnchorAction({ action: "use-recommended" }, "confirm-visual");
+      if (!confirmed) return;
+      await postWorkflowAction({ action: "lock-stage", stageId: "anchors" });
+      await runStoryboardStage();
+    } catch (stageError) {
+      setError(stageError instanceof Error ? stageError.message : "视觉设定确认失败。");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
   async function setCurrentVisualAnchor(kind: VisualAnchorCandidateKind, targetId: string, candidateId: string) {
     const spec = kind === "character"
       ? activeProject.characterVisualSpecs?.find((item) => item.id === targetId)
@@ -874,7 +1000,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
     try {
       await postAnchorAction({ action: "set-current", kind, targetId, candidateId }, `select:${kind}:${targetId}`);
-      setTraceLabel(`${kind === "character" ? "Character" : "Scene"} Candidate 已设为 Current`);
+      setTraceLabel(`${kind === "character" ? "人物" : "场景"}候选方案已设为当前方案`);
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "候选选择失败。");
     }
@@ -885,7 +1011,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       const refreshed = await postAnchorAction({ action: "lock-master", kind, ...(targetId ? { targetId } : {}) }, `lock:${kind}${targetId ? `:${targetId}` : ""}`);
       if (refreshed) {
         const readiness = getVisualAnchorReadiness(refreshed);
-        setTraceLabel(readiness.ready ? "全部 Visual Masters 已锁定，等待锁定阶段" : `${kind === "product" ? "Product" : kind === "character" ? "Character" : "Scene"} Master 已锁定`);
+        setTraceLabel(readiness.ready ? "全部人物与场景已确认，等待确认当前步骤" : `${kind === "product" ? "产品" : kind === "character" ? "主角" : "场景"}已确认`);
       }
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "视觉基准锁定失败。");
@@ -912,7 +1038,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
   async function runStoryboardStage() {
     if (isGenerating) return;
-    if (mode === "custom" && !modelStatus?.deepseek.configured) {
+    if (!modelStatus?.deepseek.configured) {
       const guidance = "生成文字分镜前需要配置 DeepSeek。";
       setError(guidance);
       openModelSettings("deepseek", guidance);
@@ -922,24 +1048,14 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setError(null);
     try {
       await postWorkflowAction({ action: "set-stage-status", stageId: "storyboard", status: "running" });
-      if (mode === "custom") {
-        const requestedShotCount = getEffectiveShotCount(activeProject);
-        const targetDurationSec = activeProject.targetDurationSec ?? activeProject.brief.durationSec;
-        const response = await postApi<{ shots: StoryboardShot[] }>("/api/generate-storyboard", {
-          projectId: activeProject.id,
-          brief: activeProject.brief,
-          strategy: activeProject.strategy,
-          requestedShotCount,
-          targetDurationSec,
-          shotDurationPlan: allocateShotDurations(requestedShotCount, targetDurationSec)
-        });
-        if (!response.success || !response.data?.shots) throw new Error(response.error || "文字分镜生成失败。");
-      }
+      const response = await postApi<{ shots: StoryboardShot[] }>("/api/generate-storyboard", { projectId: activeProject.id, brief: activeProject.brief, strategy: activeProject.strategy });
+      if (!response.success || !response.data?.shots) throw new Error(response.error || "文字分镜生成失败。");
       const snapshot = await fetchServerProject(activeProject.id);
       applyProjectUpdate(snapshot);
       await postWorkflowAction({ action: "set-stage-status", stageId: "storyboard", status: "ready" }, snapshot.version);
       setGenerated(true);
       setTraceLabel("文字分镜已就绪，等待用户确认");
+      selectStage("storyboard");
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "文字分镜生成失败。");
     } finally {
@@ -957,11 +1073,12 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const activeStageState = stageStates[activeStage];
   const stageStatus = stageStatusLabel(activeStageState.status);
   const shotCountLocked = hasGeneratedStoryboard(activeProject);
+  const creativeSet = activeProject.creativeWorkspace?.sets.find((set) => set.id === activeProject.creativeWorkspace?.currentSetId);
 
   return (
     <main className="workbench-v3">
       <CinematicWorkspaceBackground />
-      <WorkspaceHeader active="工作台" workbenchHref={"/generate?projectId=" + activeProject.id} projectHref={"/projects/" + activeProject.id} trailing={<><ModelSettingsTrigger status={modelStatus} onClick={() => openModelSettings()} className="workspace-model-settings-trigger" /><AIModeBadge status={aiStatus} /></>} />
+      <WorkspaceHeader active="工作台" workbenchHref={"/generate?projectId=" + activeProject.id} projectHref={"/projects/" + activeProject.id} trailing={<><button type="button" className="workspace-guide-trigger" onClick={() => { setUsageGuideIntro(false); setUsageGuideOpen(true); }}>使用说明</button><Link href={canCreateProject ? "/generate?new=1" : "/projects?notice=project-limit"} className="workspace-new-project">{canCreateProject ? "新建项目" : "管理项目"}</Link><ModelSettingsTrigger status={modelStatus} onClick={() => openModelSettings()} className="workspace-model-settings-trigger" /><AIModeBadge status={aiStatus} /></>} />
 
       <div className="workbench-v3__page">
         <nav className="workspace-breadcrumb" aria-label="面包屑">
@@ -971,37 +1088,27 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         <StageDirectorRail activeStage={activeStage} states={stageStates} onSelect={selectStage} />
 
         <section className="workbench-layout stage-gated-layout">
-          <StageContextPanel project={previewProject} activeStage={activeStage} open={contextOpen} onClose={() => setContextOpen(false)} />
+          <StageContextPanel project={previewProject} activeStage={activeStage} onSelect={selectStage} open={contextOpen} onClose={() => setContextOpen(false)} />
 
           <section className="generation-stage-v3 stage-canvas">
             <div className="generation-stage-v3__glow" aria-hidden="true" />
             <header className="generation-stage-v3__head">
               <div>
-                <span className="workspace-kicker">Stage {String(STAGE_ORDER.indexOf(activeStage) + 1).padStart(2, "0")}</span>
                 <div className="generation-title-row">
-                  <h1>{STAGE_LABELS[activeStage]}</h1>
+                  <h1>{activeStage === "anchors" ? "人物与场景" : STAGE_LABELS[activeStage]}</h1>
                   <span className={activeStageState.status === "locked" || activeStageState.status === "ready" ? "is-success" : activeStageState.status === "blocked" ? "is-warning" : ""}><i />{stageStatus}</span>
                 </div>
                 <p className="stage-canvas-summary">{stageCanvasSummary(activeStage)}</p>
               </div>
               <div className="generation-stage-v3__actions">
-                {activeStage === "creative" && activeStageState.status !== "locked" ? <button type="button" className="button-primary-v3" onClick={() => void runCreativeStage()} disabled={isGenerating || activeStageState.status === "blocked"}>{isGenerating ? "生成中" : "生成创意方向"}</button> : null}
-                {activeStage === "storyboard" && activeStageState.status !== "locked" ? <button type="button" className="button-primary-v3" onClick={() => void runStoryboardStage()} disabled={isGenerating || activeStageState.status === "blocked"}>{isGenerating ? "生成中" : "生成文字分镜"}</button> : null}
                 {(["keyframes", "video", "final"] as StageId[]).includes(activeStage) ? <Link href={"/projects/" + activeProject.id} className="button-secondary-v3">进入素材工作区</Link> : null}
-                <Link
-                  href={canCreateProject ? "/generate?new=1" : "/projects?notice=project-limit"}
-                  className="button-secondary-v3"
-                  title={canCreateProject ? "创建新项目" : "当前会话已达到 3 个项目上限，请先管理已有项目"}
-                >
-                  {canCreateProject ? "新建项目" : "管理项目"}
-                </Link>
-                <button type="button" className="stage-sheet-trigger stage-context-trigger" onClick={() => setContextOpen(true)}>阶段导航</button>
-                <button type="button" className="stage-sheet-trigger stage-inspector-trigger" onClick={() => setInspectorOpen(true)}>阶段检查器</button>
+                <button type="button" className="stage-sheet-trigger stage-context-trigger" onClick={() => setContextOpen(true)}>项目导航</button>
+                <button type="button" className="stage-sheet-trigger stage-inspector-trigger" onClick={() => setInspectorOpen(true)}>查看状态</button>
               </div>
             </header>
 
             {activeStage === "brief" ? <section className="stage-brief-editor">
-              <div className="stage-canvas-section-head"><div><span>完整简报</span><h2>{briefDraft.brief.productName || "未命名商品"}</h2></div><button type="button" className="button-secondary-v3" onClick={resetBriefToTemplate} disabled={isGenerating}>恢复模板</button></div>
+              <div className="stage-canvas-section-head"><div><span>商品信息</span><h2>{briefDraft.brief.productName || "未命名商品"}</h2></div><details className="stage-more-actions"><summary>更多操作</summary><button type="button" onClick={resetBriefToTemplate} disabled={isGenerating}>恢复模板</button></details></div>
               <EditableBriefForm
                 brief={briefDraft.brief}
                 shotCount={briefDraft.shotCount}
@@ -1017,50 +1124,38 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <ProductImageUploader projectId={activeProject.id} images={briefDraft.brief.productImages ?? []} disabled={isGenerating} onChange={(images) => updateBrief({ productImages: images })} onPersistedVersion={trackServerVersion} />
               <footer className="stage-brief-savebar">
                 <div><span className={`brief-save-state is-${briefSaveStatus}`}>{briefSaveStatusLabel(briefSaveStatus, activeProject.briefSavedAt)}</span>{briefNotice ? <small>{briefNotice}</small> : null}</div>
-                <button type="button" className="button-primary-v3" onClick={() => void saveBrief()} disabled={briefSaveStatus === "saving" || briefSaveStatus === "saved" || isGenerating}>{briefSaveStatus === "saving" ? "保存中…" : briefSaveStatus === "saved" ? "已保存" : briefSaveStatus === "error" ? "重新保存商品简报" : "保存商品简报"}</button>
+                <button type="button" className="button-primary-v3" onClick={() => void saveBriefAndGenerateCreative()} disabled={briefSaveStatus === "saving" || isGenerating}>{isGenerating || briefSaveStatus === "saving" ? "处理中…" : briefSaveStatus === "saved" ? "生成创意方向" : "保存并生成创意"}</button>
               </footer>
             </section> : null}
 
-            {activeStage === "creative" ? <section className="stage-creative-canvas">
-              <div className="generation-mode-v3" aria-label="创意生成方式">
-                <button type="button" className={mode === "template" ? "is-active" : ""} onClick={() => setMode("template")} disabled={isGenerating}>使用现有方向</button>
-                <button type="button" className={mode === "custom" ? "is-active" : ""} onClick={() => setMode("custom")} disabled={isGenerating}>DeepSeek 生成</button>
-              </div>
-              <div className="creative-candidate-grid">
-                <article className="creative-candidate is-current"><header><span>Candidate 01</span><strong>Current</strong></header><h2>{activeProject.strategy.coreMessage}</h2><p>{activeProject.strategy.bigIdea}</p><dl><div><dt>目标人群</dt><dd>{activeProject.brief.targetAudience}</dd></div><div><dt>视觉风格</dt><dd>{activeProject.brief.style}</dd></div><div><dt>商业结构</dt><dd>Hook → Context → Product → Experience → Payoff → CTA</dd></div></dl></article>
-                <article className="creative-candidate is-empty"><span>Candidate 02</span><p>运行 DeepSeek 后保留为独立候选。</p></article>
-                <article className="creative-candidate is-empty"><span>Candidate 03</span><p>运行 DeepSeek 后保留为独立候选。</p></article>
-              </div>
-            </section> : null}
+            {activeStage === "creative" && activeStageState.status !== "blocked" ? <section className="stage-creative-canvas"><CreativeCandidateGrid candidateSet={creativeSet} busy={isGenerating} onGenerate={() => void runCreativeStage()} onSelect={(candidateId) => void selectCreativeCandidate(candidateId)} onConfirm={(candidateId) => void confirmCreativeCandidate(candidateId)} /></section> : null}
 
-            {activeStage === "anchors" ? <VisualAnchorsCanvas
+            {activeStage === "anchors" && activeStageState.status !== "blocked" ? <VisualAnchorsCanvas
               project={activeProject}
               busyTarget={anchorBusyTarget}
               onInitialize={() => void initializeVisualAnchors()}
+              onGenerateAll={() => void generateAllVisualCandidates()}
+              onConfirmProduct={() => void lockVisualMaster("product")}
               onGenerateCandidates={(kind, targetId) => void generateVisualAnchorCandidates(kind, targetId)}
               onSetCurrent={(kind, targetId, candidateId) => void setCurrentVisualAnchor(kind, targetId, candidateId)}
-              onLockMaster={(kind, targetId) => void lockVisualMaster(kind, targetId)}
+              onConfirmSelection={() => void confirmVisualSelection()}
             /> : null}
 
-            {activeStage === "storyboard" ? <section className="storyboard-text-timeline" aria-label="文字分镜时间线">
-              {activeProject.shots.map((shot) => <article id={`storyboard-shot-${shot.id}`} key={shot.id}><header><strong>Shot {String(shot.index).padStart(2, "0")}</strong><span>{shot.durationSec} 秒</span></header><h2>{shot.narrativeProgression?.newInformation ?? shot.goal}</h2><p>{shot.visualDescription}</p><dl><div><dt>Purpose</dt><dd>{shot.narrativeProgression?.resultingState ?? shot.goal}</dd></div><div><dt>Micro Beats</dt><dd>{shot.microBeats?.length ?? 0}</dd></div><div><dt>Narration</dt><dd>{activeProject.narrationPlan?.beats.find((beat) => beat.shotId === shot.id)?.text ?? "留白"}</dd></div></dl></article>)}
-            </section> : null}
+            {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}
 
             {activeStage === "keyframes" ? <ResultBoard project={previewProject} keyframes={liveKeyframes} callTrace={[]} projectId={activeProject.id} generated={generated} isGenerating={isGenerating} /> : null}
-            {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已锁定关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
-            {activeStage === "final" ? <section className="stage-readiness-grid"><StageReadiness label="关键帧" value={`${liveKeyframes.filter((item) => item.status === "ready").length} ready`} /><StageReadiness label="视频" value={activeProject.heroVideo ? "ready" : "未完成"} /><StageReadiness label="旁白" value={activeProject.narrationAssetId ? "ready" : "待生成"} /><StageReadiness label="Timeline" value={`${getProjectDurationSec(activeProject)} 秒`} /><Link href={`/projects/${activeProject.id}#final`} className="button-primary-v3">进入最终成片检查</Link></section> : null}
+            {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已确认关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
+            {activeStage === "final" ? <section className="stage-readiness-grid"><StageReadiness label="关键帧" value={`${liveKeyframes.filter((item) => item.status === "ready").length} 个已完成`} /><StageReadiness label="视频" value={activeProject.heroVideo ? "已完成" : "未完成"} /><StageReadiness label="旁白" value={activeProject.narrationAssetId ? "已完成" : "待生成"} /><StageReadiness label="成片时长" value={`${getProjectDurationSec(activeProject)} 秒`} /><Link href={`/projects/${activeProject.id}#final`} className="button-primary-v3">进入最终成片检查</Link></section> : null}
 
             {activeStageState.status === "blocked" ? <div className="stage-canvas-blocked"><strong>当前阶段尚未解锁</strong><p>先完成并锁定上一阶段。系统不会自动启动下一项昂贵生成。</p></div> : null}
             {error ? <div className="inline-generation-error">{error}</div> : null}
           </section>
 
-          <StageInspector project={{ ...activeProject, stageStates }} activeStage={activeStage} state={activeStageState} busy={stageLocking} onLock={() => void lockCurrentStage()} onOpenModels={() => openModelSettings()} open={inspectorOpen} onClose={() => setInspectorOpen(false)}>
-            <details className="trace-footer-v3"><summary>查看执行日志</summary>{callTrace.length ? callTrace.map((item, index) => <TraceLogLine key={`${index}-${item}`} item={item} />) : <p>当前阶段尚无执行日志。</p>}</details>
-            <footer className="status-rail-footer"><button type="button" className="status-rail-settings" onClick={() => openModelSettings()}>管理模型设置</button></footer>
-          </StageInspector>
+          <StageInspector project={{ ...activeProject, stageStates }} activeStage={activeStage} state={activeStageState} busy={stageLocking} canConfirm={!(["brief", "creative", "anchors"] as StageId[]).includes(activeStage)} onLock={() => void lockCurrentStage()} onOpenModels={() => openModelSettings()} open={inspectorOpen} onClose={() => setInspectorOpen(false)} />
         </section>
       </div>
       <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} initialProvider={settingsProvider} guidance={settingsGuidance} />
+      <UsageGuideSheet open={usageGuideOpen} introductory={usageGuideIntro} onClose={() => setUsageGuideOpen(false)} />
       {shotCountDialogOpen ? (
         <div className="shot-count-dialog-v4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !shotCountSaving) setShotCountDialogOpen(false); }}>
           <section role="dialog" aria-modal="true" aria-labelledby="generate-shot-count-dialog-title">
@@ -1070,7 +1165,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             </header>
             <div className="shot-count-dialog-v4__summary"><span>当前分镜</span><strong>{getEffectiveShotCount(activeProject)} 个</strong></div>
             <ShotCountDialogControl value={requestedShotCount} disabled={shotCountSaving} onChange={setRequestedShotCount} />
-            <p>调整后将重新生成完整分镜，现有关键帧、导入广告视频和最终成片会失效。商品简报与核心策略保持不变。</p>
+            <p>调整后将重新生成完整分镜，现有关键帧、导入广告视频和最终成片会失效。广告需求与核心策略保持不变。</p>
             {shotCountSaving ? <p className="shot-count-dialog-v4__progress" aria-live="polite">正在请求 DeepSeek；20 秒未响应时会自动使用当前数量与时长的本地分镜继续。已等待 {shotCountElapsedSec} 秒。</p> : null}
             <footer>
               <button type="button" className="button-secondary-v3" disabled={shotCountSaving} onClick={() => setShotCountDialogOpen(false)}>取消</button>
@@ -1082,32 +1177,32 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       {briefVersionImpact ? (
         <div className="stage-impact-dialog" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && briefSaveStatus !== "saving") setBriefVersionImpact(null); }}>
           <section role="dialog" aria-modal="true" aria-labelledby="brief-version-dialog-title">
-            <header><div><small>版本与依赖影响</small><h2 id="brief-version-dialog-title">修改商品简报将创建 V{briefVersionImpact.nextVersion}</h2></div><button type="button" aria-label="关闭" disabled={briefSaveStatus === "saving"} onClick={() => setBriefVersionImpact(null)}>×</button></header>
-            <p>Locked 内容不会被覆盖。V{briefVersionImpact.currentVersion} 将继续保留，下游旧结果只会标记为 outdated。</p>
+            <header><div><small>修改影响</small><h2 id="brief-version-dialog-title">保存新的商品信息</h2></div><button type="button" aria-label="关闭" disabled={briefSaveStatus === "saving"} onClick={() => setBriefVersionImpact(null)}>×</button></header>
+            <p>已经确认的内容不会被覆盖，旧内容会保留，受影响的后续结果会显示为需要更新。</p>
             <div className="stage-impact-summary">
               <div><span>影响阶段</span><strong>{briefVersionImpact.affectedStages.length ? briefVersionImpact.affectedStages.map((stageId) => STAGE_LABELS[stageId]).join("、") : "无"}</strong></div>
               <div><span>影响镜头</span><strong>{briefVersionImpact.affectedShotIds.length} 个</strong></div>
               <div><span>影响帧 / 视频</span><strong>{briefVersionImpact.affectedFrameIds.length} / {briefVersionImpact.affectedVideoIds.length}</strong></div>
               <div><span>最终成片</span><strong>{briefVersionImpact.finalAffected ? "将标记过期" : "不受影响"}</strong></div>
             </div>
-            <small>不会自动删除资产，也不会自动重新生成全部内容。</small>
-            <footer><button type="button" className="button-secondary-v3" disabled={briefSaveStatus === "saving"} onClick={() => setBriefVersionImpact(null)}>取消</button><button type="button" className="button-primary-v3" disabled={briefSaveStatus === "saving"} onClick={() => void saveBrief(true)}>{briefSaveStatus === "saving" ? "创建中" : `创建商品简报 V${briefVersionImpact.nextVersion}`}</button></footer>
+            <small>不会自动删除素材，也不会自动重新生成全部内容。</small>
+            <footer><button type="button" className="button-secondary-v3" disabled={briefSaveStatus === "saving"} onClick={() => setBriefVersionImpact(null)}>取消</button><button type="button" className="button-primary-v3" disabled={briefSaveStatus === "saving"} onClick={() => void saveBrief(true)}>{briefSaveStatus === "saving" ? "保存中" : "确认保存修改"}</button></footer>
           </section>
         </div>
       ) : null}
       {anchorVersionIntent ? (
         <div className="stage-impact-dialog" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !anchorBusyTarget) setAnchorVersionIntent(null); }}>
           <section role="dialog" aria-modal="true" aria-labelledby="anchor-version-dialog-title">
-            <header><div><small>版本与依赖影响</small><h2 id="anchor-version-dialog-title">修改 {anchorVersionIntent.label} 将创建 V{anchorVersionIntent.impact.nextVersion}</h2></div><button type="button" aria-label="关闭" disabled={Boolean(anchorBusyTarget)} onClick={() => setAnchorVersionIntent(null)}>×</button></header>
-            <p>Locked Master 不会被覆盖。V{anchorVersionIntent.impact.currentVersion} 将继续保留，只有真正依赖它的下游资产会标记为 outdated。</p>
+            <header><div><small>修改影响</small><h2 id="anchor-version-dialog-title">更换已确认的{anchorVersionIntent.label}</h2></div><button type="button" aria-label="关闭" disabled={Boolean(anchorBusyTarget)} onClick={() => setAnchorVersionIntent(null)}>×</button></header>
+            <p>原先确认的视觉内容会保留，只有真正使用它的后续素材会显示为需要更新。</p>
             <div className="stage-impact-summary">
               <div><span>影响阶段</span><strong>{anchorVersionIntent.impact.affectedStages.length ? anchorVersionIntent.impact.affectedStages.map((stageId) => STAGE_LABELS[stageId]).join("、") : "无"}</strong></div>
               <div><span>影响镜头</span><strong>{anchorVersionIntent.impact.affectedShotIds.length} 个</strong></div>
               <div><span>影响帧 / 视频</span><strong>{anchorVersionIntent.impact.affectedFrameIds.length} / {anchorVersionIntent.impact.affectedVideoIds.length}</strong></div>
               <div><span>最终成片</span><strong>{anchorVersionIntent.impact.finalAffected ? "将标记过期" : "不受影响"}</strong></div>
             </div>
-            <small>不会删除旧候选、Master、关键帧或视频，也不会自动全量重跑。</small>
-            <footer><button type="button" className="button-secondary-v3" disabled={Boolean(anchorBusyTarget)} onClick={() => setAnchorVersionIntent(null)}>取消</button><button type="button" className="button-primary-v3" disabled={Boolean(anchorBusyTarget)} onClick={() => void confirmAnchorVersion()}>{anchorBusyTarget ? "创建中" : `创建 ${anchorVersionIntent.label} V${anchorVersionIntent.impact.nextVersion}`}</button></footer>
+            <small>不会删除旧候选、关键帧或视频，也不会自动全部重跑。</small>
+            <footer><button type="button" className="button-secondary-v3" disabled={Boolean(anchorBusyTarget)} onClick={() => setAnchorVersionIntent(null)}>取消</button><button type="button" className="button-primary-v3" disabled={Boolean(anchorBusyTarget)} onClick={() => void confirmAnchorVersion()}>{anchorBusyTarget ? "保存中" : "确认更换"}</button></footer>
           </section>
         </div>
       ) : null}
@@ -1125,13 +1220,13 @@ function stageUrl(projectId: string, stageId: StageId): string {
 
 function stageCanvasSummary(stageId: StageId): string {
   return ({
-    brief: "确认商业事实、产品资产和制作范围。服务器保存成功后再由你锁定。",
-    creative: "只确定广告要说什么和如何推进；本阶段不会调用图片或视频模型。",
-    anchors: "锁定产品、人物和场景身份，允许状态变化，不允许身份漂移。",
-    storyboard: "在低成本阶段确认镜头、节奏、动作和旁白，不生成视觉资产。",
-    keyframes: "逐镜头确认多个独立视觉状态；下游只使用已锁定帧。",
-    video: "按镜头生成运动和旁白，失败或返工不会波及无关镜头。",
-    final: "检查商业可用性、Ending、字幕和时间轴，再批准成片。"
+    brief: "填写商品事实、真实产品图、目标受众和制作范围。",
+    creative: "三套可选择的广告机制、故事走向和产品高光。",
+    anchors: "确认广告中的产品、主角和主要场景，后续图片和视频都会优先保持这些设定。",
+    storyboard: "镜头内容、节奏、动作和旁白安排。",
+    keyframes: "每个镜头的独立关键画面。",
+    video: "镜头运动、视频与旁白素材。",
+    final: "成片内容、字幕和时间轴检查。"
   } as const)[stageId];
 }
 
@@ -1538,14 +1633,14 @@ function briefWorkflowStatus(status: BriefSaveStatus): WorkflowStepStatus {
 }
 
 function briefSaveStatusLabel(status: BriefSaveStatus, savedAt?: number): string {
-  if (status === "saving") return "正在保存商品简报";
+  if (status === "saving") return "正在保存广告需求";
   if (status === "dirty") return "有未保存修改";
   if (status === "error") return "保存失败，请重试";
   if (status === "saved") {
-    if (!savedAt) return "商品简报已保存";
+    if (!savedAt) return "广告需求已保存";
     return `上次保存 ${new Date(savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
   }
-  return "商品简报待保存";
+  return "广告需求待保存";
 }
 
 function hasGeneratedStoryboard(project: GenerationProject): boolean {

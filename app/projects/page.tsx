@@ -40,7 +40,7 @@ export default async function ProjectsPage({ searchParams }: ProjectsPageProps) 
         {projects.length === 0 ? (
           <div className="projects-index-empty">
             <strong>还没有项目</strong>
-            <p>创建第一份商品简报，开始生成广告。</p>
+            <p>创建第一份广告需求，开始生成广告。</p>
             <Link href="/generate?new=1">开始创作</Link>
           </div>
         ) : (

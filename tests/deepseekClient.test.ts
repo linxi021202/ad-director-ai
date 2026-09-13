@@ -13,10 +13,10 @@ function resetEnv() {
   process.env.DEEPSEEK_TIMEOUT_MS = "90000";
 }
 
-function mockResponse(content: string | null, status = 200) {
+function mockResponse(content: string | null, status = 200, finishReason: string | null = "stop") {
   return new Response(
     JSON.stringify({
-      choices: [{ message: { content } }],
+      choices: [{ finish_reason: finishReason, message: { content } }],
       usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 }
     }),
     { status, headers: { "Content-Type": "application/json" } }
@@ -86,6 +86,15 @@ describe("deepseekClient", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("DEEPSEEK_EMPTY_RESPONSE");
+  });
+
+  it("rejects token-truncated output instead of parsing or persisting it", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse('{"partial":true}', 200, "length")));
+    const result = await callDeepSeekLLM({ messages: [{ role: "user", content: "Return detailed json" }], responseFormat: "json", maxTokens: 128 });
+    expect(result.success).toBe(false);
+    expect(result.finishReason).toBe("length");
+    expect(result.error).toContain("DEEPSEEK_OUTPUT_TRUNCATED");
+    expect(result.json).toBeUndefined();
   });
 
   it("does not throw uncaught fetch errors", async () => {

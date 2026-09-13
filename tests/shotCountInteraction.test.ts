@@ -26,7 +26,7 @@ describe("generate workflow shot count interaction", () => {
     expect(workflow).toContain("onPersistedVersion={trackServerVersion}");
     expect(workflow).toContain("projectWriteQueueRef.current = operation.then");
     expect(workflow).not.toContain("setWorkflowSteps((current)");
-    expect(workflow).toContain("保存商品简报");
+    expect(workflow).toContain("保存广告需求");
     expect(workflow).toContain('briefSaveStatus !== "saved"');
     expect(workflow).toContain('router.replace(`/generate?projectId=${encodeURIComponent(refreshed.id)}`)');
   });

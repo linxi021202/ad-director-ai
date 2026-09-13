@@ -15,6 +15,7 @@ import {
   assetSchema,
   finalVideoMetadataSchema,
   creativeBibleSchema,
+  creativeWorkspaceSchema,
   generationEventSchema,
   generationProjectSchema,
   generationStatusSchema,
@@ -34,6 +35,7 @@ import {
   stageStatesSchema,
   storyboardShotSchema,
   dependencyNodeSchema,
+  detailedShotPromptPackageSchema,
   versionedResourceSchema,
   videoQAResultSchema,
   visualContinuityBibleSchema,
@@ -44,6 +46,7 @@ import {
   type VersionedResourceType,
   type WorkflowSteps
 } from "@/lib/schemas/project";
+import { assertStoryboardMatchesPlanning, planningConstraintsFromBrief, resolveProjectPlanningConstraints } from "@/lib/projects/planningConstraints";
 import { ensureVisualAnchorWorkspace } from "@/lib/visual/visualAnchors";
 import {
   STAGE_LABELS,
@@ -91,6 +94,7 @@ export const anonymousProjectPatchSchema = z.object({
   shotCount: z.number().int().min(MIN_SHOT_COUNT).max(MAX_SHOT_COUNT).optional(),
   targetDurationSec: z.number().int().positive().max(60).optional(),
   strategy: adStrategySchema.optional(),
+  creativeWorkspace: creativeWorkspaceSchema.optional(),
   creativeBible: creativeBibleSchema.optional(),
   visualContinuityBible: visualContinuityBibleSchema.optional(),
   referencePack: referencePackSchema.optional(),
@@ -101,6 +105,7 @@ export const anonymousProjectPatchSchema = z.object({
   keyframeQAResults: z.array(keyframeQAResultSchema).max(120).optional(),
   videoQAResults: z.array(videoQAResultSchema).max(4).optional(),
   narrationPlan: narrationPlanSchema.optional(),
+  shotPromptPackages: z.array(detailedShotPromptPackageSchema).max(12).optional(),
   shots: z.array(storyboardShotSchema).min(1).max(12).optional(),
   prompts: z.array(projectPromptSchema).max(12).optional(),
   aspectRatio: aspectRatioSchema.optional(),
@@ -165,12 +170,13 @@ export class AnonymousProjectVersionConflictError extends Error {
 }
 
 export class ShotConfigurationError extends Error {
-  constructor(readonly code: "INVALID_SHOT_COUNT" | "INVALID_SHOT_DURATION" | "INVALID_TARGET_DURATION" | "SHOT_COUNT_MISMATCH" | "SHOT_DURATION_PLAN_MISMATCH" | "SHOT_CONFIGURATION_CONFLICT" | "SHOT_COUNT_REQUIRES_REGENERATION") {
+  constructor(readonly code: "INVALID_SHOT_COUNT" | "INVALID_SHOT_DURATION" | "INVALID_TARGET_DURATION" | "SHOT_COUNT_MISMATCH" | "DURATION_PLAN_MISMATCH" | "SHOT_DURATION_PLAN_MISMATCH" | "SHOT_CONFIGURATION_CONFLICT" | "SHOT_COUNT_REQUIRES_REGENERATION") {
     super({
       INVALID_SHOT_COUNT: "分镜数量必须为 3–12 个。",
       INVALID_SHOT_DURATION: "每个分镜时长必须为 3–8 秒。",
       INVALID_TARGET_DURATION: "目标时长不在当前分镜数量允许的范围内。",
       SHOT_COUNT_MISMATCH: "模型返回的分镜数量与项目设置不一致，请重新生成。",
+      DURATION_PLAN_MISMATCH: "模型返回的分镜总时长与广告需求中的计划不一致，请重新生成。",
       SHOT_DURATION_PLAN_MISMATCH: "镜头时长计划与项目设置不一致。",
       SHOT_CONFIGURATION_CONFLICT: "镜头配置与当前项目不一致，请刷新后重试。",
       SHOT_COUNT_REQUIRES_REGENERATION: "修改分镜数量需要确认并重新生成完整分镜。"
@@ -250,7 +256,7 @@ export async function getOwnedAnonymousProject(
     return await readOwnedRecord(sessionId, projectId);
   } catch (error) {
     if (isMissingFile(error) || error instanceof AnonymousProjectNotFoundError) return null;
-    return null;
+    throw error;
   }
 }
 
@@ -295,6 +301,13 @@ export async function updateOwnedAnonymousProject(
         ...(patch.brief ?? {}),
         durationSec: patch.targetDurationSec ?? current.project.targetDurationSec ?? current.project.brief.durationSec
       };
+      if (patch.shotCount !== undefined) {
+        candidate.planningConstraints = planningConstraintsFromBrief(
+          (candidate.brief as GenerationProject["brief"]),
+          patch.shotCount,
+          patch.targetDurationSec ?? current.project.targetDurationSec ?? current.project.brief.durationSec
+        );
+      }
     } else if (patch.brief) {
       candidate.brief = {
         ...patch.brief,
@@ -344,7 +357,7 @@ export async function saveOwnedProjectBrief(
       const currentVersion = currentResourceVersion(normalized.resourceVersions ?? [], "brief")?.version ?? 1;
       throw new StageGateError(
         "LOCKED_RESOURCE_VERSION_REQUIRED",
-        "商品简报已锁定，修改将创建新版本。",
+        "广告需求已锁定，修改将创建新版本。",
         calculateDependencyImpact(normalized.dependencyGraph ?? [], "brief", currentVersion, currentVersion + 1)
       );
     }
@@ -381,6 +394,7 @@ export async function saveOwnedProjectBrief(
     let next: GenerationProject = {
       ...normalized,
       brief: { ...input.brief, durationSec: targetDurationSec, productImages: incomingProductImages },
+      planningConstraints: planningConstraintsFromBrief(input.brief, input.shotCount, targetDurationSec),
       shotCount: input.shotCount,
       targetDurationSec,
       durationSec: shots.reduce((sum, shot) => sum + shot.durationSec, 0),
@@ -413,7 +427,7 @@ export async function saveOwnedProjectBrief(
           resourceId: "brief",
           resourceType: "brief",
           stageId: "brief",
-          label: "商品简报 V1",
+          label: "广告需求 V1",
           snapshot: briefSnapshot(next)
         });
         next = created.project;
@@ -422,10 +436,10 @@ export async function saveOwnedProjectBrief(
           resourceId: "brief",
           resourceType: "brief",
           stageId: "brief",
-          label: `商品简报 V${currentBriefVersion.version + 1}`,
+          label: `广告需求 V${currentBriefVersion.version + 1}`,
           snapshot: briefSnapshot(next)
         });
-        next = appendVersionEvents(created.project, created.impact, "商品简报", currentBriefVersion.version + 1);
+        next = appendVersionEvents(created.project, created.impact, "广告需求", currentBriefVersion.version + 1);
       } else {
         next = {
           ...next,
@@ -495,9 +509,19 @@ export async function replaceOwnedProjectShots(
   expectedVersion?: number,
   options: { invalidateExistingAssets?: boolean } = {}
 ): Promise<AnonymousProjectRecord> {
-  const validation = validateShotConfiguration(shots.length, shots);
-  if (!validation.valid) throw new ShotConfigurationError(validation.errors[0]?.code ?? "SHOT_CONFIGURATION_CONFLICT");
   const current = await requireOwnedAnonymousProject(sessionId, projectId);
+  try {
+    assertStoryboardMatchesPlanning(current.project, shots);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    throw new ShotConfigurationError(code === "DURATION_PLAN_MISMATCH" ? "DURATION_PLAN_MISMATCH" : "SHOT_COUNT_MISMATCH");
+  }
+  const constraints = resolveProjectPlanningConstraints(current.project);
+  const validation = validateShotConfiguration(constraints.shotCount, shots, allocateShotDurations(constraints.shotCount, constraints.targetDurationSec));
+  if (!validation.valid) {
+    const code = validation.errors[0]?.code;
+    throw new ShotConfigurationError(code === "SHOT_DURATION_PLAN_MISMATCH" ? "DURATION_PLAN_MISMATCH" : code ?? "SHOT_CONFIGURATION_CONFLICT");
+  }
   const previousIds = current.project.shots.map((shot) => shot.id).join("|");
   const nextIds = shots.map((shot) => shot.id).join("|");
   const identitiesChanged = previousIds !== nextIds;
@@ -517,11 +541,11 @@ export async function replaceOwnedProjectShots(
     completedAt: Date.now()
   });
   return updateOwnedAnonymousProject(sessionId, projectId, {
-    shotCount: shots.length,
+    shotCount: constraints.shotCount,
     shots,
     prompts: promptsFromShots(shots),
     durationSec: validation.totalDurationSec,
-    brief: { ...current.project.brief, durationSec: current.project.targetDurationSec ?? validation.totalDurationSec },
+    brief: { ...current.project.brief, durationSec: constraints.targetDurationSec },
     heroShotId: options.invalidateExistingAssets ? null : shots[heroIndex]!.id,
     ...(identitiesChanged || options.invalidateExistingAssets ? {
       keyframes: [],
@@ -742,6 +766,7 @@ function buildProject(id: string, now: number, input: AnonymousProjectCreateInpu
   const project = generationProjectSchema.parse({
     ...template,
     id,
+    planningConstraints: planningConstraintsFromBrief(brief, shotCount, targetDurationSec),
     shotCount,
     targetDurationSec,
     briefStatus: isTemplate ? "saved" : "draft",
@@ -785,8 +810,9 @@ function sanitizeProjectForStorage(project: GenerationProject): GenerationProjec
 
 function normalizeProjectTimeline(project: GenerationProject): GenerationProject {
   const totalDurationSec = getProjectDurationSec(project);
-  const shotCount = project.shotCount ?? project.shots.length;
-  const targetDurationSec = clampTargetDuration(shotCount, project.targetDurationSec ?? project.brief.durationSec ?? totalDurationSec);
+  const constraints = resolveProjectPlanningConstraints(project);
+  const shotCount = constraints.shotCount;
+  const targetDurationSec = constraints.targetDurationSec;
   const continuity = ensureProjectContinuity(project);
   const architectureShots = ensureStoryboardArchitecture(continuity.shots);
   const firstFrameIdByShot = new Map(architectureShots.map((shot) => [shot.id, shot.frames?.[0]?.id]));
@@ -823,6 +849,7 @@ function normalizeProjectTimeline(project: GenerationProject): GenerationProject
     creativeBible: continuity.creativeBible,
     visualContinuityBible: continuity.visualContinuityBible,
     referencePack: continuity.referencePack,
+    planningConstraints: constraints,
     shotCount,
     targetDurationSec,
     briefStatus: project.briefStatus ?? (project.status === "draft" ? "draft" : "saved"),
@@ -958,6 +985,7 @@ function comparableBrief(brief: GenerationProject["brief"]) {
 function briefSnapshot(project: GenerationProject) {
   return {
     brief: project.brief,
+    planningConstraints: resolveProjectPlanningConstraints(project),
     shotCount: project.shotCount ?? project.shots.length,
     targetDurationSec: project.targetDurationSec ?? project.brief.durationSec
   };
@@ -972,7 +1000,7 @@ function hasDownstreamStageOutput(project: GenerationProject): boolean {
 function stageSnapshot(project: GenerationProject, stageId: StageId): unknown {
   const resourceId = STAGE_RESOURCE[stageId].resourceId;
   if (resourceId === "brief") return briefSnapshot(project);
-  if (resourceId === "creative-direction") return { strategy: project.strategy, creativeBible: project.creativeBible };
+  if (resourceId === "creative-direction") return { strategy: project.strategy, creativeBible: project.creativeBible, creativeWorkspace: project.creativeWorkspace };
   if (resourceId === "visual-anchors") return {
     productVisualSpec: project.productVisualSpec,
     characterVisualSpecs: project.characterVisualSpecs,
@@ -981,7 +1009,7 @@ function stageSnapshot(project: GenerationProject, stageId: StageId): unknown {
     visualContinuityBible: project.visualContinuityBible,
     referencePack: project.referencePack
   };
-  if (resourceId === "storyboard") return { shots: project.shots, narrationPlan: project.narrationPlan };
+  if (resourceId === "storyboard") return { shots: project.shots, narrationPlan: project.narrationPlan, shotPromptPackages: project.shotPromptPackages };
   if (resourceId === "keyframes") return { keyframes: project.keyframes, keyframeQAResults: project.keyframeQAResults };
   if (resourceId === "shot-videos") return { heroVideo: project.heroVideo, narrationAssetId: project.narrationAssetId, videoQAResults: project.videoQAResults };
   return { finalVideo: project.finalVideo, finalVideoAssetId: project.finalVideoAssetId };

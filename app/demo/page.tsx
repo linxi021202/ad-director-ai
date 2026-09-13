@@ -15,7 +15,7 @@ export default function DemoPage() {
         </div>
         <div className="account-note">
           <strong>演示链路</strong>
-          <p>商品简报 → DeepSeek 策略与分镜 → Qwen-Image 关键帧 → Wan 2.7 广告视频 → Remotion 成片。</p>
+          <p>广告需求 → DeepSeek 创意与分镜 → Qwen-Image 关键帧 → Wan 2.7 广告视频 → Remotion 成片。</p>
         </div>
       </section>
     </main>

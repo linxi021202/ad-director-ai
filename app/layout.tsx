@@ -8,7 +8,7 @@ import "./cinema-system.css";
 
 export const metadata: Metadata = {
   title: "AdDirector AI",
-  description: "从商品简报到关键帧、主镜头与广告成片的一站式 AI 广告生成工作台。"
+  description: "从广告需求到关键帧、主镜头与广告成片的一站式 AI 广告生成工作台。"
 };
 
 export default function RootLayout({

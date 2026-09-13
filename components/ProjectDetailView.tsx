@@ -1119,7 +1119,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
               <span>当前</span><strong>{displayProject.shots.length} 个镜头 · {projectDurationSec} 秒</strong>
             </div>
             <ShotCountDialogControl value={requestedShotCount} disabled={shotCountRegenerating} onChange={setRequestedShotCount} />
-            <p>修改分镜数量将重新生成整套分镜，并使现有关键帧、导入广告视频和最终成片失效。此操作不会修改商品简报和核心策略。</p>
+            <p>修改分镜数量将重新生成整套分镜，并使现有关键帧、导入广告视频和最终成片失效。此操作不会修改广告需求和核心策略。</p>
             {shotCountRegenerating ? <p className="shot-count-dialog-v4__progress" aria-live="polite">正在请求 DeepSeek；20 秒未响应时会自动使用当前数量与时长的本地分镜继续。已等待 {shotCountElapsedSec} 秒。</p> : null}
             <footer>
               <button type="button" className="project-button-v4 project-button-v4--secondary" disabled={shotCountRegenerating} onClick={() => setShotCountDialogOpen(false)}>取消</button>

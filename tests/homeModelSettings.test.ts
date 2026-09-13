@@ -6,10 +6,10 @@ const styles = readFileSync("app/home-final.css", "utf8");
 const sheet = readFileSync("components/ModelSettingsSheet.tsx", "utf8");
 
 describe("home hero and model settings", () => {
-  it("keeps the single-line hero at the requested responsive scale", () => {
-    expect(page).toContain("一份简报，直接成片。");
+  it("keeps the staged hero at the requested responsive scale", () => {
+    expect(page).toContain("上传商品，一步步生成可用广告");
     expect(styles).toContain("clamp(42px, 4.2vw, 62px)");
-    expect(styles).toContain("white-space: nowrap");
+    expect(styles).toContain("text-wrap: balance");
   });
 
   it("uses compact layered pill CTAs", () => {

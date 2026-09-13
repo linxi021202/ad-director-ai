@@ -23,7 +23,7 @@ export const mockProject = {
   },
   timeline: [
     {
-      name: "商品简报",
+      name: "广告需求",
       status: "done" as const,
       description: "已读取商品信息、平台、比例和广告时长。"
     },

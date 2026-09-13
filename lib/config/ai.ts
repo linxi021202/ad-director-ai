@@ -54,6 +54,7 @@ const envSchema = z.object({
   DEEPSEEK_MODEL: z.string().min(1).default("deepseek-v4-pro"),
   DEEPSEEK_TIMEOUT_MS: positiveIntEnvSchema(90_000),
   DEEPSEEK_MAX_RETRIES: positiveIntEnvSchema(1),
+  DEEPSEEK_MAX_OUTPUT_TOKENS: positiveIntEnvSchema(8_192),
 
   DASHSCOPE_API_KEY: optionalSecretSchema,
   DASHSCOPE_BASE_URL: optionalUrlEnvSchema(DEFAULT_DASHSCOPE_BASE_URL),
@@ -219,7 +220,7 @@ export function getPublicAIStatus(): PublicAIStatus {
 
 
 
-export type DeepSeekRuntimeConfig = { baseUrl: string; model: string; timeoutMs: number; maxRetries: number };
+export type DeepSeekRuntimeConfig = { baseUrl: string; model: string; timeoutMs: number; maxRetries: number; maxOutputTokens: number };
 
 export function getDeepSeekRuntimeConfig(): DeepSeekRuntimeConfig {
   const env = parseEnv();
@@ -227,7 +228,8 @@ export function getDeepSeekRuntimeConfig(): DeepSeekRuntimeConfig {
     baseUrl: env.DEEPSEEK_BASE_URL,
     model: env.DEEPSEEK_MODEL || "deepseek-v4-pro",
     timeoutMs: env.DEEPSEEK_TIMEOUT_MS,
-    maxRetries: env.DEEPSEEK_MAX_RETRIES
+    maxRetries: env.DEEPSEEK_MAX_RETRIES,
+    maxOutputTokens: env.DEEPSEEK_MAX_OUTPUT_TOKENS
   };
 }
 

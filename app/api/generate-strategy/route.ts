@@ -15,6 +15,7 @@ import { productBriefSchema } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, MAX_SHOT_DURATION_SEC, MIN_SHOT_COUNT, MIN_SHOT_DURATION_SEC, resolveShotPlan } from "../../../lib/video/shotConfig";
 import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
+import { planningDurationPlan, resolveProjectPlanningConstraints } from "../../../lib/projects/planningConstraints";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -34,24 +35,21 @@ export async function POST(request: Request) {
   try {
     const parsed = requestSchema.safeParse(await request.json());
     if (!parsed.success) {
-      return apiJson({ success: false, data: null, trace: { route: "generate-strategy", stage: "validation" }, fallbackUsed: false, error: "项目 ID 或商品简报无效。" }, 400);
+      return apiJson({ success: false, data: null, trace: { route: "generate-strategy", stage: "validation" }, fallbackUsed: false, error: "项目 ID 或广告需求无效。" }, 400);
     }
 
     projectId = parsed.data.projectId;
     const owned = await requireOwnedAnonymousProject(session.id, projectId);
     const productSpec = await resolveProjectProductVisualSpec({ sessionId: session.id, project: owned.project });
-    const timeline = resolveShotPlan(
-      parsed.data.requestedShotCount ?? owned.project.shotCount,
-      parsed.data.shotDurationPlan ?? owned.project.shots.map((shot) => shot.durationSec),
-      parsed.data.targetDurationSec ?? owned.project.targetDurationSec ?? parsed.data.brief.durationSec
-    );
+    const constraints = resolveProjectPlanningConstraints(owned.project);
+    const timeline = resolveShotPlan(constraints.shotCount, planningDurationPlan(owned.project), constraints.targetDurationSec);
     const event = await startGenerationEvent(session.id, projectId, {
       stage: "strategy", provider: "deepseek", action: "生成广告策略", message: "DeepSeek 正在生成广告策略。"
     });
     eventId = event.id;
 
     const route = selectProviderModel({ taskType: "strategy" });
-    const result = await generateStrategy(parsed.data.brief, {
+    const result = await generateStrategy(owned.project.brief, {
       sessionId: session.id,
       requestedShotCount: timeline.shotCount,
       targetDurationSec: timeline.targetDurationSec,
@@ -62,18 +60,12 @@ export async function POST(request: Request) {
       const diagnostic = result.fallbackUsed || result.error
         ? diagnoseProviderFallback(result.fallbackReason ?? result.error)
         : null;
-      const creativeBible = buildCreativeBible(parsed.data.brief, result.data);
+      const creativeBible = buildCreativeBible(owned.project.brief, result.data);
       const current = await requireOwnedAnonymousProject(session.id, projectId);
       await updateOwnedAnonymousProject(session.id, projectId, {
-        brief: parsed.data.brief,
         strategy: result.data,
         creativeBible,
         ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
-        aspectRatio: parsed.data.brief.aspectRatio,
-        shotCount: timeline.shotCount,
-        targetDurationSec: timeline.targetDurationSec,
-        durationSec: timeline.totalDurationSec,
-        platform: parsed.data.brief.platform,
         status: "generating",
         workflowSteps: {
           ...(current.project.workflowSteps ?? defaultWorkflow()),
@@ -93,7 +85,7 @@ export async function POST(request: Request) {
 
     return apiJson({
       success: result.success,
-      data: result.data ? { strategy: result.data, creativeBible: buildCreativeBible(parsed.data.brief, result.data) } : null,
+      data: result.data ? { strategy: result.data, creativeBible: buildCreativeBible(owned.project.brief, result.data) } : null,
       trace: {
         route: "generate-strategy", taskType: "strategy", provider: result.provider, model: result.model,
         latencyMs: result.latencyMs, tokenUsage: result.tokenUsage, costEstimate: result.costEstimate,

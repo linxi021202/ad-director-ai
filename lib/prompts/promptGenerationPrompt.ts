@@ -27,11 +27,11 @@ export function buildPromptGenerationPrompt(
     }))
   };
 
-  return `你是广告生成工作流的提示词导演。请完善每个镜头的图片提示词、视频提示词、推荐模型和降级方案。
+  return `你是广告生成工作流的提示词导演。当前请求只包含一个镜头。请深度完善该镜头的图片提示词、视频提示词、推荐模型和降级方案。
 
 只输出合法 json，不要输出 Markdown、解释、注释或代码围栏。除 imagePromptEn 外，所有字段必须使用简体中文。
 
-商品简报：
+广告需求：
 ${JSON.stringify(textBriefForPrompt(brief), null, 2)}
 
 ${serializeProductVisualSpecForPrompt(productVisualSpec)}
@@ -52,10 +52,10 @@ ${JSON.stringify(shots, null, 2)}
 - 全片只允许 1 个主镜头使用 Wan 2.7 I2V，主镜头优先为镜头 ${heroShot?.index ?? 1}，时长 ${heroShot?.durationSec ?? 5} 秒。
 - 其他镜头使用 Qwen-Image 关键帧与 Remotion 图片动效；最后一个镜头用于 CTA 合成。
 - recommendedModel 只能是：${allowedModels.join("、")}。
-- imagePromptCn 使用 100–220 个中文字符，明确场景、主体、产品一致性、光线、构图、景别、质感、背景和安全要求。
-- imagePromptEn 与中文图片提示词语义一致，必须是详细英文视觉提示词。
+- imagePromptCn 使用 400–800 个中文字符，明确唯一冻结瞬间、场景、主体、产品一致性、人物姿态与手部、前中后景、机位、焦段、景深、光线方向与质量、阴影、反射、材质、色彩、空间关系和安全要求。
+- imagePromptEn 与中文图片提示词语义一致，使用 250–450 个英文单词，必须是完整详细的英文视觉提示词。
 - 图片提示词必须包含：${SINGLE_FRAME_HARD_CONSTRAINT_CN} 相邻关键帧的景别、轴位、动作或产品使用阶段至少两项不同。
-- 主镜头 videoPromptCn 使用 120–320 个中文字符，明确输入独立完整的首帧与可选尾帧；按秒点规划简单微动作，只允许同一时空中的一条连续运镜，不得切镜或同屏展示多个时间点，并必须包含：${SINGLE_VIDEO_HARD_CONSTRAINT_CN}
+- 主镜头 videoPromptCn 必须详细描述开始状态、按秒时间轴、人物动作、手部动作、产品动作、摄影机动作、环境变化、结束状态和禁止变化；只允许同一时空中的一条连续运镜，不得切镜或同屏展示多个时间点，并必须包含：${SINGLE_VIDEO_HARD_CONSTRAINT_CN}
 - 非主镜头 videoPromptCn 明确说明采用关键帧加 Remotion 动效。
 - 每条字幕不超过 16 个中文字符。
 - 禁止明星肖像、影视/动漫/游戏 IP、竞品 Logo、虚假功效、医疗或金融夸大承诺。

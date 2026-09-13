@@ -8,7 +8,7 @@ const css = readFileSync("app/workspace-v3.css", "utf8");
 
 describe("stage-gated director workspace", () => {
   it("exposes all seven stages and restores selection from the URL", () => {
-    for (const label of ["商品简报", "创意方向", "视觉基准", "文字分镜", "关键帧", "视频与配音", "最终成片"]) {
+    for (const label of ["广告需求", "创意方向", "视觉基准", "文字分镜", "关键帧", "视频与配音", "最终成片"]) {
       expect(`${rail}\n${gates}`).toContain(label);
     }
     expect(workflow).toContain('useSearchParams()');
@@ -36,8 +36,8 @@ describe("stage-gated director workspace", () => {
     expect(workflow).toContain('activeProject.stageStates?.brief.status === "locked"');
     expect(workflow).toContain("setBriefVersionImpact(calculateDependencyImpact");
     expect(workflow).toContain('className="stage-impact-dialog"');
-    expect(workflow).toContain("将继续保留，下游旧结果只会标记为 outdated");
-    expect(workflow).toContain("不会自动删除资产，也不会自动重新生成全部内容");
+    expect(workflow).toContain("旧内容会保留，受影响的后续结果会显示为需要更新");
+    expect(workflow).toContain("不会自动删除素材，也不会自动重新生成全部内容");
   });
 
   it("covers the required responsive breakpoints", () => {

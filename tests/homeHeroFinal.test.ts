@@ -39,8 +39,10 @@ describe("homepage final hero", () => {
     expect(styles).toContain("infinite");
   });
 
-  it("keeps the cover copy to one short sentence", () => {
-    expect(page).toContain("一份简报，直接成片。");
+  it("explains the staged generation flow on the homepage", () => {
+    expect(page).toContain("上传商品，一步步生成可用广告");
+    expect(page).toContain("先确定创意、人物和场景");
+    expect(page).toContain("制作流程");
     expect(page).not.toContain("从策略、分镜到关键帧与成片");
     expect(page).not.toContain("home-features");
   });
@@ -57,8 +59,8 @@ describe("homepage final hero", () => {
     expect(backdrop).not.toContain("UnicornScene");
   });
 
-  it("keeps the short cover line unbroken without affecting product pages", () => {
-    expect(styles).toContain("white-space: nowrap");
+  it("keeps the cover responsive without affecting product pages", () => {
+    expect(styles).toContain("text-wrap: balance");
     expect(styles).toContain("clamp(22px, 7vw, 34px)");
     expect(cinemaStyles).toContain(".site-video-backdrop.is-home");
   });

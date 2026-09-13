@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-import { diagnoseProviderFallback } from "../../../lib/api/provider-diagnostics";
 import { markPrivateAssetsLifecycle } from "../../../lib/assets/assetStore";
 import { apiJson, sanitizeApiError } from "../../../lib/api/response";
 import { projectStoreErrorResponse } from "../../../lib/projects/api";
@@ -11,13 +10,14 @@ import {
   requireOwnedAnonymousProject,
   updateOwnedAnonymousProject
 } from "../../../lib/projects/anonymousProjectStore";
-import { generateStoryboard, selectProviderModel } from "../../../lib/providers/providerRouter";
-import { generateNarrationPlan } from "../../../lib/providers/deepseekProvider";
+import { generateStoryboard as generateRoutedStoryboard, selectProviderModel } from "../../../lib/providers/providerRouter";
+import { deepseekProvider, generateNarrationPlan } from "../../../lib/providers/deepseekProvider";
 import { buildPartialNarrationPlan } from "../../../lib/audio/narrationPlan";
 import { adStrategySchema, productBriefSchema, type GenerationProject } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, MAX_SHOT_DURATION_SEC, MIN_SHOT_COUNT, MIN_SHOT_DURATION_SEC, resolveShotPlan } from "../../../lib/video/shotConfig";
 import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
+import { assertStoryboardMatchesPlanning, planningDurationPlan, resolveProjectPlanningConstraints } from "../../../lib/projects/planningConstraints";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -39,16 +39,13 @@ export async function POST(request: Request) {
   try {
     const parsed = requestSchema.safeParse(await request.json());
     if (!parsed.success) {
-      return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "validation" }, fallbackUsed: false, error: "项目 ID、商品简报或策略无效。" }, 400);
+      return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "validation" }, fallbackUsed: false, error: "项目 ID、广告需求或策略无效。" }, 400);
     }
     projectId = parsed.data.projectId;
     const owned = await requireOwnedAnonymousProject(session.id, projectId);
     const productSpec = await resolveProjectProductVisualSpec({ sessionId: session.id, project: owned.project });
-    const timeline = resolveShotPlan(
-      parsed.data.requestedShotCount ?? owned.project.shotCount,
-      parsed.data.shotDurationPlan ?? owned.project.shots.map((shot) => shot.durationSec),
-      parsed.data.targetDurationSec ?? owned.project.targetDurationSec ?? parsed.data.brief.durationSec
-    );
+    const constraints = resolveProjectPlanningConstraints(owned.project);
+    const timeline = resolveShotPlan(constraints.shotCount, planningDurationPlan(owned.project), constraints.targetDurationSec);
     if (timeline.shotDurationPlan.length !== timeline.shotCount) {
       return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "shot-config" }, fallbackUsed: false, error: "镜头时长计划与分镜数量不一致。" }, 400);
     }
@@ -58,7 +55,8 @@ export async function POST(request: Request) {
     eventId = event.id;
 
     const route = selectProviderModel({ taskType: "storyboard" });
-    const result = await generateStoryboard(parsed.data.brief, parsed.data.strategy, {
+    const generateDetailedStoryboard = process.env.AI_MODE === "real" ? deepseekProvider.generateStoryboard : generateRoutedStoryboard;
+    let result = await generateDetailedStoryboard(owned.project.brief, owned.project.strategy, {
       sessionId: session.id,
       requestedShotCount: timeline.shotCount,
       targetDurationSec: timeline.targetDurationSec,
@@ -66,6 +64,23 @@ export async function POST(request: Request) {
       productVisualSpec: productSpec.spec,
       ...(parsed.data.regenerateExisting ? { providerTimeoutMs: 20_000, maxProviderAttempts: 1 } : {})
     });
+    if (result.data && !storyboardMatchesPlanning(owned.project, result.data)) {
+      result = await generateDetailedStoryboard(owned.project.brief, owned.project.strategy, {
+        sessionId: session.id,
+        requestedShotCount: timeline.shotCount,
+        targetDurationSec: timeline.targetDurationSec,
+        shotDurationPlan: timeline.shotDurationPlan,
+        productVisualSpec: productSpec.spec,
+        maxProviderAttempts: 1
+      });
+    }
+    if (result.data && !storyboardMatchesPlanning(owned.project, result.data)) {
+      const code = result.data.length !== constraints.shotCount ? "SHOT_COUNT_MISMATCH" : "DURATION_PLAN_MISMATCH";
+      await failGenerationEvent(session.id, projectId, eventId, code === "SHOT_COUNT_MISMATCH"
+        ? "生成的分镜数量与广告需求不一致，自动修复后仍未通过。"
+        : "生成的分镜总时长与广告需求不一致，自动修复后仍未通过。", code);
+      return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "planning-check", errorCode: code }, fallbackUsed: false, error: code === "SHOT_COUNT_MISMATCH" ? "分镜数量未能匹配广告需求，请重新生成。" : "分镜总时长未能匹配广告需求，请重新生成。" }, 422);
+    }
     let responseShots = result.data ?? [];
     if (result.data) {
       const invalidatedAssetIds = parsed.data.regenerateExisting
@@ -77,13 +92,10 @@ export async function POST(request: Request) {
       await markPrivateAssetsLifecycle(session.id, projectId, invalidatedAssetIds, "orphaned");
       const current = await requireOwnedAnonymousProject(session.id, projectId);
       const updated = await updateOwnedAnonymousProject(session.id, projectId, {
-        strategy: parsed.data.strategy,
         ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
-        targetDurationSec: timeline.targetDurationSec,
-        brief: { ...parsed.data.brief, durationSec: timeline.targetDurationSec },
         workflowSteps: {
           ...(current.project.workflowSteps ?? defaultWorkflow()),
-          brief: "completed", strategy: "completed", storyboard: result.fallbackUsed ? "fallback" : "completed"
+          brief: "completed", strategy: "completed", storyboard: "completed"
         }
       });
       const narration = await generateNarrationPlan(updated.project.brief, updated.project.strategy, updated.project.shots, {
@@ -93,14 +105,9 @@ export async function POST(request: Request) {
       const narrationPlan = narration.success && narration.data ? narration.data : buildPartialNarrationPlan(updated.project);
       const withNarration = await updateOwnedAnonymousProject(session.id, projectId, { narrationPlan });
       responseShots = withNarration.project.shots;
-      const diagnostic = result.fallbackUsed || result.error
-        ? diagnoseProviderFallback(result.fallbackReason ?? result.error)
-        : null;
       await completeGenerationEvent(session.id, projectId, eventId,
-        result.fallbackUsed
-          ? `${diagnostic?.title ?? "DeepSeek 调用失败"}：${diagnostic?.detail ?? "已使用本地模板继续。"} 当前分镜 ${responseShots.length} 个，总时长 ${responseShots.reduce((sum, shot) => sum + shot.durationSec, 0)} 秒。`
-          : `分镜生成完成，共 ${responseShots.length} 个镜头，总时长 ${responseShots.reduce((sum, shot) => sum + shot.durationSec, 0)} 秒。`,
-        { status: result.fallbackUsed ? "fallback" : "completed", latencyMs: result.latencyMs, progressCurrent: responseShots.length, progressTotal: responseShots.length }
+        `分镜生成完成，共 ${responseShots.length} 个镜头，总时长 ${responseShots.reduce((sum, shot) => sum + shot.durationSec, 0)} 秒。`,
+        { status: "completed", latencyMs: result.latencyMs, progressCurrent: responseShots.length, progressTotal: responseShots.length }
       );
     } else {
       await failGenerationEvent(session.id, projectId, eventId, "分镜生成失败，请检查模型配置后重试。");
@@ -113,10 +120,10 @@ export async function POST(request: Request) {
         route: "generate-storyboard", taskType: "storyboard", provider: result.provider, model: result.model,
         latencyMs: result.latencyMs, tokenUsage: result.tokenUsage, costEstimate: result.costEstimate,
         plannedRoute: route,
-        diagnostic: result.fallbackUsed || result.error ? diagnoseProviderFallback(result.fallbackReason ?? result.error) : null
+        diagnostic: result.error ? { title: "DeepSeek 生成失败", detail: result.error } : null
       },
-      fallbackUsed: result.fallbackUsed,
-      fallbackReason: result.fallbackReason,
+      fallbackUsed: false,
+      fallbackReason: null,
       error: result.error
     });
   } catch (error) {
@@ -125,6 +132,15 @@ export async function POST(request: Request) {
     const projectError = projectStoreErrorResponse(error);
     if (projectError) return projectError;
     return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "exception" }, fallbackUsed: false, error: detail }, 500);
+  }
+}
+
+function storyboardMatchesPlanning(project: GenerationProject, shots: GenerationProject["shots"]): boolean {
+  try {
+    assertStoryboardMatchesPlanning(project, shots);
+    return true;
+  } catch {
+    return false;
   }
 }
 

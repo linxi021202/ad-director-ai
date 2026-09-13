@@ -15,11 +15,11 @@ type ShotPlanInput = { requestedShotCount?: number; targetDurationSec?: number; 
 
 export function buildStrategyPrompt(brief: ProductBrief, input: ShotPlanInput = {}): string {
   const timeline = resolveShotPlan(input.requestedShotCount, input.shotDurationPlan, input.targetDurationSec ?? brief.durationSec);
-  return `你是商业广告导演、叙事导演、连续性导演和提示词导演。请根据商品简报生成可执行的广告策略与 Creative Bible 基础信息。
+  return `你是商业广告导演、叙事导演、连续性导演和提示词导演。请根据广告需求生成可执行的广告策略与 Creative Bible 基础信息。
 
 只输出合法 json，不要输出 Markdown、解释、注释或代码围栏。所有面向用户的字段必须使用简体中文。
 
-商品简报：
+广告需求：
 ${JSON.stringify(textBriefForPrompt(brief), null, 2)}
 
 ${serializeProductVisualSpecForPrompt(input.productVisualSpec)}

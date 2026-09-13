@@ -31,10 +31,12 @@ export type LLMResult = {
   tokenUsage?: LLMTokenUsage;
   costEstimate?: string;
   error?: string;
+  finishReason?: string | null;
 };
 
 export type OpenAICompatibleChatCompletion = {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string | null;
     };

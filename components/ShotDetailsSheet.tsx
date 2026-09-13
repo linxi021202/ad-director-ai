@@ -140,7 +140,7 @@ function TraceList({ shot, keyframe, project }: { shot: StoryboardShot; keyframe
       <div><dt>推荐模型</dt><dd>{shot.recommendedModel}</dd></div>
       <div><dt>视频模式</dt><dd>{generationModeLabel(shot.generationMode)}</dd></div>
       <div><dt>连续性分组</dt><dd>{shot.continuityGroupId || "项目主线"}</dd></div>
-      <div><dt>产品参考</dt><dd>{shot.containsProduct ? project?.productVisualSpec ? `Product Master 已锁定 · ${shot.exactProductShot ? "精确产品镜头" : "产品互动镜头"}` : "缺少 Product Visual Spec" : "本镜头不含产品"}</dd></div>
+      <div><dt>产品参考</dt><dd>{shot.containsProduct ? project?.productVisualSpec ? `产品原图已确认 · ${shot.exactProductShot ? "严格保持原产品" : "产品互动镜头"}` : "产品外观分析尚未完成，将继续使用产品原图" : "本镜头不含产品"}</dd></div>
       <div><dt>产品规格</dt><dd>{project?.productVisualSpec ? `${project.productVisualSpec.containerType} · ${project.productVisualSpec.shape} · ${project.productVisualSpec.capStructure}` : "尚未提取"}</dd></div>
       <div><dt>人物参考</dt><dd>{characterMasters?.length ? characterMasters.map((item) => `${item.id} ${item.locked ? "已锁定" : "待锁定"}`).join("、") : "本镜头无人像 Master"}</dd></div>
       <div><dt>场景参考</dt><dd>{sceneMaster ? `${sceneMaster.name} ${sceneMaster.locked ? "已锁定" : "待锁定"}` : "使用项目场景规则"}</dd></div>

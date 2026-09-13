@@ -138,7 +138,7 @@
 .home-mobile-nav { display: none; }
 
 .home-hero {
-  min-height: 100svh;
+  min-height: calc(100svh - 92px);
   display: grid;
   place-items: center;
   padding: 150px 24px 82px;
@@ -149,22 +149,29 @@
   width: min(100%, 1120px);
   display: grid;
   justify-items: center;
-  gap: 58px;
+  gap: 26px;
   transition: opacity .55s cubic-bezier(.25, 1, .5, 1), transform .55s cubic-bezier(.25, 1, .5, 1);
 }
 
 .home-hero h1 {
   max-width: 100%;
   margin: 0;
-  background: linear-gradient(144.5deg, #fff 28%, rgba(255, 255, 255, .58) 112%);
-  background-clip: text;
-  color: transparent;
+  color: #fff;
   font-size: clamp(42px, 4.2vw, 62px);
   font-weight: 500;
   line-height: 1.12;
-  white-space: nowrap;
-  -webkit-background-clip: text;
+  text-wrap: balance;
 }
+
+.home-hero-summary { max-width: 680px; margin: 0; color: rgba(255,255,255,.68); font-size: 16px; line-height: 1.8; text-wrap: pretty; }
+.home-process { padding: 0 24px 72px; }
+.home-process>div { width:min(100%,960px); margin:0 auto; border-top:1px solid rgba(255,255,255,.14); padding-top:28px; }
+.home-process h2 { margin:0 0 22px; color:#fff; font-size:18px; }
+.home-process ol { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); margin:0; padding:0; list-style:none; }
+.home-process li { display:flex; min-height:56px; align-items:center; gap:12px; border-right:1px solid rgba(255,255,255,.1); padding:0 18px; }
+.home-process li:first-child { padding-left:0; }.home-process li:last-child { border-right:0; }
+.home-process li span { display:grid; width:24px; height:24px; flex:0 0 auto; place-items:center; border-radius:50%; background:rgba(255,255,255,.1); color:rgba(255,255,255,.7); font-size:11px; }
+.home-process li strong { color:#fff; font-size:13px; }
 
 .home-actions {
   display: grid;
@@ -340,6 +347,8 @@
   .home-actions { width: min(100%, 340px); flex-direction: column; }
   .home-primary-action,
   .home-secondary-action { width: 100%; }
+  .home-process ol { grid-template-columns:1fr; }
+  .home-process li { border-right:0; border-top:1px solid rgba(255,255,255,.1); padding-inline:0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

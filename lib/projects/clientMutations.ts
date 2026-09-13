@@ -46,14 +46,14 @@ export async function saveProjectBriefWithConflictRetry(
 
     const isConflict = response.status === 409 && payload?.error?.code === "PROJECT_VERSION_CONFLICT";
     if (!isConflict || attempt === maxAttempts - 1) {
-      throw new Error(payload?.error?.message || "商品简报保存失败，请重试。");
+      throw new Error(payload?.error?.message || "广告需求保存失败，请重试。");
     }
 
     const latest = await fetchLatestProject(projectId, fetchImpl);
     version = latest.version;
   }
 
-  throw new Error("商品简报保存失败，请重试。");
+  throw new Error("广告需求保存失败，请重试。");
 }
 
 async function fetchLatestProject(projectId: string, fetchImpl: typeof fetch): Promise<ProjectPatchData> {

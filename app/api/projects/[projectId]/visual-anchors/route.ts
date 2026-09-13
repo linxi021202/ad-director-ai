@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { markPrivateAssetsLifecycle } from "@/lib/assets/assetStore";
 import { callQwenImage } from "@/lib/image/qwenImageClient";
 import {
   AnonymousProjectVersionConflictError,
@@ -58,7 +57,8 @@ const requestSchema = z.discriminatedUnion("action", [
     expectedVersion: z.number().int().positive(),
     kind: z.enum(["product", "character", "scene"]),
     targetId: z.string().trim().min(1).max(120).optional()
-  }).strict()
+  }).strict(),
+  z.object({ action: z.literal("use-recommended"), expectedVersion: z.number().int().positive() }).strict()
 ]);
 
 type RouteContext = { params: Promise<{ projectId: string }> };
@@ -97,11 +97,42 @@ export async function POST(request: Request, context: RouteContext) {
       const saved = await setCurrentCandidate(sessionResult.session.id, projectId.data, current.project, body, current.version);
       return NextResponse.json({ success: true, data: publicAnonymousProject(saved) });
     }
+    if (body.action === "use-recommended") {
+      const saved = await useRecommendedAnchors(sessionResult.session.id, projectId.data, current.project, current.version);
+      return NextResponse.json({ success: true, data: publicAnonymousProject(saved) });
+    }
     const saved = await lockMaster(sessionResult.session.id, projectId.data, current.project, body, current.version);
     return NextResponse.json({ success: true, data: publicAnonymousProject(saved) });
   } catch (error) {
     return projectStoreErrorResponse(error) ?? mapAnchorError(error);
   }
+}
+
+async function useRecommendedAnchors(
+  sessionId: string,
+  projectId: string,
+  source: GenerationProject,
+  expectedVersion: number
+) {
+  return mutateOwnedAnonymousProject(sessionId, projectId, () => {
+    let next = ensureVisualAnchorWorkspace(source);
+    next = lockVisualAnchorMaster(next, "product");
+    for (const targetId of next.visualAnchorWorkspace!.requiredCharacterIds) {
+      const candidates = next.visualAnchorWorkspace!.characterCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated");
+      const candidate = candidates.find((item) => item.status === "selected") ?? candidates.find((item) => item.recommended) ?? candidates[0];
+      if (!candidate) throw new Error("CHARACTER_MASTER_REQUIRED");
+      next = selectVisualAnchorCandidate(next, "character", targetId, candidate.id);
+      next = lockVisualAnchorMaster(next, "character", targetId);
+    }
+    for (const targetId of next.visualAnchorWorkspace!.requiredSceneIds) {
+      const candidates = next.visualAnchorWorkspace!.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated");
+      const candidate = candidates.find((item) => item.status === "selected") ?? candidates.find((item) => item.recommended) ?? candidates[0];
+      if (!candidate) throw new Error("SCENE_MASTER_REQUIRED");
+      next = selectVisualAnchorCandidate(next, "scene", targetId, candidate.id);
+      next = lockVisualAnchorMaster(next, "scene", targetId);
+    }
+    return ensureVisualAnchorWorkspace(next);
+  }, expectedVersion);
 }
 
 async function initializeAnchors(sessionId: string, projectId: string, source: GenerationProject) {
@@ -114,7 +145,10 @@ async function initializeAnchors(sessionId: string, projectId: string, source: G
   try {
     const current = await requireOwnedAnonymousProject(sessionId, projectId);
     let project = ensureVisualAnchorWorkspace({ ...source, generationEvents: current.project.generationEvents });
-    const productSpec = await resolveProjectProductVisualSpec({ sessionId, project });
+    const productSpec = await resolveProjectProductVisualSpec({ sessionId, project }).catch((error) => ({
+      spec: null,
+      error: error instanceof Error ? error.message : "产品图片分析暂时不可用。"
+    }));
     if (productSpec.spec) project = { ...project, productVisualSpec: productSpec.spec };
     const defaults = project.visualAnchorWorkspace!.characterBriefs;
     const generated = await generateCharacterAnchorBriefs(project.brief, project.creativeBible!, defaults, {
@@ -171,7 +205,7 @@ async function generateCandidates(
   const event = await startGenerationEvent(sessionId, projectId, {
     stage: "anchors",
     provider: "qwen-image",
-    action: body.kind === "character" ? "Anchor Candidate · Character" : "Anchor Candidate · Scene",
+    action: body.kind === "character" ? "生成人物候选方案" : "生成场景候选方案",
     message: `Qwen-Image 正在生成 ${body.count} 个相互独立的${body.kind === "character" ? "人物" : "场景"}候选。`,
     progressCurrent: 0,
     progressTotal: body.count
@@ -192,32 +226,39 @@ async function generateCandidates(
       sessionId,
       size: body.kind === "character" ? "1152*2048" : "2048*1152",
       watermark: false
-    })));
-    const failed = results.filter((result) => !result.success || !result.assetId);
-    if (failed.length) {
-      await markPrivateAssetsLifecycle(sessionId, projectId, results.flatMap((result) => result.assetId ? [result.assetId] : []), "orphaned");
-      await failGenerationEvent(sessionId, projectId, event.id, "部分候选未能生成或私有保存，未覆盖已有候选。", "PROVIDER_REQUEST_FAILED");
-      return failure("VISUAL_ANCHOR_GENERATION_FAILED", failed[0]?.error ?? "候选生成失败。", 502);
+    }).catch((error) => ({ success: false as const, assetId: null, error: error instanceof Error ? error.message : "候选生成失败。" }))));
+    const successful = results.flatMap((result, index) => {
+      if (!result.success || !result.assetId) return [];
+      return [{ requestItem: requested[index]!, result }];
+    });
+    if (successful.length === 0) {
+      const firstFailure = results.find((result) => result.error);
+      await failGenerationEvent(sessionId, projectId, event.id, "本次候选均未生成成功，已有候选保持不变。", "PROVIDER_REQUEST_FAILED");
+      return failure("VISUAL_ANCHOR_GENERATION_FAILED", firstFailure?.error ?? "候选生成失败。", 502);
     }
     const now = new Date().toISOString();
     const nextVersion = Math.max(0, ...(project.visualAnchorWorkspace![body.kind === "character" ? "characterCandidates" : "sceneCandidates"]
       .filter((candidate) => candidate.targetId === body.targetId)
       .map((candidate) => candidate.version))) + 1;
-    const candidates: VisualAnchorCandidate[] = requested.map((requestItem, index) => ({
+    const candidates: VisualAnchorCandidate[] = successful.map(({ requestItem, result }, index) => ({
       id: requestItem.id,
       kind: body.kind,
       targetId: body.targetId,
-      assetId: results[index]!.assetId!,
-      label: `Candidate ${String(index + 1).padStart(2, "0")}`,
+      assetId: result.assetId!,
+      label: `${body.kind === "character" ? "人物" : "场景"}方案 ${index + 1}`,
       prompt: requestItem.prompt,
       status: "ready",
+      recommended: index === 0,
       version: nextVersion,
       createdAt: now
     }));
     await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => replaceVisualAnchorCandidates(latest, body.kind, body.targetId, candidates, now));
-    await completeGenerationEvent(sessionId, projectId, event.id, `${body.count} 个独立候选已生成，等待 Set Current。`, {
-      status: "completed",
-      progressCurrent: body.count,
+    const failedCount = body.count - candidates.length;
+    await completeGenerationEvent(sessionId, projectId, event.id, failedCount
+      ? `已保留 ${candidates.length} 个成功候选，另有 ${failedCount} 个生成失败，可单独重试本模块。`
+      : `${body.count} 个独立候选已生成，等待选择。`, {
+      status: failedCount ? "needs-review" : "completed",
+      progressCurrent: candidates.length,
       progressTotal: body.count
     });
     const final = await requireOwnedAnonymousProject(sessionId, projectId);

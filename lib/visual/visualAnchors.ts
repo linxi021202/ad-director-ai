@@ -35,6 +35,15 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
   const characterBriefs = buildCharacterBriefs({ ...project, shots: canonicalShots });
   const characterVisualSpecs = buildCharacterSpecs(project, characterBriefs);
   const sceneVisualSpecs = buildSceneSpecs({ ...project, shots: canonicalShots });
+  const requiredSceneSpecs = selectRequiredSceneSpecs({ ...project, shots: canonicalShots }, sceneVisualSpecs);
+  const requiredSceneIds = new Set(requiredSceneSpecs.map((spec) => spec.id));
+  const mainSceneId = requiredSceneSpecs[0]?.id;
+  const normalizedShots = canonicalShots.map((shot) => {
+    if (!shot.sceneId || !mainSceneId) return shot;
+    const sceneId = requiredSceneIds.has(shot.sceneId) ? shot.sceneId : mainSceneId;
+    return { ...shot, sceneId, sceneGroupId: sceneId, sceneStateId: remapSceneStateId(shot.sceneStateId, sceneId) };
+  });
+  const usedCharacterIds = new Set(normalizedShots.flatMap((shot) => shot.characterIds ?? []));
   const mainProduct = selectMainProduct(project.brief.productImages);
   const referenceAssetIds = (project.brief.productImages ?? [])
     .filter((image) => image.role === "reference" && image.assetId)
@@ -49,7 +58,6 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
     version: resourceVersion(project, "product-master") || previous?.productMaster.version || 1,
     locked: Boolean(
       mainProduct?.assetId
-      && project.productVisualSpec?.sourceAssetId === mainProduct.assetId
       && (previous?.productMaster.locked || stageWasLocked)
     ),
     ...((previous?.productMaster.lockedAt || stageWasLocked) ? { lockedAt: previous?.productMaster.lockedAt ?? now } : {})
@@ -59,14 +67,14 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
     characterBriefs,
     characterCandidates: previous?.characterCandidates ?? [],
     sceneCandidates: previous?.sceneCandidates ?? [],
-    requiredCharacterIds: characterVisualSpecs.map((spec) => spec.id),
-    requiredSceneIds: sceneVisualSpecs.map((spec) => spec.id),
+    requiredCharacterIds: characterVisualSpecs.filter((spec) => usedCharacterIds.has(spec.id)).map((spec) => spec.id),
+    requiredSceneIds: requiredSceneSpecs.map((spec) => spec.id),
     initializedAt: previous?.initializedAt ?? now,
     updatedAt: now
   };
   const next = {
     ...project,
-    shots: canonicalShots,
+    shots: normalizedShots,
     characterVisualSpecs,
     sceneVisualSpecs,
     visualAnchorWorkspace: workspace
@@ -77,8 +85,7 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
 export function getVisualAnchorReadiness(project: GenerationProject): VisualAnchorReadiness {
   const workspace = project.visualAnchorWorkspace;
   const mainProduct = selectMainProduct(project.brief.productImages);
-  const hasMatchingSpec = Boolean(mainProduct?.assetId && project.productVisualSpec?.sourceAssetId === mainProduct.assetId);
-  const productLocked = Boolean(workspace?.productMaster.locked && mainProduct?.assetId && hasMatchingSpec);
+  const productLocked = Boolean(workspace?.productMaster.locked && mainProduct?.assetId);
   const requiredCharacterIds = workspace?.requiredCharacterIds ?? project.characterVisualSpecs?.map((item) => item.id) ?? [];
   const requiredSceneIds = workspace?.requiredSceneIds ?? project.sceneVisualSpecs?.map((item) => item.id) ?? [];
   const lockedCharacters = new Set((project.characterVisualSpecs ?? []).filter((item) => item.locked && currentMasterAssetId(item)).map((item) => item.id));
@@ -90,9 +97,7 @@ export function getVisualAnchorReadiness(project: GenerationProject): VisualAnch
     productLocked,
     ...(!mainProduct?.assetId
       ? { missingProductReason: "PRODUCT_REFERENCE_REQUIRED" as const }
-      : !hasMatchingSpec
-        ? { missingProductReason: "PRODUCT_VISUAL_SPEC_REQUIRED" as const }
-        : !productLocked
+      : !productLocked
           ? { missingProductReason: "PRODUCT_MASTER_NOT_LOCKED" as const }
           : {}),
     missingCharacterIds: requiredCharacterIds.filter((id) => !lockedCharacters.has(id)),
@@ -173,7 +178,6 @@ export function lockVisualAnchorMaster(
   if (kind === "product") {
     const mainProduct = selectMainProduct(normalized.brief.productImages);
     if (!mainProduct?.assetId) throw new Error("PRODUCT_REFERENCE_REQUIRED");
-    if (normalized.productVisualSpec?.sourceAssetId !== mainProduct.assetId) throw new Error("PRODUCT_VISUAL_SPEC_REQUIRED");
     return applyVisualAnchorReadiness({
       ...normalized,
       referencePack: {
@@ -312,6 +316,23 @@ function buildSceneSpecs(project: GenerationProject): SceneVisualSpec[] {
   });
 }
 
+function selectRequiredSceneSpecs(project: GenerationProject, specs: SceneVisualSpec[]): SceneVisualSpec[] {
+  if (specs.length <= 1) return specs;
+  const frequency = new Map<string, number>();
+  for (const shot of project.shots) {
+    const id = canonicalSceneId(shot.sceneId ?? "");
+    if (id) frequency.set(id, (frequency.get(id) ?? 0) + 1);
+  }
+  const ordered = [...specs].sort((left, right) => (frequency.get(right.id) ?? 0) - (frequency.get(left.id) ?? 0));
+  const main = ordered[0]!;
+  const productDisplay = ordered.slice(1).find((spec) => {
+    const related = project.shots.filter((shot) => canonicalSceneId(shot.sceneId ?? "") === spec.id);
+    const text = [spec.name, spec.architecture, ...spec.heroProps, ...related.flatMap((shot) => [shot.goal, shot.visualDescription])].join(" ");
+    return /产品展示|商品展示|包装展示|静物台|陈列台|packshot|product display|hero product/i.test(text);
+  });
+  return productDisplay ? [main, productDisplay] : [main];
+}
+
 function syncLockedReferences(project: GenerationProject): GenerationProject {
   const characterAssets = new Map((project.characterVisualSpecs ?? []).flatMap((spec) => spec.locked && currentMasterAssetId(spec)
     ? [[spec.id, currentMasterAssetId(spec)!] as const]
@@ -396,7 +417,14 @@ function inferSceneStateId(shot: GenerationProject["shots"][number], sourceId: s
   const base = canonicalSceneId(sourceId);
   if (/深夜|夜间|夜景|night/i.test(text)) return `${base}-night`;
   if (/白天|日间|晨光|明亮|daylight|daytime|bright/i.test(text)) return `${base}-day`;
-  return `${base}-base`;
+  return base;
+}
+
+function remapSceneStateId(stateId: string | undefined, sceneId: string) {
+  if (!stateId) return sceneId;
+  if (/-night$/i.test(stateId)) return `${sceneId}-night`;
+  if (/-day|-bright|-fresh|-recovery$/i.test(stateId)) return `${sceneId}-day`;
+  return sceneId;
 }
 
 function selectMainProduct(images?: ProductImage[]) {

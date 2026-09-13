@@ -84,7 +84,8 @@ export default function HomePage() {
 
       <section className="home-hero">
         <div className={`home-hero-copy ${exitClass}`}>
-          <h1>一份简报，直接成片。</h1>
+          <h1>上传商品，一步步生成可用广告</h1>
+          <p className="home-hero-summary">先确定创意、人物和场景，再生成分镜与视频。不满意只重做当前镜头，不必整条重来。</p>
 
           <div className="home-actions">
             <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)} className="home-primary-action">
@@ -95,6 +96,7 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+      <section className="home-process" aria-label="制作流程"><div><h2>制作流程</h2><ol>{["上传商品", "选择创意", "确认人物与场景", "生成分镜和视频"].map((step, index) => <li key={step}><span>{index + 1}</span><strong>{step}</strong></li>)}</ol></div></section>
       <div className={`home-route-transition${isNavigating ? " is-active" : ""}`} aria-hidden="true">
         <div className="home-route-transition__core" />
         {transitionParticles.map((particle, index) => (

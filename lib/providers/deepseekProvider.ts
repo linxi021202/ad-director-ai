@@ -29,6 +29,17 @@ import { repairShotProductTerminology } from "../visual/productTerminology";
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
 import { ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
+import { buildCreativeDirectionsPrompt } from "../creative/creativeDirections";
+import { validateCreativeDiversity } from "../creative/creativeDirections";
+import { buildShotPromptExpansionPrompt, type ShotPromptExpansionInput } from "../prompts/detailedDirectorPrompts";
+import {
+  creativeDirectionSetPayloadSchema,
+  detailedShotPromptPackageSchema,
+  detailedStoryboardShotSchema,
+  type CreativeDirectionSetPayload,
+  type DetailedShotPromptPackage,
+  type ProjectPlanningConstraints
+} from "../schemas/project";
 
 const allowedModelSchema = z.enum(["deepseek-v4-pro", "qwen-image", "wan2.7-i2v", "remotion"]);
 
@@ -58,6 +69,20 @@ function createShotsPayloadSchema(shotDurationPlan: number[]): z.ZodType<Storybo
     (shots) => validateShotConfiguration(expectedShotCount, shots, shotDurationPlan).valid,
     { message: `storyboard must contain exactly ${expectedShotCount} shots using the requested duration plan` }
   );
+}
+function createDetailedShotsPayloadSchema(shotDurationPlan: number[]): z.ZodType<StoryboardShot[]> {
+  const expectedShotCount = shotDurationPlan.length;
+  return z.preprocess((value) => value && typeof value === "object" && !Array.isArray(value) && "shots" in value
+    ? (value as { shots?: unknown }).shots
+    : value,
+  z.array(detailedStoryboardShotSchema).length(expectedShotCount).transform((shots) => shots.map((shot, index) => ({
+    ...shot,
+    index: index + 1,
+    durationSec: shotDurationPlan[index]!
+  })))).refine(
+    (shots) => validateShotConfiguration(expectedShotCount, shots, shotDurationPlan).valid,
+    { message: `storyboard must contain exactly ${expectedShotCount} detailed shots using the requested duration plan` }
+  ) as z.ZodType<StoryboardShot[]>;
 }
 const adScoreSchema = z.object({
   overallScore: z.number().min(0).max(100),
@@ -146,7 +171,7 @@ function failureResponse<TData>(
 function retryMessage(error: string): LLMMessage {
   return {
     role: "user",
-    content: `The previous json output failed validation: ${error}. Regenerate the full response as valid json only.`
+    content: `The previous JSON output failed validation: ${error}. Regenerate the full response as valid JSON only. Preserve all requested detail; do not summarize or shorten fields.`
   };
 }
 
@@ -161,7 +186,13 @@ async function callAndValidate<TData>(
   const model = runtime.model;
   let tokenUsage: LLMTokenUsage | undefined;
   let lastError = "DeepSeek调用失败，请检查密钥、额度或服务状态。";
-  const messages: LLMMessage[] = [{ role: "user", content: prompt }];
+  const messages: LLMMessage[] = [
+    {
+      role: "system",
+      content: "你是 AdDirector AI 的资深商业广告导演。严格执行当前阶段，只输出完整合法 JSON；保持字段细节与连续性约束，不摘要、不省略、不用占位语句。若输出空间紧张，优先保留完整结构和可执行导演细节。"
+    },
+    { role: "user", content: prompt }
+  ];
   const secret = await resolveProviderSecret("deepseek", context?.sessionId ?? "");
   if (!secret.value) return failureResponse(model, Date.now() - startedAt, "DeepSeek尚未配置。" );
   const timeoutMs = Math.max(5_000, Math.min(runtime.timeoutMs, context?.providerTimeoutMs ?? runtime.timeoutMs));
@@ -174,7 +205,7 @@ async function callAndValidate<TData>(
       messages,
       responseFormat: "json",
       temperature: options?.temperature ?? 0.4,
-      maxTokens: options?.maxTokens ?? 2600
+      maxTokens: Math.min(options?.maxTokens ?? 2600, runtime.maxOutputTokens)
     });
 
     tokenUsage = addTokenUsage(tokenUsage, result.tokenUsage);
@@ -218,9 +249,9 @@ export const deepseekProvider = {
       context?.shotDurationPlan,
       context?.targetDurationSec ?? (context?.shotDurationPlan ? undefined : brief.durationSec)
     );
-    const response = await callAndValidate(buildStoryboardPrompt(brief, strategy, { ...timeline, productVisualSpec: context?.productVisualSpec }), createShotsPayloadSchema(timeline.shotDurationPlan), {
+    const response = await callAndValidate(buildStoryboardPrompt(brief, strategy, { ...timeline, productVisualSpec: context?.productVisualSpec }), createDetailedShotsPayloadSchema(timeline.shotDurationPlan), {
       temperature: 0.45,
-      maxTokens: Math.max(3600, timeline.shotCount * 650)
+      maxTokens: Math.max(6000, timeline.shotCount * 1050)
     }, context);
     return response.success && response.data ? { ...response, data: ensureStoryboardArchitecture(applyProductLockRules(response.data, context?.productVisualSpec)) } : response;
   },
@@ -245,11 +276,24 @@ export const deepseekProvider = {
     shots: StoryboardShot[],
     context?: ProviderRequestContext
   ): Promise<RealTextProviderResponse<StoryboardShot[]>> {
-    const response = await callAndValidate(buildPromptGenerationPrompt(brief, strategy, shots, context?.productVisualSpec), createShotsPayloadSchema(shots.map((shot) => shot.durationSec)), {
-      temperature: 0.35,
-      maxTokens: 4200
-    }, context);
-    return response.success && response.data ? { ...response, data: ensureStoryboardArchitecture(applyProductLockRules(response.data, context?.productVisualSpec)) } : response;
+    const startedAt = Date.now();
+    const model = getDeepSeekRuntimeConfig().model;
+    const generated: StoryboardShot[] = [];
+    let tokenUsage: LLMTokenUsage | undefined;
+    for (const shot of shots) {
+      const response = await callAndValidate(
+        buildPromptGenerationPrompt(brief, strategy, [shot], context?.productVisualSpec),
+        createShotsPayloadSchema([shot.durationSec]),
+        { temperature: 0.35, maxTokens: 5000 },
+        context
+      );
+      tokenUsage = addTokenUsage(tokenUsage, response.tokenUsage);
+      if (!response.success || !response.data) {
+        return failureResponse(model, Date.now() - startedAt, `镜头 ${shot.index} 提示词扩写失败：${response.error ?? "生成失败"}`, tokenUsage);
+      }
+      generated.push(response.data[0]!);
+    }
+    return successResponse(ensureStoryboardArchitecture(applyProductLockRules(generated, context?.productVisualSpec)), model, Date.now() - startedAt, tokenUsage);
   },
 
   async scoreAdPlan(
@@ -317,6 +361,53 @@ Required Characters：${JSON.stringify(defaults)}
   };
 }
 
+export async function generateCreativeDirectionSet(
+  brief: ProductBrief,
+  constraints: ProjectPlanningConstraints,
+  context?: ProviderRequestContext
+): Promise<RealTextProviderResponse<CreativeDirectionSetPayload>> {
+  const schema = creativeDirectionSetPayloadSchema.superRefine((value, refinement) => {
+    const diversity = validateCreativeDiversity(value.candidates);
+    if (!diversity.valid) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: diversity.reason ?? "CREATIVE_DIVERSITY_FAILED" });
+  });
+  return callAndValidate(
+    buildCreativeDirectionsPrompt(brief, constraints),
+    schema,
+    { temperature: 0.72, maxTokens: 7600 },
+    { ...context, maxProviderAttempts: 2 }
+  );
+}
+
+export async function expandShotPrompts(
+  input: ShotPromptExpansionInput,
+  context?: ProviderRequestContext
+): Promise<RealTextProviderResponse<DetailedShotPromptPackage>> {
+  const schema = detailedShotPromptPackageSchema.superRefine((value, refinement) => {
+    if (value.shotId !== input.shot.id) {
+      refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["shotId"], message: "SHOT_ID_MISMATCH" });
+    }
+    const requiredCn = ["单一完整", "可读文字"];
+    for (const frame of value.framePrompts) {
+      if (frame.imagePromptCn.length < 400 || requiredCn.some((term) => !frame.imagePromptCn.includes(term))) {
+        refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["framePrompts"], message: "PROMPT_DEPTH_VALIDATION_FAILED：图片提示词缺少单帧或零文字硬约束。" });
+      }
+    }
+    const concreteTerms = ["机位", "焦段", "前景", "中景", "背景", "主光", "材质", "产品"];
+    if (concreteTerms.filter((term) => value.directingNotesCn.includes(term) || value.framePrompts.some((frame) => frame.imagePromptCn.includes(term))).length < 6) {
+      refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["directingNotesCn"], message: "VAGUE_PROMPT：缺少可执行摄影信息。" });
+    }
+    if (!/[0-9]+(?:\.[0-9]+)?s/i.test(value.videoPromptCn) || !/Start State|开始状态/i.test(value.videoPromptCn) || !/End State|结束状态/i.test(value.videoPromptCn)) {
+      refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["videoPromptCn"], message: "VIDEO_TIMELINE_REQUIRED" });
+    }
+  });
+  return callAndValidate(
+    buildShotPromptExpansionPrompt(input),
+    schema,
+    { temperature: 0.35, maxTokens: 7200 },
+    { ...context, maxProviderAttempts: 2 }
+  );
+}
+
 export async function shortenNarration(
   text: string,
   maxDurationSec: number,
@@ -324,7 +415,7 @@ export async function shortenNarration(
   context?: ProviderRequestContext
 ) {
   return callAndValidate(
-    `只输出 JSON。将旁白缩短到自然朗读不超过 ${maxDurationSec.toFixed(1)} 秒。保持原意，不添加原文和商品简报之外的事实、数字、价格、折扣、认证、医学作用或排名。商品：${brief.productName}。原文：${text}\n返回 {"text":"缩短后的旁白"}`,
+    `只输出 JSON。将旁白缩短到自然朗读不超过 ${maxDurationSec.toFixed(1)} 秒。保持原意，不添加原文和广告需求之外的事实、数字、价格、折扣、认证、医学作用或排名。商品：${brief.productName}。原文：${text}\n返回 {"text":"缩短后的旁白"}`,
     shortenedNarrationSchema,
     { temperature: 0.15, maxTokens: 240 },
     context

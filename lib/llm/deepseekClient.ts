@@ -15,8 +15,8 @@ function tokenUsage(usage: OpenAICompatibleChatCompletion["usage"]): LLMTokenUsa
   return usage ? { promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens, totalTokens: usage.total_tokens } : undefined;
 }
 
-function failure(model: string, startedAt: number, error: string): LLMResult {
-  return { success: false, provider: "deepseek", model, latencyMs: Date.now() - startedAt, error };
+function failure(model: string, startedAt: number, error: string, finishReason?: string | null): LLMResult {
+  return { success: false, provider: "deepseek", model, latencyMs: Date.now() - startedAt, error, finishReason };
 }
 
 function parseResponse(raw: string): OpenAICompatibleChatCompletion | null {
@@ -74,17 +74,21 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
         if (!response.ok) return failure(model, startedAt, httpFailure(response.status));
         if (!raw) return failure(model, startedAt, "DEEPSEEK_INVALID_RESPONSE：DeepSeek 返回了无法解析的响应。");
         const content = raw.choices?.[0]?.message?.content?.trim();
+        const finishReason = raw.choices?.[0]?.finish_reason ?? null;
         if (!content) return failure(model, startedAt, "DEEPSEEK_EMPTY_RESPONSE：DeepSeek 没有返回可用内容。");
+        if (finishReason === "length" || finishReason === "max_tokens") {
+          return failure(model, startedAt, "DEEPSEEK_OUTPUT_TRUNCATED：DeepSeek 输出达到长度上限，未保存不完整结果。", finishReason);
+        }
 
         const usage = tokenUsage(raw?.usage);
         const base = { provider: "deepseek" as const, model, latencyMs: Date.now() - startedAt, tokenUsage: usage, costEstimate: estimateDeepSeekCost(model, usage) };
         if (input.responseFormat === "json") {
           const parsed = parseJsonResponse(content);
           return parsed.success
-            ? { success: true, content, json: parsed.json, ...base }
-            : { success: false, content, ...base, error: "DeepSeek返回的JSON格式无效。" };
+            ? { success: true, content, json: parsed.json, finishReason, ...base }
+            : { success: false, content, finishReason, ...base, error: "DeepSeek返回的JSON格式无效。" };
         }
-        return { success: true, content, ...base };
+        return { success: true, content, finishReason, ...base };
       } catch (error) {
         return failure(model, startedAt, transportFailure(error, timeoutMs));
       }
