@@ -17,7 +17,8 @@ export const productImageSchema = z.object({
   previewUrl: z.string().optional(),
   remoteUrl: z.string().optional(),
   url: z.string().optional(),
-  role: productImageRoleSchema
+  role: productImageRoleSchema,
+  multiViewWarning: z.boolean().optional()
 });
 
 export const productBriefSchema = z.object({
@@ -30,6 +31,8 @@ export const productBriefSchema = z.object({
   aspectRatio: aspectRatioSchema,
   durationSec: z.number().int().positive(),
   productImages: z.array(productImageSchema).max(3).optional(),
+  primaryProductAssetId: z.string().uuid().optional(),
+  productAssetIds: z.array(z.string().uuid()).max(3).optional(),
   verifiedClaims: z.array(z.string().trim().min(1).max(160)).max(20).optional()
 });
 
@@ -89,40 +92,29 @@ const creativeText = (minimum: number) => z.string().trim().min(minimum);
 
 export const creativeDirectionSchema = z.object({
   id: z.string().min(1),
-  title: creativeText(4),
-  oneLineIdea: creativeText(16),
-  audienceTension: creativeText(18),
-  coreInsight: creativeText(24),
-  bigIdea: creativeText(24),
-  creativeMechanism: creativeText(24),
-  visualMetaphor: creativeText(24),
-  storyArc: creativeText(30),
-  openingHook: creativeText(20),
-  productEntrance: creativeText(20),
-  visualHook: creativeText(20),
-  productRole: creativeText(18),
-  emotionalTurn: creativeText(18),
-  heroMoment: creativeText(20),
-  endingIdea: creativeText(18),
-  visualStyle: creativeText(20),
-  cameraLanguage: creativeText(20),
-  pacingStrategy: creativeText(20),
-  whyItWorks: creativeText(24),
-  differenceFromBrief: creativeText(28),
-  executionRisk: creativeText(12),
-  continuityStrategy: creativeText(20)
-}).strict().superRefine((direction, context) => {
-  const length = Object.entries(direction)
-    .filter(([key]) => key !== "id")
-    .reduce((sum, [, value]) => sum + String(value).replace(/\s/g, "").length, 0);
-  if (length < 500 || length > 900) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["oneLineIdea"],
-      message: "CREATIVE_TOO_SHALLOW：每个创意方向的完整内容必须为 500-900 个字符。"
-    });
-  }
-});
+  title: creativeText(2).max(36),
+  oneLineIdea: creativeText(6).max(120),
+  audienceTension: creativeText(6),
+  coreInsight: creativeText(6),
+  bigIdea: creativeText(6),
+  creativeMechanism: creativeText(6),
+  visualMetaphor: creativeText(6),
+  storyArc: creativeText(6),
+  openingHook: creativeText(6),
+  productEntrance: creativeText(6),
+  visualHook: creativeText(6),
+  productRole: creativeText(6),
+  emotionalTurn: creativeText(6),
+  heroMoment: creativeText(6),
+  endingIdea: creativeText(6),
+  visualStyle: creativeText(6),
+  cameraLanguage: creativeText(6),
+  pacingStrategy: creativeText(6),
+  whyItWorks: creativeText(6),
+  differenceFromBrief: creativeText(6),
+  executionRisk: creativeText(4),
+  continuityStrategy: creativeText(6)
+}).strict();
 
 const creativeDirectionSetBaseSchema = z.object({
   candidates: z.array(creativeDirectionSchema).length(3),
@@ -135,12 +127,6 @@ function validateCreativeDirectionSet(
 ) {
   if (!set.candidates.some((candidate) => candidate.id === set.recommendedCandidateId)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["recommendedCandidateId"], message: "推荐项必须来自候选列表。" });
-  }
-  for (const key of ["creativeMechanism", "storyArc", "heroMoment"] as const) {
-    const values = set.candidates.map((candidate) => candidate[key].replace(/\s|[，。；、,.!！?？]/g, "").toLowerCase());
-    if (new Set(values).size !== 3) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: `三个创意方向的 ${key} 必须明显不同。` });
-    }
   }
 }
 

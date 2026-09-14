@@ -16,7 +16,7 @@ const assets: ProductImage[] = [
 const renderAssets=(images:ProductImage[])=>renderToStaticMarkup(<ProductAssetStrip projectId="demo" images={images} onChange={vi.fn()} />);
 
 describe("CreativeDirectorFlow",()=>{
-  it("is abstract and independent from media or aspect ratio",()=>{const html=renderToStaticMarkup(<CreativeDirectorFlow/>);expect(html).not.toContain("<img");expect(html).not.toContain("aspect-ratio");expect(html.match(/creative-director-node/g)).toHaveLength(4);expect(html).toContain("HERO");});
+  it("is abstract and independent from media or aspect ratio",()=>{const html=renderToStaticMarkup(<CreativeDirectorFlow/>);expect(html).not.toContain("<img");expect(html).not.toContain("aspect-ratio");expect(html.match(/creative-director-node/g)).toHaveLength(4);expect(html).toContain("主镜头");});
   it("defines motion and reduced-motion fallback",()=>{const css=readFileSync("app/workspace-v3.css","utf8");expect(css).toContain("@keyframes director-particle");expect(css).toContain("@media(prefers-reduced-motion:reduce)");expect(css).toContain(".creative-director-flow__particle");});
 });
 

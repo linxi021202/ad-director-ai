@@ -15,6 +15,7 @@ import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { UsageGuideSheet } from "@/components/workspace/UsageGuideSheet";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ProductImageUploader } from "@/components/ProductImageUploader";
+import { buildProductAssetCollection } from "@/lib/productImages";
 import { StageContextPanel, StageDirectorRail, StageInspector, stageStatusLabel } from "@/components/StageDirectorRail";
 import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
@@ -1090,7 +1091,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         <section className="workbench-layout stage-gated-layout">
           <StageContextPanel project={previewProject} activeStage={activeStage} onSelect={selectStage} open={contextOpen} onClose={() => setContextOpen(false)} />
 
-          <section className="generation-stage-v3 stage-canvas">
+          <section className="generation-stage-v3 stage-canvas workspace-column workspace-column--main">
             <div className="generation-stage-v3__glow" aria-hidden="true" />
             <header className="generation-stage-v3__head">
               <div>
@@ -1121,7 +1122,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
                 onTargetDurationChange={updateTargetDuration}
                 onRequestShotCountChange={requestGeneratedShotCountChange}
               />
-              <ProductImageUploader projectId={activeProject.id} images={briefDraft.brief.productImages ?? []} disabled={isGenerating} onChange={(images) => updateBrief({ productImages: images })} onPersistedVersion={trackServerVersion} />
+              <ProductImageUploader projectId={activeProject.id} images={briefDraft.brief.productImages ?? []} disabled={isGenerating} onChange={(images) => updateBrief({ productImages: images, ...buildProductAssetCollection(images) })} onPersistedVersion={trackServerVersion} />
               <footer className="stage-brief-savebar">
                 <div><span className={`brief-save-state is-${briefSaveStatus}`}>{briefSaveStatusLabel(briefSaveStatus, activeProject.briefSavedAt)}</span>{briefNotice ? <small>{briefNotice}</small> : null}</div>
                 <button type="button" className="button-primary-v3" onClick={() => void saveBriefAndGenerateCreative()} disabled={briefSaveStatus === "saving" || isGenerating}>{isGenerating || briefSaveStatus === "saving" ? "处理中…" : briefSaveStatus === "saved" ? "生成创意方向" : "保存并生成创意"}</button>

@@ -13,7 +13,7 @@ type Props = {
 
 export function CreativeCandidateGrid({ candidateSet, busy, onGenerate, onSelect, onConfirm }: Props) {
   const [detail, setDetail] = useState<CreativeDirection | null>(null);
-  if (busy && !candidateSet) return <div className="creative-loading" aria-live="polite">{[1, 2, 3].map((item) => <div key={item}><i /><i /><i /><i /></div>)}</div>;
+  if (busy && !candidateSet) return <div className="creative-loading" aria-live="polite"><div className="creative-loading__copy"><strong>正在构思创意方向</strong><ol><li>理解产品与受众</li><li>形成三套差异化机制</li><li>补足可执行导演细节</li></ol></div>{[1, 2, 3].map((item) => <div key={item}><i /><i /><i /><i /></div>)}</div>;
   if (!candidateSet) return <div className="creative-empty-state"><strong>还没有创意方向</strong><p>生成后会得到三套机制、故事和高光时刻都不同的完整方案。</p><button type="button" className="button-primary-v3" disabled={busy} onClick={onGenerate}>{busy ? "生成中" : "生成 3 套创意方向"}</button></div>;
 
   const selectedId = candidateSet.selectedCandidateId ?? candidateSet.recommendedCandidateId;

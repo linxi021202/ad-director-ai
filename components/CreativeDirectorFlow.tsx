@@ -4,7 +4,7 @@ export function CreativeDirectorFlow() {
   const nodes = [
     { key: "01", className: "is-one" },
     { key: "02", className: "is-two" },
-    { key: "HERO", className: "is-hero" },
+    { key: "主镜头", className: "is-hero" },
     { key: "04", className: "is-four" }
   ];
   return (

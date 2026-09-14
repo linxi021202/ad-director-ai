@@ -7,7 +7,7 @@ const sheet = readFileSync("components/ModelSettingsSheet.tsx", "utf8");
 
 describe("home hero and model settings", () => {
   it("keeps the staged hero at the requested responsive scale", () => {
-    expect(page).toContain("上传商品，一步步生成可用广告");
+    expect(page).toContain("从产品图片到成片，让广告生成更稳定、更好改");
     expect(styles).toContain("clamp(42px, 4.2vw, 62px)");
     expect(styles).toContain("text-wrap: balance");
   });

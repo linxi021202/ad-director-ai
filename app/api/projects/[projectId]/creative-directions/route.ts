@@ -84,7 +84,7 @@ async function generateSet(sessionId: string, projectId: string, project: Genera
   if (!result.success || !result.data) {
     await failGenerationEvent(sessionId, projectId, event.id, "创意候选生成失败，请检查模型配置后重试。", "CREATIVE_GENERATION_FAILED");
     await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => setStageStatusInProject(latest, "creative", "failed"));
-    return NextResponse.json({ success: false, data: null, error: result.error ?? "创意候选生成失败，请重试。" }, { status: 502 });
+    return NextResponse.json({ success: false, data: null, error: friendlyCreativeGenerationError(result.error) }, { status: 502 });
   }
 
   const recommendedIndex = Math.max(0, result.data.candidates.findIndex((item) => item.id === result.data!.recommendedCandidateId));
@@ -117,4 +117,10 @@ async function generateSet(sessionId: string, projectId: string, project: Genera
 
 function currentCreativeSet(project: GenerationProject) {
   return project.creativeWorkspace?.sets.find((set) => set.id === project.creativeWorkspace?.currentSetId);
+}
+
+function friendlyCreativeGenerationError(error?: string | null) {
+  if (/尚未配置|密钥|额度|401|403/i.test(error ?? "")) return "创意方案暂时无法生成，请检查模型设置后重试。";
+  if (/timeout|超时|timed out/i.test(error ?? "")) return "创意方案生成超时，请稍后重试。";
+  return "创意方案生成失败，请重新尝试。";
 }

@@ -33,15 +33,19 @@ describe("homepage final hero", () => {
     expect(page).toContain("home-route-transition");
     expect(page).toContain("transitionParticles.map");
     expect(page).toContain("Array.from({ length: 64 }");
-    expect(page).toContain("1320");
+    expect(page).toContain("1080");
+    expect(page).toContain("1500");
+    expect(page).toContain("router.prefetch");
     expect(styles).toContain("home-particle-collapse");
-    expect(styles).toContain("1800ms");
-    expect(styles).toContain("infinite");
+    expect(styles).toContain("1100ms");
+    expect(styles).toContain("home-transition-bloom");
   });
 
   it("explains the staged generation flow on the homepage", () => {
-    expect(page).toContain("上传商品，一步步生成可用广告");
-    expect(page).toContain("先确定创意、人物和场景");
+    expect(page).toContain("从产品图片到成片，让广告生成更稳定、更好改");
+    expect(page).toContain("开始制作广告");
+    expect(page).not.toContain("home-hero-summary");
+    for (const label of ["添加产品图片", "选择创意方向", "确认人物与场景", "制作分镜与视频"]) expect(page).toContain(label);
     expect(page).toContain("制作流程");
     expect(page).not.toContain("从策略、分镜到关键帧与成片");
     expect(page).not.toContain("home-features");

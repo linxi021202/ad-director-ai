@@ -44,6 +44,7 @@ export type ImageGenerationOptions = {
   qualityMode?: QualityMode;
   sessionId?: string;
   productImage?: ProductImage;
+  productImages?: ProductImage[];
   continuityImageAssetId?: string;
   masterReferenceAssetIds?: string[];
   masterReferenceAssetIdsByShot?: Record<string, string[]>;

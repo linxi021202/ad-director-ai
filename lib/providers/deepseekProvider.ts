@@ -29,8 +29,7 @@ import { repairShotProductTerminology } from "../visual/productTerminology";
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
 import { ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
-import { buildCreativeDirectionsPrompt } from "../creative/creativeDirections";
-import { validateCreativeDiversity } from "../creative/creativeDirections";
+import { buildCreativeDirectionsPrompt, buildDeepenCreativeDirectionsPrompt, validateCreativeDirectionSetQuality } from "../creative/creativeDirections";
 import { buildShotPromptExpansionPrompt, type ShotPromptExpansionInput } from "../prompts/detailedDirectorPrompts";
 import {
   creativeDirectionSetPayloadSchema,
@@ -366,16 +365,24 @@ export async function generateCreativeDirectionSet(
   constraints: ProjectPlanningConstraints,
   context?: ProviderRequestContext
 ): Promise<RealTextProviderResponse<CreativeDirectionSetPayload>> {
-  const schema = creativeDirectionSetPayloadSchema.superRefine((value, refinement) => {
-    const diversity = validateCreativeDiversity(value.candidates);
-    if (!diversity.valid) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: diversity.reason ?? "CREATIVE_DIVERSITY_FAILED" });
-  });
-  return callAndValidate(
+  const initial = await callAndValidate(
     buildCreativeDirectionsPrompt(brief, constraints),
-    schema,
+    creativeDirectionSetPayloadSchema,
     { temperature: 0.72, maxTokens: 7600 },
     { ...context, maxProviderAttempts: 2 }
   );
+  if (!initial.success || !initial.data) return initial;
+
+  const quality = validateCreativeDirectionSetQuality(initial.data.candidates, brief);
+  if (quality.valid) return initial;
+
+  const deepened = await callAndValidate(
+    buildDeepenCreativeDirectionsPrompt(brief, constraints, initial.data, quality.issues),
+    creativeDirectionSetPayloadSchema,
+    { temperature: 0.55, maxTokens: 7600 },
+    { ...context, maxProviderAttempts: 1 }
+  );
+  return deepened.success && deepened.data ? deepened : initial;
 }
 
 export async function expandShotPrompts(

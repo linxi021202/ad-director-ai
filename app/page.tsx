@@ -29,10 +29,14 @@ export default function HomePage() {
   const handleTransition = (target: string) => (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
     if (isNavigating) return;
+    router.prefetch(target);
     setMenuOpen(false);
     setIsNavigating(true);
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.setTimeout(() => router.push(target), reducedMotion ? 180 : 1320);
+    window.setTimeout(() => router.push(target), reducedMotion ? 300 : 1080);
+    window.setTimeout(() => {
+      if (window.location.pathname !== target) window.location.assign(target);
+    }, 1500);
   };
 
   const exitClass = isNavigating ? "home-is-exiting" : "";
@@ -84,21 +88,25 @@ export default function HomePage() {
 
       <section className="home-hero">
         <div className={`home-hero-copy ${exitClass}`}>
-          <h1>上传商品，一步步生成可用广告</h1>
-          <p className="home-hero-summary">先确定创意、人物和场景，再生成分镜与视频。不满意只重做当前镜头，不必整条重来。</p>
+          <h1>从产品图片到成片，让广告生成更稳定、更好改</h1>
 
           <div className="home-actions">
-            <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)} className="home-primary-action">
+            <Link href={workspaceTarget} onMouseEnter={() => router.prefetch(workspaceTarget)} onFocus={() => router.prefetch(workspaceTarget)} onClick={handleTransition(workspaceTarget)} className="home-primary-action">
               <span className="home-action-brand" aria-hidden="true"><i /></span>
-              <span>开始生成广告</span>
+              <span>开始制作广告</span>
               <span className="home-action-arrow" aria-hidden="true"><i /></span>
             </Link>
           </div>
         </div>
       </section>
-      <section className="home-process" aria-label="制作流程"><div><h2>制作流程</h2><ol>{["上传商品", "选择创意", "确认人物与场景", "生成分镜和视频"].map((step, index) => <li key={step}><span>{index + 1}</span><strong>{step}</strong></li>)}</ol></div></section>
+      <section className="home-process" aria-label="制作流程"><div><h2>制作流程</h2><ol>{["添加产品图片", "选择创意方向", "确认人物与场景", "制作分镜与视频"].map((step, index) => <li key={step}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong></li>)}</ol></div></section>
       <div className={`home-route-transition${isNavigating ? " is-active" : ""}`} aria-hidden="true">
+        <div className="home-route-transition__vortex" />
+        <div className="home-route-transition__glow" />
+        <div className="home-route-transition__ring home-route-transition__ring--outer" />
+        <div className="home-route-transition__ring home-route-transition__ring--inner" />
         <div className="home-route-transition__core" />
+        <div className="home-route-transition__bloom" />
         {transitionParticles.map((particle, index) => (
           <i
             key={index}

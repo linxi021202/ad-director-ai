@@ -25,6 +25,7 @@ import type { ShotImageGenerationResult } from "../../../lib/providers/types";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, getDefaultHeroShotArrayIndex } from "../../../lib/video/shotConfig";
 import { selectLockedMasterAssetIds } from "../../../lib/continuity/visualMasters";
+import { selectImageReferencesForShot } from "../../../lib/image/referenceSelector";
 import type { ProductVisualSpec } from "../../../lib/schemas/project";
 import { createMockKeyframeQA, inspectKeyframe } from "../../../lib/visual/visualQA";
 import { ensureShotArchitecture } from "../../../lib/storyboard/shotArchitecture";
@@ -51,6 +52,7 @@ type ImageBatchInput = {
   targetFrames: TargetFrame[];
   aspectRatio: z.infer<typeof aspectRatioSchema>;
   productImage: ReturnType<typeof selectPrimaryProductImage>;
+  productImages: z.infer<typeof productImageSchema>[];
   mode: "hero-only" | "all-shots";
   requestedShots: number;
   continuityImageAssetId?: string;
@@ -160,6 +162,7 @@ export async function POST(request: Request) {
       targetFrames,
       aspectRatio: parsed.data.aspectRatio,
       productImage,
+      productImages: owned.project.brief.productImages ?? [],
       mode: parsed.data.mode,
       requestedShots: parsed.data.shots.length,
       continuityImageAssetId: findPreviousContinuityAssetId(owned.project, targetShots),
@@ -323,13 +326,15 @@ async function executeImageBatch(input: ImageBatchInput) {
       let project = (await requireOwnedAnonymousProject(input.sessionId, input.projectId)).project;
       const frameShot = shotForFrame(shot, frame);
       const qaShot = { ...frameShot, id: shot.id };
+      const references = selectImageReferencesForShot(project, shot);
       let result: ShotImageGenerationResult = { ...await generateShotImage(input.projectId, frameShot, {
         aspectRatio: input.aspectRatio,
         hasChineseText: true,
         sessionId: input.sessionId,
         productImage: input.productImage,
+        productImages: references.productImages,
         productVisualSpec: input.productVisualSpec,
-        masterReferenceAssetIds: selectLockedMasterAssetIds(project, shot),
+        masterReferenceAssetIds: references.masterReferenceAssetIds,
         continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined
       }), shotId: shot.id, frameId: frame.id };
       let qaResult: KeyframeQAResult | undefined;
@@ -375,8 +380,9 @@ async function executeImageBatch(input: ImageBatchInput) {
             hasChineseText: true,
             sessionId: input.sessionId,
             productImage: input.productImage,
+            productImages: selectImageReferencesForShot(project, shot).productImages,
             productVisualSpec: input.productVisualSpec,
-            masterReferenceAssetIds: selectLockedMasterAssetIds(project, shot),
+            masterReferenceAssetIds: selectImageReferencesForShot(project, shot).masterReferenceAssetIds,
             continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined
           }), shotId: shot.id, frameId: frame.id };
           if (!result.fallbackUsed && result.assetId) {

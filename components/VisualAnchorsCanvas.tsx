@@ -47,7 +47,7 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
           </div>
           <div className="anchor-product-spec">
             <strong>{mainProduct?.assetId ? "已使用你上传的真实产品图" : "请上传真实产品图"}</strong>
-            <p>{mainProduct?.assetId ? "后续广告将以这张真实商品图作为产品外观参考。" : "保存产品原图后即可确认产品，外观分析不会阻止后续操作。"}</p>
+            <p>{mainProduct?.assetId ? "一致性保护已开启。后续广告将以这张真实商品图作为产品外观参考。" : "保存产品图片后即可开启一致性保护，外观分析不会阻止后续操作。"}</p>
             <div className="anchor-inline-actions">
               {mainProduct?.assetId ? <a href={assetUrl(project.id, mainProduct.assetId)} target="_blank" rel="noreferrer">查看原图</a> : null}
               <Link href={`/generate?projectId=${encodeURIComponent(project.id)}&stage=brief`}>更换产品图</Link>

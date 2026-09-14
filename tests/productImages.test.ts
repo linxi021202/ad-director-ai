@@ -35,11 +35,11 @@ describe("product image input support", () => {
     expect(removeProductImage([image], "img-1")).toEqual([]);
   });
 
-  it("does not promote a supplemental reference after the main product is deleted", () => {
+  it("promotes the next product image after the main product is deleted", () => {
     const main = createProductImageMetadata({ name: "main.png", type: "image/png", size: 1000 }, "blob:main", "main-product", "main");
     const reference = createProductImageMetadata({ name: "angle.png", type: "image/png", size: 1000 }, "blob:angle", "reference", "angle");
 
-    expect(removeProductImage([main, reference], "main")).toEqual([reference]);
+    expect(removeProductImage([main, reference], "main")).toEqual([{ ...reference, role: "main-product" }]);
   });
 
   it("returns an error for more than three images", () => {

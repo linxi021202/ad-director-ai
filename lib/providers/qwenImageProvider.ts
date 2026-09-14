@@ -104,7 +104,7 @@ async function generateShotImage(
   options?: ImageGenerationOptions
 ): Promise<ShotImageGenerationResult> {
   const startedAt = Date.now();
-  let productReferenceImage: string | undefined;
+  const productReferenceImages: string[] = [];
   let continuityReferenceImage: string | undefined;
   const masterReferenceImages: string[] = [];
   const containsProduct = shotContainsProduct(shot);
@@ -155,16 +155,22 @@ async function generateShotImage(
   } : safeShot;
 
   try {
-    productReferenceImage = requiresExactComposite ? undefined : await readProductReferenceDataUrl(options?.productImage, { sessionId: options?.sessionId, projectId });
-    if (!requiresExactComposite && options?.productImage && !productReferenceImage) {
-      throw new Error("The selected product image is not persisted on the server.");
+    const selectedProducts = options?.productImages?.length ? options.productImages : options?.productImage ? [options.productImage] : [];
+    if (!requiresExactComposite) {
+      for (const productImage of selectedProducts.slice(0, 3)) {
+        const reference = await readProductReferenceDataUrl(productImage, { sessionId: options?.sessionId, projectId });
+        if (reference) productReferenceImages.push(reference);
+      }
+    }
+    if (!requiresExactComposite && selectedProducts.length > 0 && productReferenceImages.length === 0) {
+      throw new Error("所选产品图片尚未保存到服务器。");
     }
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "The product reference could not be loaded.";
+    const reason = error instanceof Error ? error.message : "产品参考图无法读取。";
     return fallbackShotImage(
       shot,
       buildShotPrompt(shot),
-      `Qwen-Image product-reference preparation failed for shot ${shot.index}: ${reason} Used placeholder image fallback.`,
+      `镜头 ${shot.index} 的产品参考图准备失败：${reason} 已使用占位图。`,
       Date.now() - startedAt
     );
   }
@@ -191,12 +197,15 @@ async function generateShotImage(
   }
 
   const referenceEntries = [
-    ...(productReferenceImage ? [{ image: productReferenceImage, role: "product" as const }] : []),
+    ...productReferenceImages.map((image) => ({ image, role: "product" as const })),
     ...masterReferenceImages.map((image) => ({ image, role: "master" as const })),
     ...(continuityReferenceImage ? [{ image: continuityReferenceImage, role: "continuity" as const }] : [])
   ].slice(0, 3);
   const referenceImages = referenceEntries.map((entry) => entry.image);
   const hasProductReference = referenceEntries.some((entry) => entry.role === "product");
+  const productReferenceIndexes = referenceEntries
+    .map((entry, index) => entry.role === "product" ? index + 1 : 0)
+    .filter(Boolean);
   const continuityReferenceIndex = referenceEntries.findIndex((entry) => entry.role === "continuity");
   const masterReferenceIndexes = referenceEntries
     .map((entry, index) => entry.role === "master" ? index + 1 : 0)
@@ -207,7 +216,7 @@ async function generateShotImage(
     containsProduct ? serializeProductVisualSpecForPrompt(options?.productVisualSpec) : "",
     hasProductReference
       ? [
-          "图1是用户上传的真实产品图，是产品容器形状、包装、材质、颜色和标签纹理的唯一权威参考。",
+          `图${productReferenceIndexes.join("、图")}是用户上传的真实产品图，是产品容器形状、包装、材质、颜色和标签纹理的权威参考。`,
           "Treat the existing product and package label as immutable source-image texture. Preserve its original brand marks and lettering without regenerating, translating or retyping them.",
           "Do not add text anywhere else. If exact label preservation is impossible, keep that small label region naturally soft instead of inventing pseudo-text.",
           "You may change the scene, camera angle and lighting, but must not redesign, replace or distort the product.",

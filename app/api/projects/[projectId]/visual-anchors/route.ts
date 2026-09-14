@@ -303,7 +303,7 @@ async function setCurrentCandidate(
         resourceId,
         resourceType,
         stageId: "anchors",
-        label: `${body.kind === "character" ? "Character" : "Scene"} Master ${current ? `V${current.version + 1}` : "V1"}`,
+        label: `${body.kind === "character" ? "人物" : "场景"}参考 ${current ? `第 ${current.version + 1} 版` : "第 1 版"}`,
         snapshot: masterSnapshot(next, body.kind, body.targetId)
       });
       next = setSpecVersion(created.project, body.kind, body.targetId, created.version.version);
@@ -315,8 +315,8 @@ async function setCurrentCandidate(
     await startGenerationEvent(sessionId, projectId, {
       stage: "anchors",
       provider: "system",
-      action: changingLockedMaster ? "Version Change" : "Set Current",
-      message: changingLockedMaster ? `${resourceId} 已创建新版本；旧依赖保留并标记 outdated。` : `${resourceId} 已设为 Current，等待用户锁定。`
+      action: changingLockedMaster ? "创建新版本" : "设为当前选择",
+      message: changingLockedMaster ? `${resourceId} 已创建新版本；旧依赖已保留并标记为需要更新。` : `${resourceId} 已设为当前选择，等待用户确认。`
     });
     return requireOwnedAnonymousProject(sessionId, projectId);
   });
@@ -339,7 +339,7 @@ async function lockMaster(
         resourceId,
         resourceType,
         stageId: "anchors",
-        label: `${body.kind === "product" ? "Product" : body.kind === "character" ? "Character" : "Scene"} Master V1`,
+        label: `${body.kind === "product" ? "产品" : body.kind === "character" ? "人物" : "场景"}参考 第 1 版`,
         snapshot: masterSnapshot(next, body.kind, body.targetId)
       });
       next = created.project;
@@ -353,7 +353,7 @@ async function lockMaster(
     stage: "anchors",
     provider: "system",
     action: "Anchor Lock",
-    message: `${resourceId} 已由用户锁定；后续生成只能引用当前 Master。`
+    message: `${resourceId} 已由用户确认；后续生成将使用当前参考。`
   });
   return requireOwnedAnonymousProject(sessionId, projectId);
 }

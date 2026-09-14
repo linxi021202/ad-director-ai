@@ -2176,3 +2176,25 @@ button[aria-disabled="true"]{cursor:pointer;opacity:.68}button[aria-disabled="tr
 /* Breakpoint ownership: 1180 keeps three columns; narrower screens use drawers. */
 @media(min-width:1180px){.stage-inspector{position:sticky;top:82px;right:auto;bottom:auto;width:auto;max-height:none;transform:none!important;opacity:1!important;pointer-events:auto!important}.stage-inspector .stage-sheet-close,.stage-inspector-trigger{display:none!important}}
 @media(max-width:479px){.stage-context-panel{display:flex!important}.stage-inspector{display:grid!important}.generation-stage-v3__actions .stage-sheet-trigger{display:grid!important}}
+
+/* Authoritative workspace geometry and neutral panel surfaces. */
+.product-assets__unified-grid{display:grid;min-width:0;gap:10px;margin-top:16px}
+.product-assets__unified-grid .product-asset{grid-template-columns:104px minmax(0,1fr) auto;padding:12px}
+.product-assets__unified-grid .product-asset__preview{width:104px;height:104px;min-width:104px}
+.product-assets__unified-grid .product-asset__actions{grid-template-columns:minmax(68px,1fr)}
+.product-asset__warning{grid-column:1/-1;color:#f5cf69!important;line-height:1.5;white-space:normal}
+.creative-loading__copy{grid-column:1/-1!important;min-height:0!important;border:0!important;padding:4px 0 8px!important}
+.creative-loading__copy strong{font-size:15px}.creative-loading__copy ol{display:flex;flex-wrap:wrap;gap:8px 20px;margin:8px 0 0;padding:0;list-style:none;color:var(--ws-muted);font-size:11px}.creative-loading__copy li::before{margin-right:6px;color:var(--ws-cyan);content:"•"}
+.generation-stage-v3__glow{display:none}
+.site-body .stage-gated-layout>.workspace-column{box-sizing:border-box;background:#000!important;box-shadow:none!important;backdrop-filter:none!important}
+.stage-context-list .is-current,.stage-context-list [aria-current="step"]{background:#000!important;border-color:rgba(73,217,255,.52)!important;color:var(--ws-text)!important}
+.creative-candidate.is-current,.anchor-candidate.is-selected,.anchor-candidate.is-locked{background:#030303!important;box-shadow:none!important}
+.stage-inspector{display:flex;flex-direction:column}.stage-provider-details{margin-top:auto}
+@media(min-width:1180px){
+  .site-body .workbench-layout.stage-gated-layout{align-items:stretch}
+  .workbench-layout.stage-gated-layout>.workspace-column{position:relative;top:auto;right:auto;bottom:auto;left:auto;height:auto;min-height:calc(100dvh - 214px);max-height:none;align-self:stretch;overflow:visible;transform:none!important;opacity:1!important;pointer-events:auto!important}
+  .workbench-layout.stage-gated-layout>.stage-context-panel,.workbench-layout.stage-gated-layout>.stage-inspector{overflow:auto}
+  .stage-inspector .stage-sheet-close,.stage-inspector-trigger{display:none!important}
+}
+@media(max-width:1179px){.stage-inspector.workspace-column{position:fixed;height:auto;max-height:76vh}}
+@media(max-width:900px){.stage-context-panel.workspace-column{position:fixed;height:auto;min-height:0!important;max-height:none}.product-assets__unified-grid .product-asset{grid-template-columns:96px minmax(0,1fr)}.product-assets__unified-grid .product-asset__actions{grid-column:1/-1;grid-template-columns:repeat(2,minmax(0,1fr))}}

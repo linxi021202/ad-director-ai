@@ -7,6 +7,7 @@ import { assertStoryboardMatchesPlanning, planningDurationPlan, resolveProjectPl
 import { creativeDirectionSetPayloadSchema, type CreativeDirection } from "@/lib/schemas/project";
 import { allocateShotDurations } from "@/lib/video/shotConfig";
 import { ensureVisualAnchorWorkspace } from "@/lib/visual/visualAnchors";
+import { validateCreativeDirectionSetQuality } from "@/lib/creative/creativeDirections";
 
 describe("stage-gated quality fix", () => {
   it("keeps the locked 8-shot 40-second plan as the server source of truth", () => {
@@ -39,9 +40,15 @@ describe("stage-gated quality fix", () => {
     expect(creativeDirectionSetPayloadSchema.safeParse({ candidates: candidates.slice(0, 2), recommendedCandidateId: candidates[0]!.id }).success).toBe(false);
   });
 
-  it("rejects three cards that only rename the same creative mechanism", () => {
+  it("treats similar creative mechanisms as soft quality feedback instead of a schema failure", () => {
     const candidates = ["方向一", "方向二", "方向三"].map((name, index) => ({ ...direction(name, index), creativeMechanism: long("同一种创意机制", 34) }));
-    expect(creativeDirectionSetPayloadSchema.safeParse({ candidates, recommendedCandidateId: candidates[0]!.id }).success).toBe(false);
+    expect(creativeDirectionSetPayloadSchema.safeParse({ candidates, recommendedCandidateId: candidates[0]!.id }).success).toBe(true);
+    expect(validateCreativeDirectionSetQuality(candidates).valid).toBe(false);
+  });
+
+  it("accepts a concise one-line idea without attaching aggregate depth errors to it", () => {
+    const candidates = ["感官反差", "时间实验", "角色选择"].map((name, index) => ({ ...direction(name, index), oneLineIdea: "让清醒自然发生" }));
+    expect(creativeDirectionSetPayloadSchema.safeParse({ candidates, recommendedCandidateId: candidates[0]!.id }).success).toBe(true);
   });
 
   it("keeps all continuity scenes but requires at most the main and necessary product-display scene", () => {

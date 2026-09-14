@@ -18,7 +18,7 @@ export function PromptCard({ id, title, body, copied, expanded, onCopy, onToggle
       </header>
       <div className="prompt-card__body"><p>{body}</p></div>
       <button type="button" className="prompt-card__toggle" aria-expanded={expanded} onClick={onToggle}>
-        {expanded ? "收起 Prompt" : "展开完整 Prompt"}
+        {expanded ? "收起生成提示词" : "展开完整生成提示词"}
       </button>
     </article>
   );

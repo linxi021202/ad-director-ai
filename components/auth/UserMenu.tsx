@@ -28,7 +28,7 @@ export function UserMenu() {
         <div className="workspace-user-menu__panel">
           <strong>{label}</strong>
           <span>{session?.user.email}</span>
-          <Link href="/dashboard" onClick={() => setOpen(false)}>Dashboard</Link>
+          <Link href="/dashboard" onClick={() => setOpen(false)}>项目概览</Link>
           <Link href="/settings" onClick={() => setOpen(false)}>设置</Link>
           <button type="button" onClick={signOut}>退出登录</button>
         </div>

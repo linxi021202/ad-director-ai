@@ -27,7 +27,7 @@ export function StageContextPanel({ project, activeStage, onSelect, open, onClos
   const constraints = resolveProjectPlanningConstraints(project);
   const step = MAJOR_STEPS.find((item) => item.stages.includes(activeStage))!;
   const anchorReadiness = activeStage === "anchors" ? getVisualAnchorReadiness(project) : null;
-  return <aside className={`stage-context-panel${open ? " is-open" : ""}`} aria-label="项目导航">
+  return <aside className={`stage-context-panel workspace-column workspace-column--left${open ? " is-open" : ""}`} aria-label="项目导航">
     <header><div><span>当前步骤</span><h2>{step.label}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭项目导航" onClick={onClose}>×</button> : null}</header>
     {activeStage === "brief" ? <p className="stage-context-copy">先完成商品信息，再生成并选择创意方向。</p> : null}
     <div className="stage-context-list"><span>本步骤内容</span>{step.stages.map((stage) => <button type="button" className={stage === activeStage ? "is-current" : ""} key={stage} onClick={() => onSelect?.(stage)}>{userStageLabel(stage)}<small>{stageStatusLabel(project.stageStates?.[stage].status ?? "draft")}</small></button>)}</div>
@@ -46,7 +46,7 @@ export function StageInspector({ project, activeStage, state, busy, onLock, onOp
   const record = currentResourceVersion(project.resourceVersions ?? [], resource.resourceId);
   const impact = record ? calculateDependencyImpact(project.dependencyGraph ?? [], resource.resourceId, record.version, record.version + 1) : null;
   const blockers = getActionBlockers(project, actionForStage(activeStage));
-  return <aside className={`stage-inspector${open ? " is-open" : ""}`} aria-label="步骤状态">
+  return <aside className={`stage-inspector workspace-column workspace-column--right${open ? " is-open" : ""}`} aria-label="步骤状态">
     <header><div><span>制作状态</span><h2>{userStageLabel(activeStage)}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭状态面板" onClick={onClose}>×</button> : null}</header>
     <section className="stage-inspector-status"><div><span>当前状态</span><strong className={`is-${state.status}`}>{stageStatusLabel(state.status)}</strong></div></section>
     <section className="stage-inspector-section"><h3>还需要</h3><p>{remaining}</p></section>
