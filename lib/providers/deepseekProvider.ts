@@ -14,13 +14,18 @@ import {
 import {
   adStrategySchema,
   characterAnchorBriefSchema,
+  characterCandidateDirectionSchema,
   narrationPlanSchema,
+  sceneCandidateDirectionSchema,
   storyboardShotSchema,
   type AdStrategy,
   type CharacterAnchorBrief,
+  type CharacterCandidateDirection,
   type CreativeBible,
   type ProductBrief,
   type ProductVisualSpec,
+  type SceneCandidateDirection,
+  type SceneVisualSpec,
   type NarrationPlan,
   type StoryboardShot
 } from "../schemas/project";
@@ -358,6 +363,36 @@ Required Characters：${JSON.stringify(defaults)}
       role: defaults[index]!.role
     }))
   };
+}
+
+export async function generateCharacterCandidateDirections(
+  brief: CharacterAnchorBrief,
+  context?: ProviderRequestContext
+): Promise<RealTextProviderResponse<CharacterCandidateDirection[]>> {
+  return callAndValidate(
+    `你是商业广告选角导演。只输出合法 JSON 数组，严格生成 3 个差异明显、都能承担同一角色功能的人物候选方向。
+三案必须在脸型骨相、五官识别点、年龄质感、发型轮廓、服装气质和身体语言上可一眼区分；不得只替换同义词，不得改变角色、性别表达或剧情功能。每案都要易于跨镜头保持身份一致。按商业适配度与连续性稳定性从高到低排序，第一项是系统推荐。
+人物简报：${JSON.stringify(brief)}
+每项字段严格为 title, castingPositioning, ageTexture, faceStructure, facialFeatures, hairstyle, wardrobeMood, bodyLanguage, differentiation, continuityStability, recommendationReason。全部使用中文。`,
+    z.array(characterCandidateDirectionSchema).length(3),
+    { temperature: 0.72, maxTokens: 2200 },
+    { ...context, maxProviderAttempts: 1 }
+  );
+}
+
+export async function generateSceneCandidateDirections(
+  spec: SceneVisualSpec,
+  context?: ProviderRequestContext
+): Promise<RealTextProviderResponse<SceneCandidateDirection[]>> {
+  return callAndValidate(
+    `你是商业广告场景设计导演。只输出合法 JSON 数组，严格生成 3 个差异明显、都服务同一叙事功能的空间方案。
+三案必须在空间拓扑、机位入口、前中后景关系、主导材质、核心道具布局和光线组织上可一眼区分；不得仅更换装饰色，不得改变场景身份和必要功能。每案都要适合跨镜头连续拍摄。按商业适配度与连续性稳定性从高到低排序，第一项是系统推荐。
+场景设定：${JSON.stringify(spec)}
+每项字段严格为 title, spatialConcept, cameraPosition, depthStructure, dominantMaterials, heroPropArrangement, lightingDesign, differentiation, continuityStability, recommendationReason。全部使用中文。`,
+    z.array(sceneCandidateDirectionSchema).length(3),
+    { temperature: 0.72, maxTokens: 2200 },
+    { ...context, maxProviderAttempts: 1 }
+  );
 }
 
 export async function generateCreativeDirectionSet(

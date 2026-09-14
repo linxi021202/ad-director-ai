@@ -291,6 +291,31 @@ export const productVisualSpecSchema = z.object({
 
 export const visualAnchorCandidateKindSchema = z.enum(["character", "scene"]);
 export const visualAnchorCandidateStatusSchema = z.enum(["ready", "selected", "outdated"]);
+export const characterCandidateDirectionSchema = z.object({
+  title: z.string().min(1).max(80),
+  castingPositioning: z.string().min(1),
+  ageTexture: z.string().min(1),
+  faceStructure: z.string().min(1),
+  facialFeatures: z.string().min(1),
+  hairstyle: z.string().min(1),
+  wardrobeMood: z.string().min(1),
+  bodyLanguage: z.string().min(1),
+  differentiation: z.string().min(1),
+  continuityStability: z.string().min(1),
+  recommendationReason: z.string().min(1)
+}).strict();
+export const sceneCandidateDirectionSchema = z.object({
+  title: z.string().min(1).max(80),
+  spatialConcept: z.string().min(1),
+  cameraPosition: z.string().min(1),
+  depthStructure: z.string().min(1),
+  dominantMaterials: z.string().min(1),
+  heroPropArrangement: z.string().min(1),
+  lightingDesign: z.string().min(1),
+  differentiation: z.string().min(1),
+  continuityStability: z.string().min(1),
+  recommendationReason: z.string().min(1)
+}).strict();
 export const visualAnchorCandidateSchema = z.object({
   id: z.string().uuid(),
   kind: visualAnchorCandidateKindSchema,
@@ -298,10 +323,24 @@ export const visualAnchorCandidateSchema = z.object({
   assetId: z.string().uuid(),
   label: z.string().min(1).max(120),
   prompt: z.string().min(1),
+  directionTitle: z.string().min(1).max(80).optional(),
+  directionSummary: z.string().min(1).optional(),
+  setId: z.string().uuid().optional(),
+  setVersion: z.number().int().positive().optional(),
   status: visualAnchorCandidateStatusSchema,
   recommended: z.boolean().optional(),
   version: z.number().int().positive(),
   createdAt: z.string().datetime()
+}).strict();
+
+export const visualAnchorSelectionStateSchema = z.object({
+  kind: visualAnchorCandidateKindSchema,
+  targetId: z.string().min(1),
+  status: z.enum(["generated", "selected", "confirmed"]),
+  setVersion: z.number().int().positive(),
+  selectedCandidateId: z.string().uuid().optional(),
+  confirmedCandidateId: z.string().uuid().optional(),
+  updatedAt: z.string().datetime()
 }).strict();
 
 export const characterAnchorStateSchema = z.object({
@@ -394,8 +433,10 @@ export const productMasterStateSchema = z.object({
 export const visualAnchorWorkspaceSchema = z.object({
   productMaster: productMasterStateSchema,
   characterBriefs: z.array(characterAnchorBriefSchema).max(12),
-  characterCandidates: z.array(visualAnchorCandidateSchema).max(36),
-  sceneCandidates: z.array(visualAnchorCandidateSchema).max(36),
+  characterCandidates: z.array(visualAnchorCandidateSchema).max(120),
+  sceneCandidates: z.array(visualAnchorCandidateSchema).max(120),
+  characterSelections: z.array(visualAnchorSelectionStateSchema).max(12).optional(),
+  sceneSelections: z.array(visualAnchorSelectionStateSchema).max(12).optional(),
   requiredCharacterIds: z.array(z.string().min(1)).max(12),
   requiredSceneIds: z.array(z.string().min(1)).max(12),
   initializedAt: z.string().datetime(),
@@ -956,6 +997,9 @@ export type ProductShotType = z.infer<typeof productShotTypeSchema>;
 export type ProductVisualSpec = z.infer<typeof productVisualSpecSchema>;
 export type VisualAnchorCandidate = z.infer<typeof visualAnchorCandidateSchema>;
 export type VisualAnchorCandidateKind = z.infer<typeof visualAnchorCandidateKindSchema>;
+export type CharacterCandidateDirection = z.infer<typeof characterCandidateDirectionSchema>;
+export type SceneCandidateDirection = z.infer<typeof sceneCandidateDirectionSchema>;
+export type VisualAnchorSelectionState = z.infer<typeof visualAnchorSelectionStateSchema>;
 export type CharacterAnchorBrief = z.infer<typeof characterAnchorBriefSchema>;
 export type CharacterAnchorState = z.infer<typeof characterAnchorStateSchema>;
 export type SceneLayout = z.infer<typeof sceneLayoutSchema>;

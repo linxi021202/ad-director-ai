@@ -16,6 +16,7 @@ import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import type { GenerationProject, ProductVisualSpec, StoryboardShot, VisualAnchorCandidate } from "../lib/schemas/project";
 import { ensureStageWorkflow, lockStageInProject } from "../lib/workflow/stageGates";
 import { buildCharacterCandidatePrompt, buildSceneCandidatePrompt } from "../lib/visual/anchorPrompts";
+import { fallbackCharacterDirections, fallbackSceneDirections } from "../lib/visual/candidateDirections";
 import {
   ensureVisualAnchorWorkspace,
   getVisualAnchorReadiness,
@@ -76,9 +77,45 @@ describe("Phase 2 visual anchors", () => {
     expect(new Set(project.visualAnchorWorkspace?.characterCandidates.map((item) => item.assetId)).size).toBe(3);
 
     project = selectVisualAnchorCandidate(project, "character", targetId, candidates[1]!.id);
-    expect(project.characterVisualSpecs![0]).toMatchObject({ masterAssetId: characterAssetIds[1], locked: false });
+    expect(project.characterVisualSpecs![0]).toMatchObject({ locked: false });
+    expect(project.characterVisualSpecs![0]!.masterAssetId).toBeUndefined();
+    expect(project.visualAnchorWorkspace?.characterSelections?.[0]).toMatchObject({ selectedCandidateId: candidates[1]!.id, status: "selected" });
     project = lockVisualAnchorMaster(project, "character", targetId);
     expect(project.characterVisualSpecs![0]).toMatchObject({ masterAssetId: characterAssetIds[1], locked: true });
+  });
+
+  it("allows character selection 1 to 2 to 3 to 1 without confirming early", () => {
+    let project = anchorProject();
+    const targetId = project.characterVisualSpecs![0]!.id;
+    const candidates = makeCandidates("character", targetId, characterAssetIds);
+    project = replaceVisualAnchorCandidates(project, "character", targetId, candidates);
+    for (const index of [0, 1, 2, 0]) {
+      project = selectVisualAnchorCandidate(project, "character", targetId, candidates[index]!.id);
+      expect(project.visualAnchorWorkspace?.characterSelections?.find((item) => item.targetId === targetId)?.selectedCandidateId).toBe(candidates[index]!.id);
+      expect(project.characterVisualSpecs![0]!.locked).toBe(false);
+    }
+  });
+
+  it("allows scene selection before a character is confirmed", () => {
+    let project = anchorProject();
+    const sceneId = project.sceneVisualSpecs![0]!.id;
+    const candidates = makeCandidates("scene", sceneId, sceneAssetIds);
+    project = replaceVisualAnchorCandidates(project, "scene", sceneId, candidates);
+    project = selectVisualAnchorCandidate(project, "scene", sceneId, candidates[2]!.id);
+    expect(project.visualAnchorWorkspace?.sceneSelections?.[0]).toMatchObject({ selectedCandidateId: candidates[2]!.id, status: "selected" });
+    expect(project.visualAnchorWorkspace?.characterSelections?.[0]?.status).not.toBe("confirmed");
+  });
+
+  it("preserves an older candidate set when a new set is installed", () => {
+    let project = anchorProject();
+    const targetId = project.characterVisualSpecs![0]!.id;
+    project = replaceVisualAnchorCandidates(project, "character", targetId, makeCandidates("character", targetId, characterAssetIds));
+    const next = makeCandidates("character", targetId, sceneAssetIds).map((item) => ({ ...item, version: 2, setVersion: 2 }));
+    project = replaceVisualAnchorCandidates(project, "character", targetId, next);
+    const all = project.visualAnchorWorkspace!.characterCandidates.filter((item) => item.targetId === targetId);
+    expect(all).toHaveLength(6);
+    expect(all.filter((item) => item.status === "outdated")).toHaveLength(3);
+    expect(project.visualAnchorWorkspace?.characterSelections?.[0]).toMatchObject({ status: "generated", setVersion: 2 });
   });
 
   it("keeps night and bright states inside one Scene Identity with stable spatial anchors", () => {
@@ -115,14 +152,20 @@ describe("Phase 2 visual anchors", () => {
 
   it("builds candidate prompts that forbid multi-person sheets, scene panels and generated text", () => {
     const project = anchorProject();
-    const characterPrompt = buildCharacterCandidatePrompt(project.visualAnchorWorkspace!.characterBriefs[0]!, 1);
-    const scenePrompt = buildSceneCandidatePrompt(project.sceneVisualSpecs![0]!, 1);
+    const characterPrompt = buildCharacterCandidatePrompt(project.visualAnchorWorkspace!.characterBriefs[0]!, fallbackCharacterDirections(project.visualAnchorWorkspace!.characterBriefs[0]!)[0]!);
+    const scenePrompt = buildSceneCandidatePrompt(project.sceneVisualSpecs![0]!, fallbackSceneDirections(project.sceneVisualSpecs![0]!)[0]!);
     expect(characterPrompt).toContain("一个且只能一个独立人物候选");
     expect(characterPrompt).toContain("不得出现第二个人");
     expect(characterPrompt).toContain("任何可读文字");
     expect(scenePrompt).toContain("一个且只能一个完整空场候选");
     expect(scenePrompt).toContain("固定空间锚点");
     expect(scenePrompt).toContain("不得出现分屏");
+    const characterPrompts = fallbackCharacterDirections(project.visualAnchorWorkspace!.characterBriefs[0]!)
+      .map((direction) => buildCharacterCandidatePrompt(project.visualAnchorWorkspace!.characterBriefs[0]!, direction));
+    const scenePrompts = fallbackSceneDirections(project.sceneVisualSpecs![0]!)
+      .map((direction) => buildSceneCandidatePrompt(project.sceneVisualSpecs![0]!, direction));
+    expect(new Set(characterPrompts).size).toBe(3);
+    expect(new Set(scenePrompts).size).toBe(3);
   });
 
   it("keeps the Visual Anchors API isolated by anonymous ownership", async () => {
@@ -140,6 +183,9 @@ describe("Phase 2 visual anchors", () => {
     expect(source).toContain("Promise.all(requested.map((candidate) => callQwenImage");
     expect(source).toContain("shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}`");
     expect(source).toContain("count: z.number().int().min(2).max(3)");
+    expect(source).toContain("generateCharacterCandidateDirections");
+    expect(source).toContain("inspectCandidateDiversity");
+    expect(source).toContain("repairIndexes");
   });
 });
 

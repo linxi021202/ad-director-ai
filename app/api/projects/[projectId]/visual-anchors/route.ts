@@ -12,11 +12,13 @@ import {
 } from "@/lib/projects/anonymousProjectStore";
 import { projectNotFoundResponse, projectStoreErrorResponse, publicAnonymousProject } from "@/lib/projects/api";
 import { completeGenerationEvent, failGenerationEvent, startGenerationEvent } from "@/lib/projects/generationEvents";
-import { generateCharacterAnchorBriefs } from "@/lib/providers/deepseekProvider";
+import { generateCharacterAnchorBriefs, generateCharacterCandidateDirections, generateSceneCandidateDirections } from "@/lib/providers/deepseekProvider";
 import type {
   CharacterVisualSpec,
+  CharacterCandidateDirection,
   GenerationProject,
   SceneVisualSpec,
+  SceneCandidateDirection,
   VisualAnchorCandidate,
   VisualAnchorCandidateKind,
   VersionedResourceType
@@ -25,11 +27,13 @@ import { getAnonymousApiSession } from "@/lib/session/api";
 import { StageGateError, createResourceVersionInProject, currentResourceVersion } from "@/lib/workflow/stageGates";
 import { buildCharacterCandidatePrompt, buildSceneCandidatePrompt, VISUAL_ANCHOR_NEGATIVE_PROMPT } from "@/lib/visual/anchorPrompts";
 import { resolveProjectProductVisualSpec } from "@/lib/visual/productVisualSpec";
+import { fallbackCharacterDirections, fallbackSceneDirections, inspectCandidateDiversity } from "@/lib/visual/candidateDirections";
 import {
   currentMasterAssetId,
   ensureVisualAnchorWorkspace,
   getVisualAnchorReadiness,
   getVisualAnchorResourceId,
+  getVisualAnchorSelection,
   lockVisualAnchorMaster,
   replaceVisualAnchorCandidates,
   selectVisualAnchorCandidate
@@ -49,16 +53,15 @@ const requestSchema = z.discriminatedUnion("action", [
     expectedVersion: z.number().int().positive(),
     kind: z.enum(["character", "scene"]),
     targetId: z.string().trim().min(1).max(120),
-    candidateId: z.string().uuid(),
-    createVersion: z.boolean().optional()
+    candidateId: z.string().uuid()
   }).strict(),
   z.object({
     action: z.literal("lock-master"),
     expectedVersion: z.number().int().positive(),
     kind: z.enum(["product", "character", "scene"]),
-    targetId: z.string().trim().min(1).max(120).optional()
+    targetId: z.string().trim().min(1).max(120).optional(),
+    createVersion: z.boolean().optional()
   }).strict(),
-  z.object({ action: z.literal("use-recommended"), expectedVersion: z.number().int().positive() }).strict()
 ]);
 
 type RouteContext = { params: Promise<{ projectId: string }> };
@@ -97,10 +100,6 @@ export async function POST(request: Request, context: RouteContext) {
       const saved = await setCurrentCandidate(sessionResult.session.id, projectId.data, current.project, body, current.version);
       return NextResponse.json({ success: true, data: publicAnonymousProject(saved) });
     }
-    if (body.action === "use-recommended") {
-      const saved = await useRecommendedAnchors(sessionResult.session.id, projectId.data, current.project, current.version);
-      return NextResponse.json({ success: true, data: publicAnonymousProject(saved) });
-    }
     const saved = await lockMaster(sessionResult.session.id, projectId.data, current.project, body, current.version);
     return NextResponse.json({ success: true, data: publicAnonymousProject(saved) });
   } catch (error) {
@@ -108,38 +107,11 @@ export async function POST(request: Request, context: RouteContext) {
   }
 }
 
-async function useRecommendedAnchors(
-  sessionId: string,
-  projectId: string,
-  source: GenerationProject,
-  expectedVersion: number
-) {
-  return mutateOwnedAnonymousProject(sessionId, projectId, () => {
-    let next = ensureVisualAnchorWorkspace(source);
-    next = lockVisualAnchorMaster(next, "product");
-    for (const targetId of next.visualAnchorWorkspace!.requiredCharacterIds) {
-      const candidates = next.visualAnchorWorkspace!.characterCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated");
-      const candidate = candidates.find((item) => item.status === "selected") ?? candidates.find((item) => item.recommended) ?? candidates[0];
-      if (!candidate) throw new Error("CHARACTER_MASTER_REQUIRED");
-      next = selectVisualAnchorCandidate(next, "character", targetId, candidate.id);
-      next = lockVisualAnchorMaster(next, "character", targetId);
-    }
-    for (const targetId of next.visualAnchorWorkspace!.requiredSceneIds) {
-      const candidates = next.visualAnchorWorkspace!.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated");
-      const candidate = candidates.find((item) => item.status === "selected") ?? candidates.find((item) => item.recommended) ?? candidates[0];
-      if (!candidate) throw new Error("SCENE_MASTER_REQUIRED");
-      next = selectVisualAnchorCandidate(next, "scene", targetId, candidate.id);
-      next = lockVisualAnchorMaster(next, "scene", targetId);
-    }
-    return ensureVisualAnchorWorkspace(next);
-  }, expectedVersion);
-}
-
 async function initializeAnchors(sessionId: string, projectId: string, source: GenerationProject) {
   const event = await startGenerationEvent(sessionId, projectId, {
     stage: "anchors",
     provider: "deepseek",
-    action: "Anchor Brief",
+    action: "整理视觉需求",
     message: "DeepSeek 正在根据已锁定创意整理人物需求与场景身份。"
   });
   try {
@@ -210,15 +182,23 @@ async function generateCandidates(
     progressCurrent: 0,
     progressTotal: body.count
   });
+  const planned = body.kind === "character"
+    ? await generateCharacterCandidateDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], { sessionId, maxProviderAttempts: 1 })
+    : await generateSceneCandidateDirections(target as SceneVisualSpec, { sessionId, maxProviderAttempts: 1 });
+  const directions = (planned.success && planned.data ? planned.data : body.kind === "character"
+    ? fallbackCharacterDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number])
+    : fallbackSceneDirections(target as SceneVisualSpec)).slice(0, body.count);
+  const setId = randomUUID();
   const requested = Array.from({ length: body.count }, (_, index) => ({
     id: randomUUID(),
     index: index + 1,
+    direction: directions[index]!,
     prompt: body.kind === "character"
-      ? buildCharacterCandidatePrompt(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], index + 1)
-      : buildSceneCandidatePrompt(target as SceneVisualSpec, index + 1)
+      ? buildCharacterCandidatePrompt(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], directions[index] as CharacterCandidateDirection)
+      : buildSceneCandidatePrompt(target as SceneVisualSpec, directions[index] as SceneCandidateDirection)
   }));
   try {
-    const results = await Promise.all(requested.map((candidate) => callQwenImage({
+    let results = await Promise.all(requested.map((candidate) => callQwenImage({
       prompt: candidate.prompt,
       negativePrompt: VISUAL_ANCHOR_NEGATIVE_PROMPT,
       projectId,
@@ -227,6 +207,25 @@ async function generateCandidates(
       size: body.kind === "character" ? "1152*2048" : "2048*1152",
       watermark: false
     }).catch((error) => ({ success: false as const, assetId: null, error: error instanceof Error ? error.message : "候选生成失败。" }))));
+    const initialAssetIds = results.flatMap((result) => result.success && result.assetId ? [result.assetId] : []);
+    const diversity = await inspectCandidateDiversity({ kind: body.kind, assetIds: initialAssetIds, sessionId, projectId });
+    if (!diversity.passed && initialAssetIds.length === body.count) {
+      const repairIndexes = new Set(diversity.tooSimilarIndexes.slice(0, 2));
+      results = await Promise.all(results.map(async (result, index) => {
+        if (!repairIndexes.has(index + 1)) return result;
+        const candidate = requested[index]!;
+        const repaired = await callQwenImage({
+          prompt: `${candidate.prompt}\n多样性修复：上一版与其他方案过于相似。必须强化本方向的独有脸型/空间拓扑、轮廓、材质和构图差异，同时保持角色或场景功能不变。`,
+          negativePrompt: VISUAL_ANCHOR_NEGATIVE_PROMPT,
+          projectId,
+          shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}-repair`,
+          sessionId,
+          size: body.kind === "character" ? "1152*2048" : "2048*1152",
+          watermark: false
+        }).catch((error) => ({ success: false as const, assetId: null, error: error instanceof Error ? error.message : "候选修复失败。" }));
+        return repaired.success && repaired.assetId ? repaired : result;
+      }));
+    }
     const successful = results.flatMap((result, index) => {
       if (!result.success || !result.assetId) return [];
       return [{ requestItem: requested[index]!, result }];
@@ -247,6 +246,10 @@ async function generateCandidates(
       assetId: result.assetId!,
       label: `${body.kind === "character" ? "人物" : "场景"}方案 ${index + 1}`,
       prompt: requestItem.prompt,
+      directionTitle: requestItem.direction.title,
+      directionSummary: requestItem.direction.differentiation,
+      setId,
+      setVersion: nextVersion,
       status: "ready",
       recommended: index === 0,
       version: nextVersion,
@@ -277,46 +280,17 @@ async function setCurrentCandidate(
   expectedVersion: number
 ) {
   const normalized = ensureVisualAnchorWorkspace(source);
-  const currentSpec = body.kind === "character"
-    ? normalized.characterVisualSpecs?.find((item) => item.id === body.targetId)
-    : normalized.sceneVisualSpecs?.find((item) => item.id === body.targetId);
-  const resourceId = getVisualAnchorResourceId(body.kind, body.targetId);
-  const resourceType = `${body.kind}-master` as VersionedResourceType;
   const candidate = normalized.visualAnchorWorkspace![body.kind === "character" ? "characterCandidates" : "sceneCandidates"]
     .find((item) => item.id === body.candidateId && item.targetId === body.targetId);
   if (!candidate) throw new Error("VISUAL_ANCHOR_CANDIDATE_NOT_FOUND");
-  const changingLockedMaster = Boolean(currentSpec?.locked && currentMasterAssetId(currentSpec) !== candidate.assetId);
-  if (changingLockedMaster && !body.createVersion) {
-    const current = currentResourceVersion(normalized.resourceVersions ?? [], resourceId);
-    const impact = current ? createResourceVersionInProject(normalized, {
-      resourceId,
-      resourceType,
-      stageId: "anchors"
-    }).impact : undefined;
-    throw new StageGateError("LOCKED_RESOURCE_VERSION_REQUIRED", `修改已锁定的${body.kind === "character" ? "人物" : "场景"}基准必须创建新版本。`, impact);
-  }
   return mutateOwnedAnonymousProject(sessionId, projectId, (latest) => {
-    let next = selectVisualAnchorCandidate(latest, body.kind, body.targetId, body.candidateId);
-    const current = currentResourceVersion(next.resourceVersions ?? [], resourceId);
-    if (!current || changingLockedMaster) {
-      const created = createResourceVersionInProject(next, {
-        resourceId,
-        resourceType,
-        stageId: "anchors",
-        label: `${body.kind === "character" ? "人物" : "场景"}参考 ${current ? `第 ${current.version + 1} 版` : "第 1 版"}`,
-        snapshot: masterSnapshot(next, body.kind, body.targetId)
-      });
-      next = setSpecVersion(created.project, body.kind, body.targetId, created.version.version);
-    } else {
-      next = replaceCurrentResourceSnapshot(next, resourceId, masterSnapshot(next, body.kind, body.targetId));
-    }
-    return ensureVisualAnchorWorkspace(next);
+    return ensureVisualAnchorWorkspace(selectVisualAnchorCandidate(latest, body.kind, body.targetId, body.candidateId));
   }, expectedVersion).then(async (saved) => {
     await startGenerationEvent(sessionId, projectId, {
       stage: "anchors",
       provider: "system",
-      action: changingLockedMaster ? "创建新版本" : "设为当前选择",
-      message: changingLockedMaster ? `${resourceId} 已创建新版本；旧依赖已保留并标记为需要更新。` : `${resourceId} 已设为当前选择，等待用户确认。`
+      action: "选择候选",
+      message: `${body.kind === "character" ? "人物" : "场景"}候选已选中，等待用户确认。`
     });
     return requireOwnedAnonymousProject(sessionId, projectId);
   });
@@ -329,17 +303,29 @@ async function lockMaster(
   body: Extract<z.infer<typeof requestSchema>, { action: "lock-master" }>,
   expectedVersion: number
 ) {
+  const normalized = ensureVisualAnchorWorkspace(source);
   const resourceId = getVisualAnchorResourceId(body.kind, body.targetId);
   const resourceType = body.kind === "product" ? "product-master" : `${body.kind}-master` as VersionedResourceType;
+  const spec = body.kind === "character" ? normalized.characterVisualSpecs?.find((item) => item.id === body.targetId)
+    : body.kind === "scene" ? normalized.sceneVisualSpecs?.find((item) => item.id === body.targetId) : undefined;
+  const selection = body.kind === "product" || !body.targetId ? undefined : getVisualAnchorSelection(normalized, body.kind, body.targetId);
+  const selected = body.kind === "product" ? undefined : normalized.visualAnchorWorkspace?.[body.kind === "character" ? "characterCandidates" : "sceneCandidates"]
+    .find((item) => item.id === selection?.selectedCandidateId);
+  const changingLockedMaster = Boolean(spec?.locked && selected && currentMasterAssetId(spec) !== selected.assetId);
+  if (changingLockedMaster && !body.createVersion) {
+    const current = currentResourceVersion(normalized.resourceVersions ?? [], resourceId);
+    const impact = current ? createResourceVersionInProject(normalized, { resourceId, resourceType, stageId: "anchors" }).impact : undefined;
+    throw new StageGateError("LOCKED_RESOURCE_VERSION_REQUIRED", `确认更换已锁定的${body.kind === "character" ? "人物" : "场景"}基准前需要创建新版本。`, impact);
+  }
   await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => {
     let next = lockVisualAnchorMaster(latest, body.kind, body.targetId);
     const current = currentResourceVersion(next.resourceVersions ?? [], resourceId);
-    if (!current) {
+    if (!current || changingLockedMaster) {
       const created = createResourceVersionInProject(next, {
         resourceId,
         resourceType,
         stageId: "anchors",
-        label: `${body.kind === "product" ? "产品" : body.kind === "character" ? "人物" : "场景"}参考 第 1 版`,
+        label: `${body.kind === "product" ? "产品" : body.kind === "character" ? "人物" : "场景"}参考 第 ${current ? current.version + 1 : 1} 版`,
         snapshot: masterSnapshot(next, body.kind, body.targetId)
       });
       next = created.project;
@@ -352,8 +338,8 @@ async function lockMaster(
   await startGenerationEvent(sessionId, projectId, {
     stage: "anchors",
     provider: "system",
-    action: "Anchor Lock",
-    message: `${resourceId} 已由用户确认；后续生成将使用当前参考。`
+    action: "确认视觉基准",
+    message: `${body.kind === "product" ? "产品" : body.kind === "character" ? "人物" : "场景"}基准已由用户确认；后续生成将使用当前参考。`
   });
   return requireOwnedAnonymousProject(sessionId, projectId);
 }

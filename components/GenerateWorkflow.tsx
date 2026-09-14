@@ -32,7 +32,7 @@ import {
   ensureStageWorkflow,
   type DependencyImpact
 } from "@/lib/workflow/stageGates";
-import { currentMasterAssetId, getVisualAnchorReadiness, getVisualAnchorResourceId } from "@/lib/visual/visualAnchors";
+import { currentMasterAssetId, getVisualAnchorReadiness, getVisualAnchorResourceId, getVisualAnchorSelection } from "@/lib/visual/visualAnchors";
 import {
   saveProjectBriefWithConflictRetry,
   type ProjectPatchData
@@ -961,8 +961,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setIsGenerating(true);
     setError(null);
     try {
-      const confirmed = await postAnchorAction({ action: "use-recommended" }, "confirm-visual");
-      if (!confirmed) return;
+      const readiness = getVisualAnchorReadiness(activeProject);
+      if (!readiness.ready) throw new Error("请先分别确认产品、每位主角和每个场景，再继续制作分镜。");
       await postWorkflowAction({ action: "lock-stage", stageId: "anchors" });
       await runStoryboardStage();
     } catch (stageError) {
@@ -973,32 +973,9 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   async function setCurrentVisualAnchor(kind: VisualAnchorCandidateKind, targetId: string, candidateId: string) {
-    const spec = kind === "character"
-      ? activeProject.characterVisualSpecs?.find((item) => item.id === targetId)
-      : activeProject.sceneVisualSpecs?.find((item) => item.id === targetId);
     const candidate = activeProject.visualAnchorWorkspace?.[kind === "character" ? "characterCandidates" : "sceneCandidates"]
       .find((item) => item.id === candidateId && item.targetId === targetId);
     if (!candidate) return;
-    if (spec?.locked && currentMasterAssetId(spec) !== candidate.assetId) {
-      try {
-        const resourceId = getVisualAnchorResourceId(kind, targetId);
-        const response = await fetch(`/api/projects/${encodeURIComponent(activeProject.id)}/workflow?resourceId=${encodeURIComponent(resourceId)}`, { cache: "no-store" });
-        const result = await readClientApiResponse<{ impact: DependencyImpact }>(response);
-        if (!response.ok || !result.success || !result.data?.impact) throw new Error("无法计算视觉基准修改影响。");
-        setAnchorVersionIntent({
-          kind,
-          targetId,
-          candidateId,
-          label: kind === "character"
-            ? activeProject.characterVisualSpecs?.find((item) => item.id === targetId)?.role ?? targetId
-            : activeProject.sceneVisualSpecs?.find((item) => item.id === targetId)?.name ?? targetId,
-          impact: result.data.impact
-        });
-      } catch (impactError) {
-        setError(impactError instanceof Error ? impactError.message : "无法计算视觉基准修改影响。");
-      }
-      return;
-    }
     try {
       await postAnchorAction({ action: "set-current", kind, targetId, candidateId }, `select:${kind}:${targetId}`);
       setTraceLabel(`${kind === "character" ? "人物" : "场景"}候选方案已设为当前方案`);
@@ -1008,6 +985,36 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   async function lockVisualMaster(kind: "product" | VisualAnchorCandidateKind, targetId?: string) {
+    if (kind !== "product" && targetId) {
+      const selection = getVisualAnchorSelection(activeProject, kind, targetId);
+      const candidate = activeProject.visualAnchorWorkspace?.[kind === "character" ? "characterCandidates" : "sceneCandidates"]
+        .find((item) => item.id === selection?.selectedCandidateId);
+      const spec = kind === "character" ? activeProject.characterVisualSpecs?.find((item) => item.id === targetId)
+        : activeProject.sceneVisualSpecs?.find((item) => item.id === targetId);
+      if (!candidate) {
+        setError(`请先选择一个${kind === "character" ? "人物" : "场景"}候选，再确认使用。`);
+        return;
+      }
+      if (selection?.status === "confirmed" && selection.confirmedCandidateId === selection.selectedCandidateId) {
+        setError(`${kind === "character" ? "主角" : "场景"}已经确认；可以先选择其他候选再更换。`);
+        return;
+      }
+      if (spec?.locked && currentMasterAssetId(spec) !== candidate.assetId) {
+        try {
+          const resourceId = getVisualAnchorResourceId(kind, targetId);
+          const response = await fetch(`/api/projects/${encodeURIComponent(activeProject.id)}/workflow?resourceId=${encodeURIComponent(resourceId)}`, { cache: "no-store" });
+          const result = await readClientApiResponse<{ impact: DependencyImpact }>(response);
+          if (!response.ok || !result.success || !result.data?.impact) throw new Error("无法计算视觉基准修改影响。");
+          const label = kind === "character"
+            ? activeProject.characterVisualSpecs?.find((item) => item.id === targetId)?.role ?? targetId
+            : activeProject.sceneVisualSpecs?.find((item) => item.id === targetId)?.name ?? targetId;
+          setAnchorVersionIntent({ kind, targetId, candidateId: candidate.id, label, impact: result.data.impact });
+        } catch (impactError) {
+          setError(impactError instanceof Error ? impactError.message : "无法计算视觉基准修改影响。");
+        }
+        return;
+      }
+    }
     try {
       const refreshed = await postAnchorAction({ action: "lock-master", kind, ...(targetId ? { targetId } : {}) }, `lock:${kind}${targetId ? `:${targetId}` : ""}`);
       if (refreshed) {
@@ -1024,14 +1031,13 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     const intent = anchorVersionIntent;
     try {
       await postAnchorAction({
-        action: "set-current",
+        action: "lock-master",
         kind: intent.kind,
         targetId: intent.targetId,
-        candidateId: intent.candidateId,
         createVersion: true
       }, `version:${intent.kind}:${intent.targetId}`);
       setAnchorVersionIntent(null);
-      setTraceLabel(`${intent.label} 已创建 V${intent.impact.nextVersion}，等待重新锁定`);
+      setTraceLabel(`${intent.label} 已确认并创建 V${intent.impact.nextVersion}`);
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "视觉基准版本创建失败。");
     }
@@ -1139,6 +1145,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               onConfirmProduct={() => void lockVisualMaster("product")}
               onGenerateCandidates={(kind, targetId) => void generateVisualAnchorCandidates(kind, targetId)}
               onSetCurrent={(kind, targetId, candidateId) => void setCurrentVisualAnchor(kind, targetId, candidateId)}
+              onConfirmTarget={(kind, targetId) => void lockVisualMaster(kind, targetId)}
               onConfirmSelection={() => void confirmVisualSelection()}
             /> : null}
 

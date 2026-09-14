@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import type { GenerationProject, VisualAnchorCandidate, VisualAnchorCandidateKind } from "@/lib/schemas/project";
-import { currentMasterAssetId, getVisualAnchorReadiness } from "@/lib/visual/visualAnchors";
+import { getVisualAnchorReadiness, getVisualAnchorSelection } from "@/lib/visual/visualAnchors";
 import { getActionBlockers } from "@/lib/workflow/actionBlockers";
 import { GuardedActionButton } from "@/components/workflow/GuardedActionButton";
 
@@ -15,10 +15,11 @@ type Props = {
   onConfirmProduct: () => void;
   onGenerateCandidates: (kind: VisualAnchorCandidateKind, targetId: string) => void;
   onSetCurrent: (kind: VisualAnchorCandidateKind, targetId: string, candidateId: string) => void;
+  onConfirmTarget: (kind: VisualAnchorCandidateKind, targetId: string) => void;
   onConfirmSelection: () => void;
 };
 
-export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGenerateAll, onConfirmProduct, onGenerateCandidates, onSetCurrent, onConfirmSelection }: Props) {
+export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGenerateAll, onConfirmProduct, onGenerateCandidates, onSetCurrent, onConfirmTarget, onConfirmSelection }: Props) {
   const workspace = project.visualAnchorWorkspace;
   const readiness = getVisualAnchorReadiness(project);
   const mainProduct = project.brief.productImages?.find((image) => image.role === "main-product")
@@ -63,9 +64,11 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
         {characters.length === 0 ? <div className="anchor-friendly-empty"><strong>这个创意不需要出镜人物</strong><span>后续会以商品和场景推进叙事。</span></div> : characters.map((spec) => {
           const brief = workspace?.characterBriefs.find((item) => item.id === spec.id);
           const candidates = activeCandidates(workspace?.characterCandidates, spec.id);
+          const selection = getVisualAnchorSelection(project, "character", spec.id);
           return <div className="visual-choice-module" key={spec.id}>
             <header><div><h3>{spec.role}</h3><p>{brief?.apparentAgeRange} · {brief?.wardrobe ?? spec.wardrobe.join("、")}</p></div><button type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("character", spec.id)}>{busyTarget === `generate:character:${spec.id}` ? "生成中" : candidates.length ? "换一组" : "生成人物候选"}</button></header>
-            <CandidateGrid projectId={project.id} candidates={candidates} selectedAssetId={currentMasterAssetId(spec)} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("character", spec.id, candidateId)} />
+            <CandidateGrid projectId={project.id} candidates={candidates} selectedCandidateId={selection?.selectedCandidateId} confirmedCandidateId={selection?.confirmedCandidateId} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("character", spec.id, candidateId)} />
+            <TargetConfirmBar kind="character" selection={selection} busy={busyTarget === `lock:character:${spec.id}`} onConfirm={() => onConfirmTarget("character", spec.id)} />
           </div>;
         })}
       </section>
@@ -74,9 +77,11 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
         <SectionTitle label="拍摄空间" title="场景" status={readiness.missingSceneIds.length ? "待确认" : "已确认"} />
         {scenes.map((spec) => {
           const candidates = activeCandidates(workspace?.sceneCandidates, spec.id);
+          const selection = getVisualAnchorSelection(project, "scene", spec.id);
           return <div className="visual-choice-module" key={spec.id}>
             <header><div><h3>{spec.name}</h3><p>{spec.architecture}</p></div><button type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("scene", spec.id)}>{busyTarget === `generate:scene:${spec.id}` ? "生成中" : candidates.length ? "换一组" : "生成场景候选"}</button></header>
-            <CandidateGrid projectId={project.id} candidates={candidates} selectedAssetId={currentMasterAssetId(spec)} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("scene", spec.id, candidateId)} />
+            <CandidateGrid projectId={project.id} candidates={candidates} selectedCandidateId={selection?.selectedCandidateId} confirmedCandidateId={selection?.confirmedCandidateId} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("scene", spec.id, candidateId)} />
+            <TargetConfirmBar kind="scene" selection={selection} busy={busyTarget === `lock:scene:${spec.id}`} onConfirm={() => onConfirmTarget("scene", spec.id)} />
             <details className="stage-provider-details"><summary>场景变化范围</summary><p>构图和机位可以变化，场景状态只改变光线、天气和少量道具状态。</p></details>
           </div>;
         })}
@@ -85,15 +90,26 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
   );
 }
 
-function CandidateGrid({ projectId, candidates, selectedAssetId, busy, onSelect }: { projectId: string; candidates: VisualAnchorCandidate[]; selectedAssetId?: string; busy: boolean; onSelect: (candidateId: string) => void }) {
+function CandidateGrid({ projectId, candidates, selectedCandidateId, confirmedCandidateId, busy, onSelect }: { projectId: string; candidates: VisualAnchorCandidate[]; selectedCandidateId?: string; confirmedCandidateId?: string; busy: boolean; onSelect: (candidateId: string) => void }) {
   if (candidates.length === 0) return <div className="anchor-friendly-empty"><strong>还没有候选图</strong><span>生成后会在这里出现独立图片，不会使用拼图。</span></div>;
   return <div className={`anchor-candidate-grid${candidates[0]?.kind === "scene" ? " is-scene" : ""}`}>{candidates.map((candidate) => {
-    const selected = candidate.assetId === selectedAssetId;
-    return <article className={`anchor-candidate${selected ? " is-selected" : ""}`} key={candidate.id}>
+    const selected = candidate.id === selectedCandidateId;
+    const confirmed = candidate.id === confirmedCandidateId;
+    return <article className={`anchor-candidate${selected ? " is-selected" : ""}${confirmed ? " is-locked" : ""}`} key={candidate.id}>
       <AdaptiveMediaFrame aspectRatio={candidate.kind === "scene" ? "16:9" : "9:16"} stage="auto" src={assetUrl(projectId, candidate.assetId)} mediaType="image" fit="cover" alt={candidate.label} />
-      <footer><div><strong>{candidate.label}</strong><span>{candidate.recommended ? "系统推荐" : selected ? "已选择" : "可选择"}</span></div><button type="button" disabled={busy || selected} onClick={() => onSelect(candidate.id)}>{selected ? "已选择" : "选择"}</button></footer>
+      <footer><div><strong>{candidate.directionTitle ?? candidate.label}</strong><span>{confirmed && selected ? "已确认" : selected ? "已选择，待确认" : confirmed ? "当前已确认" : candidate.recommended ? "系统推荐" : "可选择"}</span></div><button type="button" disabled={busy || selected} onClick={() => onSelect(candidate.id)}>{selected ? "已选择" : "选择"}</button></footer>
+      {candidate.directionSummary ? <p className="anchor-candidate__direction">{candidate.directionSummary}</p> : null}
     </article>;
   })}</div>;
+}
+
+function TargetConfirmBar({ kind, selection, busy, onConfirm }: { kind: VisualAnchorCandidateKind; selection: ReturnType<typeof getVisualAnchorSelection>; busy: boolean; onConfirm: () => void }) {
+  const selected = Boolean(selection?.selectedCandidateId);
+  const unchanged = selection?.status === "confirmed" && selection.selectedCandidateId === selection.confirmedCandidateId;
+  return <div className="anchor-target-confirm">
+    <span>{unchanged ? `${kind === "character" ? "主角" : "场景"}已确认，可重新选择后更换` : selected ? "已选择候选，请确认后作为后续生成基准" : "请先选择一个候选，再确认使用"}</span>
+    <button type="button" className="button-secondary-v3" aria-disabled={!selected || unchanged} disabled={busy} onClick={onConfirm}>{busy ? "确认中…" : unchanged ? "已确认" : selection?.confirmedCandidateId ? "确认更换" : `确认使用该${kind === "character" ? "主角" : "场景"}`}</button>
+  </div>;
 }
 
 function SectionTitle({ label, title, status }: { label: string; title: string; status: string }) {

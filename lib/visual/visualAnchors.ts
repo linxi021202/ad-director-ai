@@ -9,6 +9,7 @@ import type {
   StageStates,
   VisualAnchorCandidate,
   VisualAnchorCandidateKind,
+  VisualAnchorSelectionState,
   VisualAnchorWorkspace
 } from "@/lib/schemas/project";
 
@@ -67,6 +68,8 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
     characterBriefs,
     characterCandidates: previous?.characterCandidates ?? [],
     sceneCandidates: previous?.sceneCandidates ?? [],
+    characterSelections: buildSelectionStates("character", previous?.characterSelections, previous?.characterCandidates ?? [], characterVisualSpecs, now),
+    sceneSelections: buildSelectionStates("scene", previous?.sceneSelections, previous?.sceneCandidates ?? [], sceneVisualSpecs, now),
     requiredCharacterIds: characterVisualSpecs.filter((spec) => usedCharacterIds.has(spec.id)).map((spec) => spec.id),
     requiredSceneIds: requiredSceneSpecs.map((spec) => spec.id),
     initializedAt: previous?.initializedAt ?? now,
@@ -88,8 +91,14 @@ export function getVisualAnchorReadiness(project: GenerationProject): VisualAnch
   const productLocked = Boolean(workspace?.productMaster.locked && mainProduct?.assetId);
   const requiredCharacterIds = workspace?.requiredCharacterIds ?? project.characterVisualSpecs?.map((item) => item.id) ?? [];
   const requiredSceneIds = workspace?.requiredSceneIds ?? project.sceneVisualSpecs?.map((item) => item.id) ?? [];
-  const lockedCharacters = new Set((project.characterVisualSpecs ?? []).filter((item) => item.locked && currentMasterAssetId(item)).map((item) => item.id));
-  const lockedScenes = new Set((project.sceneVisualSpecs ?? []).filter((item) => item.locked && currentMasterAssetId(item)).map((item) => item.id));
+  const lockedCharacters = new Set((project.characterVisualSpecs ?? []).filter((item) => {
+    const state = workspace?.characterSelections?.find((entry) => entry.targetId === item.id);
+    return item.locked && currentMasterAssetId(item) && (state?.status === "confirmed" || (!state?.selectedCandidateId && !state?.confirmedCandidateId));
+  }).map((item) => item.id));
+  const lockedScenes = new Set((project.sceneVisualSpecs ?? []).filter((item) => {
+    const state = workspace?.sceneSelections?.find((entry) => entry.targetId === item.id);
+    return item.locked && currentMasterAssetId(item) && (state?.status === "confirmed" || (!state?.selectedCandidateId && !state?.confirmedCandidateId));
+  }).map((item) => item.id));
   return {
     ready: productLocked
       && requiredCharacterIds.every((id) => lockedCharacters.has(id))
@@ -118,9 +127,19 @@ export function replaceVisualAnchorCandidates(
   const previous = workspace[key].map((candidate) => candidate.targetId === targetId
     ? { ...candidate, status: "outdated" as const }
     : candidate);
+  const selectionKey = kind === "character" ? "characterSelections" : "sceneSelections";
+  const setVersion = Math.max(...candidates.map((candidate) => candidate.setVersion ?? candidate.version));
+  const selections = upsertSelection(workspace[selectionKey] ?? [], {
+    kind,
+    targetId,
+    status: "generated",
+    setVersion,
+    confirmedCandidateId: workspace[selectionKey]?.find((item) => item.targetId === targetId)?.confirmedCandidateId,
+    updatedAt: now
+  });
   return applyVisualAnchorReadiness({
     ...normalized,
-    visualAnchorWorkspace: { ...workspace, [key]: [...previous, ...candidates], updatedAt: now }
+    visualAnchorWorkspace: { ...workspace, [key]: [...previous, ...candidates], [selectionKey]: selections, updatedAt: now }
   }, now);
 }
 
@@ -140,30 +159,20 @@ export function selectVisualAnchorCandidate(
     if (item.targetId !== targetId || item.status === "outdated") return item;
     return { ...item, status: item.id === candidateId ? "selected" as const : "ready" as const };
   });
-  const next = kind === "character"
-    ? {
-        ...normalized,
-        characterVisualSpecs: normalized.characterVisualSpecs?.map((spec) => spec.id === targetId ? {
-          ...spec,
-          masterAssetId: candidate.assetId,
-          masterAssetIds: [candidate.assetId],
-          locked: false,
-          lockedAt: undefined
-        } : spec)
-      }
-    : {
-        ...normalized,
-        sceneVisualSpecs: normalized.sceneVisualSpecs?.map((spec) => spec.id === targetId ? {
-          ...spec,
-          masterAssetId: candidate.assetId,
-          masterAssetIds: [candidate.assetId],
-          locked: false,
-          lockedAt: undefined
-        } : spec)
-      };
+  const selectionKey = kind === "character" ? "characterSelections" : "sceneSelections";
+  const previousSelection = workspace[selectionKey]?.find((item) => item.targetId === targetId);
+  const selections = upsertSelection(workspace[selectionKey] ?? [], {
+    kind,
+    targetId,
+    status: "selected",
+    setVersion: candidate.setVersion ?? candidate.version,
+    selectedCandidateId: candidate.id,
+    confirmedCandidateId: previousSelection?.confirmedCandidateId,
+    updatedAt: now
+  });
   return applyVisualAnchorReadiness({
-    ...next,
-    visualAnchorWorkspace: { ...workspace, [key]: candidates, updatedAt: now }
+    ...normalized,
+    visualAnchorWorkspace: { ...workspace, [key]: candidates, [selectionKey]: selections, updatedAt: now }
   }, now);
 }
 
@@ -192,26 +201,49 @@ export function lockVisualAnchorMaster(
     }, now);
   }
   if (!targetId) throw new Error("VISUAL_ANCHOR_TARGET_REQUIRED");
+  const selectionKey = kind === "character" ? "characterSelections" : "sceneSelections";
+  const candidateKey = kind === "character" ? "characterCandidates" : "sceneCandidates";
+  const selection = workspace[selectionKey]?.find((item) => item.targetId === targetId);
+  const candidate = selection?.selectedCandidateId
+    ? workspace[candidateKey].find((item) => item.id === selection.selectedCandidateId && item.targetId === targetId && item.status !== "outdated")
+    : undefined;
+  if (!candidate) throw new Error(kind === "character" ? "CHARACTER_MASTER_REQUIRED" : "SCENE_MASTER_REQUIRED");
+  const confirmedSelections = upsertSelection(workspace[selectionKey] ?? [], {
+    kind,
+    targetId,
+    status: "confirmed",
+    setVersion: candidate.setVersion ?? candidate.version,
+    selectedCandidateId: candidate.id,
+    confirmedCandidateId: candidate.id,
+    updatedAt: now
+  });
   if (kind === "character") {
     const spec = normalized.characterVisualSpecs?.find((item) => item.id === targetId);
-    const assetId = spec && currentMasterAssetId(spec);
-    if (!spec || !assetId) throw new Error("CHARACTER_MASTER_REQUIRED");
+    if (!spec) throw new Error("CHARACTER_MASTER_REQUIRED");
+    const assetId = candidate.assetId;
     return applyVisualAnchorReadiness(syncLockedReferences({
       ...normalized,
       characterVisualSpecs: normalized.characterVisualSpecs?.map((item) => item.id === targetId
         ? { ...item, masterAssetId: assetId, masterAssetIds: [assetId], locked: true, lockedAt: now }
-        : item)
+        : item),
+      visualAnchorWorkspace: { ...workspace, [selectionKey]: confirmedSelections, updatedAt: now }
     }), now);
   }
   const spec = normalized.sceneVisualSpecs?.find((item) => item.id === targetId);
-  const assetId = spec && currentMasterAssetId(spec);
-  if (!spec || !assetId) throw new Error("SCENE_MASTER_REQUIRED");
+  if (!spec) throw new Error("SCENE_MASTER_REQUIRED");
+  const assetId = candidate.assetId;
   return applyVisualAnchorReadiness(syncLockedReferences({
     ...normalized,
     sceneVisualSpecs: normalized.sceneVisualSpecs?.map((item) => item.id === targetId
       ? { ...item, masterAssetId: assetId, masterAssetIds: [assetId], locked: true, lockedAt: now }
-      : item)
+      : item),
+    visualAnchorWorkspace: { ...workspace, [selectionKey]: confirmedSelections, updatedAt: now }
   }), now);
+}
+
+export function getVisualAnchorSelection(project: GenerationProject, kind: VisualAnchorCandidateKind, targetId: string) {
+  const workspace = project.visualAnchorWorkspace;
+  return workspace?.[kind === "character" ? "characterSelections" : "sceneSelections"]?.find((item) => item.targetId === targetId);
 }
 
 export function getVisualAnchorResourceId(kind: "product" | VisualAnchorCandidateKind, targetId?: string) {
@@ -236,6 +268,38 @@ function applyVisualAnchorReadiness(project: GenerationProject, now: string): Ge
   const anchors = { status: readiness.ready ? "ready" as const : "draft" as const, updatedAt: Date.parse(now) };
   const stageStates: StageStates = { ...project.stageStates, anchors };
   return { ...project, stageStates };
+}
+
+function buildSelectionStates(
+  kind: VisualAnchorCandidateKind,
+  stored: VisualAnchorSelectionState[] | undefined,
+  candidates: VisualAnchorCandidate[],
+  specs: Array<{ id: string; masterAssetId?: string; masterAssetIds?: string[]; locked: boolean }>,
+  now: string
+) {
+  return specs.map((spec) => {
+    const existing = stored?.find((item) => item.targetId === spec.id);
+    if (existing) return existing;
+    const matching = candidates.filter((item) => item.targetId === spec.id);
+    const active = matching.filter((item) => item.status !== "outdated");
+    const selected = active.find((item) => item.status === "selected");
+    const master = currentMasterAssetId(spec);
+    const confirmed = spec.locked && master ? matching.find((item) => item.assetId === master) : undefined;
+    const legacyConfirmed = Boolean(spec.locked && master);
+    return {
+      kind,
+      targetId: spec.id,
+      status: legacyConfirmed ? "confirmed" as const : selected ? "selected" as const : "generated" as const,
+      setVersion: Math.max(1, ...active.map((item) => item.setVersion ?? item.version)),
+      ...(selected ? { selectedCandidateId: selected.id } : {}),
+      ...(confirmed ? { confirmedCandidateId: confirmed.id } : {}),
+      updatedAt: now
+    };
+  });
+}
+
+function upsertSelection(states: VisualAnchorSelectionState[], next: VisualAnchorSelectionState) {
+  return [...states.filter((item) => item.targetId !== next.targetId), next];
 }
 
 function buildCharacterBriefs(project: GenerationProject): CharacterAnchorBrief[] {
