@@ -8,7 +8,8 @@ import type {
   VersionedResource,
   VersionedResourceType
 } from "@/lib/schemas/project";
-import { currentMasterAssetId, getVisualAnchorReadiness } from "@/lib/visual/visualAnchors";
+import { currentMasterAssetId } from "@/lib/visual/visualAnchors";
+import { deriveVisualSetupStageState } from "@/lib/visual/visualSetupStage";
 
 export const STAGE_ORDER: StageId[] = [
   "brief",
@@ -124,14 +125,9 @@ export function canRunStage(stageStates: StageStates, stageId: StageId): { allow
 export function lockStageInProject(project: GenerationProject, stageId: StageId, now = Date.now()): GenerationProject {
   const normalized = ensureStageWorkflow(project, now);
   if (stageId === "anchors") {
-    const readiness = getVisualAnchorReadiness(normalized);
-    if (!readiness.ready) {
-      const missing = [
-        readiness.missingProductReason ? "产品基准" : "",
-        readiness.missingCharacterIds.length ? `${readiness.missingCharacterIds.length} 个人物基准` : "",
-        readiness.missingSceneIds.length ? `${readiness.missingSceneIds.length} 个场景基准` : ""
-      ].filter(Boolean).join("、");
-      throw new StageGateError("VISUAL_ANCHORS_INCOMPLETE", `视觉基准尚未全部确认：${missing || "仍有未锁定资源"}。`);
+    const visualSetup = deriveVisualSetupStageState(normalized);
+    if (!visualSetup.allItemsConfirmed) {
+      throw new StageGateError("VISUAL_ANCHORS_INCOMPLETE", visualSetup.blockers.map((item) => item.title).join("；") || "人物与场景确认失败，请重试。");
     }
   }
   const current = normalized.stageStates![stageId];

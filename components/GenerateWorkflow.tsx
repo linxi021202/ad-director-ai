@@ -33,6 +33,7 @@ import {
   type DependencyImpact
 } from "@/lib/workflow/stageGates";
 import { currentMasterAssetId, getVisualAnchorReadiness, getVisualAnchorResourceId, getVisualAnchorSelection } from "@/lib/visual/visualAnchors";
+import { deriveVisualSetupStageState, visualSetupStatusLabel } from "@/lib/visual/visualSetupStage";
 import {
   saveProjectBriefWithConflictRetry,
   type ProjectPatchData
@@ -1006,12 +1007,15 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setIsGenerating(true);
     setError(null);
     try {
-      const readiness = getVisualAnchorReadiness(activeProject);
-      if (!readiness.ready) throw new Error("请先分别确认产品、每位主角和每个场景，再继续制作分镜。");
-      await postWorkflowAction({ action: "lock-stage", stageId: "anchors" });
+      const visualSetup = deriveVisualSetupStageState(activeProject);
+      if (!visualSetup.allItemsConfirmed) throw new Error(visualSetup.blockers[0]?.title ?? "人物与场景确认失败，请重试。");
+      await postWorkflowAction({ action: "confirm-visual-setup" });
+      const snapshot = await fetchServerProject(activeProject.id);
+      applyProjectUpdate(snapshot);
+      selectStage("storyboard");
       await runStoryboardStage();
     } catch (stageError) {
-      setError(stageError instanceof Error ? stageError.message : "视觉设定确认失败。");
+      setError(stageError instanceof Error ? stageError.message : "人物与场景确认失败，请重试。");
     } finally {
       setIsGenerating(false);
     }
@@ -1123,7 +1127,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       ? { ...persistedStageStates, brief: { status: "running", updatedAt: Date.now() } }
       : persistedStageStates;
   const activeStageState = stageStates[activeStage];
-  const stageStatus = stageStatusLabel(activeStageState.status);
+  const visualSetupState = deriveVisualSetupStageState({ ...activeProject, stageStates });
+  const stageStatus = activeStage === "anchors" ? visualSetupStatusLabel(visualSetupState.status) : stageStatusLabel(activeStageState.status);
   const shotCountLocked = hasGeneratedStoryboard(activeProject);
   const creativeSet = activeProject.creativeWorkspace?.sets.find((set) => set.id === activeProject.creativeWorkspace?.currentSetId);
 
@@ -1137,7 +1142,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
           <Link href="/generate">工作台</Link><span>›</span><span>生成工作台</span><span>›</span><strong>{activeProject.brief.productName}</strong>
         </nav>
 
-        <StageDirectorRail activeStage={activeStage} states={stageStates} onSelect={selectStage} />
+        <StageDirectorRail project={activeProject} activeStage={activeStage} states={stageStates} onSelect={selectStage} />
 
         <section className="workbench-layout stage-gated-layout">
           <StageContextPanel project={previewProject} activeStage={activeStage} onSelect={selectStage} open={contextOpen} onClose={() => setContextOpen(false)} />
@@ -1148,7 +1153,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <div>
                 <div className="generation-title-row">
                   <h1>{activeStage === "anchors" ? "人物与场景" : STAGE_LABELS[activeStage]}</h1>
-                  <span className={activeStageState.status === "locked" || activeStageState.status === "ready" ? "is-success" : activeStageState.status === "blocked" ? "is-warning" : ""}><i />{stageStatus}</span>
+                  <span className={activeStageState.status === "locked" || activeStageState.status === "ready" || (activeStage === "anchors" && visualSetupState.status === "ready-to-complete") ? "is-success" : activeStageState.status === "blocked" ? "is-warning" : ""}><i />{stageStatus}</span>
                 </div>
                 <p className="stage-canvas-summary">{stageCanvasSummary(activeStage)}</p>
               </div>
@@ -1192,6 +1197,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               onSetCurrent={(kind, targetId, candidateId) => void setCurrentVisualAnchor(kind, targetId, candidateId)}
               onConfirmTarget={(kind, targetId) => void lockVisualMaster(kind, targetId)}
               onConfirmSelection={() => void confirmVisualSelection()}
+              onEnterStoryboard={() => selectStage("storyboard")}
             /> : null}
 
             {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}

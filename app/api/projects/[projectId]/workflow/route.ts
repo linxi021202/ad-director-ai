@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   calculateOwnedProjectDependencyImpact,
+  confirmOwnedVisualSetup,
   createOwnedProjectResourceVersion,
   lockOwnedProjectStage,
   requireOwnedAnonymousProject,
@@ -14,6 +15,10 @@ import { getAnonymousApiSession } from "@/lib/session/api";
 import { STAGE_RESOURCE } from "@/lib/workflow/stageGates";
 
 const workflowActionSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("confirm-visual-setup"),
+    expectedVersion: z.number().int().positive()
+  }).strict(),
   z.object({
     action: z.literal("lock-stage"),
     expectedVersion: z.number().int().positive(),
@@ -68,7 +73,9 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     await requireOwnedAnonymousProject(sessionResult.session.id, projectId);
     const body = workflowActionSchema.parse(await request.json());
-    const record = body.action === "lock-stage"
+    const record = body.action === "confirm-visual-setup"
+      ? await confirmOwnedVisualSetup(sessionResult.session.id, projectId, body.expectedVersion)
+      : body.action === "lock-stage"
       ? await lockOwnedProjectStage(sessionResult.session.id, projectId, body.stageId, body.expectedVersion)
       : body.action === "set-stage-status"
         ? await setOwnedProjectStageStatus(

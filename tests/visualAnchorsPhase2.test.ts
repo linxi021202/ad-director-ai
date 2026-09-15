@@ -1,6 +1,8 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import React, { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sessionMock = vi.hoisted(() => ({ id: "anchor-session-a" }));
@@ -10,8 +12,9 @@ vi.mock("../lib/session/api", () => ({
 }));
 
 import { GET as getVisualAnchors } from "../app/api/projects/[projectId]/visual-anchors/route";
+import { POST as updateWorkflow } from "../app/api/projects/[projectId]/workflow/route";
 import { buildProjectContinuity } from "../lib/continuity/projectContinuity";
-import { createAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
+import { createAnonymousProject, getOwnedAnonymousProject, mutateOwnedAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import type { GenerationProject, ProductVisualSpec, StoryboardShot, VisualAnchorCandidate } from "../lib/schemas/project";
 import { ensureStageWorkflow, lockStageInProject } from "../lib/workflow/stageGates";
@@ -19,13 +22,19 @@ import { buildCharacterCandidatePrompt, buildSceneCandidatePrompt } from "../lib
 import { fallbackCharacterDirections, fallbackSceneDirections } from "../lib/visual/candidateDirections";
 import {
   ensureVisualAnchorWorkspace,
+  getVisualAnchorSelection,
   getVisualAnchorReadiness,
   lockVisualAnchorMaster,
   replaceVisualAnchorCandidates,
   selectVisualAnchorCandidate
 } from "../lib/visual/visualAnchors";
+import { canEnterStoryboard, deriveVisualSetupStageState, getVisualSetupBlockers } from "../lib/visual/visualSetupStage";
+import { getActionBlockers } from "../lib/workflow/actionBlockers";
+import { StageContextPanel, StageDirectorRail, StageInspector } from "../components/StageDirectorRail";
+import { VisualAnchorsCanvas } from "../components/VisualAnchorsCanvas";
 
 const originalEnv = { ...process.env };
+(globalThis as typeof globalThis & { React: typeof React }).React = React;
 const productAssetId = "11111111-1111-4111-8111-111111111111";
 const characterAssetIds = [
   "22222222-2222-4222-8222-222222222221",
@@ -150,6 +159,106 @@ describe("Phase 2 visual anchors", () => {
     expect(lockStageInProject(project, "anchors").stageStates?.anchors.status).toBe("locked");
   });
 
+  it("derives in-progress until every required visual item is confirmed", () => {
+    let project = anchorProject();
+    expect(deriveVisualSetupStageState(project).status).toBe("in-progress");
+    project = lockVisualAnchorMaster(project, "product");
+    const characterId = project.characterVisualSpecs![0]!.id;
+    project = replaceVisualAnchorCandidates(project, "character", characterId, makeCandidates("character", characterId, characterAssetIds));
+    project = selectVisualAnchorCandidate(project, "character", characterId, project.visualAnchorWorkspace!.characterCandidates[0]!.id);
+    project = lockVisualAnchorMaster(project, "character", characterId);
+    const state = deriveVisualSetupStageState(project);
+    expect(state.status).toBe("in-progress");
+    expect(state.productConfirmed).toBe(true);
+    expect(state.characterConfirmed).toBe(true);
+    expect(state.scenesConfirmed).toBe(false);
+    expect(state.blockers.map((item) => item.key)).toEqual(["scene"]);
+  });
+
+  it("derives ready-to-complete with no blockers and exposes the final CTA consistently", () => {
+    const project = readyVisualSetupProject();
+    const state = deriveVisualSetupStageState(project);
+    expect(state.status).toBe("ready-to-complete");
+    expect(state.allItemsConfirmed).toBe(true);
+    expect(getVisualSetupBlockers(project)).toEqual([]);
+    expect(getActionBlockers(project, "CONFIRM_VISUAL_SETUP")).toEqual([]);
+    expect(canEnterStoryboard(project)).toBe(false);
+
+    const markup = renderVisualSetupFixture(project);
+    expect(markup).toContain("可以继续");
+    expect(markup).toContain("全部设置已准备完成，等待你确认并继续。");
+    expect(markup).toContain("视觉设定已准备完成");
+    expect(markup).toContain("确认人物与场景，继续制作分镜");
+    expect(markup).toContain("完成情况");
+    expect(markup).toContain("✓ 产品");
+    expect(markup).toContain("✓ 主角");
+    expect(markup).toContain("✓ 场景");
+  });
+
+  it("persists final visual setup confirmation and unlocks storyboard after refresh", async () => {
+    const created = await createAnonymousProject("anchor-session-a");
+    const seeded = await mutateOwnedAnonymousProject("anchor-session-a", created.id, () => persistentReadyVisualSetupProject(), created.version);
+    const response = await updateWorkflow(new Request(`http://localhost/api/projects/${created.id}/workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "confirm-visual-setup", expectedVersion: seeded.version })
+    }), { params: Promise.resolve({ projectId: created.id }) });
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { data: { project: GenerationProject } };
+    const confirmed = payload.data.project;
+    expect(deriveVisualSetupStageState(confirmed).status).toBe("completed");
+    expect(confirmed.stageStates?.anchors.status).toBe("locked");
+    expect(confirmed.stageStates?.storyboard.status).toBe("draft");
+    expect(canEnterStoryboard(confirmed)).toBe(true);
+    expect(confirmed.generationEvents?.at(-1)?.message).toBe("人物与场景设置已确认。");
+
+    resetAnonymousProjectQueuesForTests();
+    const restored = await getOwnedAnonymousProject("anchor-session-a", created.id);
+    expect(restored && deriveVisualSetupStageState(restored.project).status).toBe("completed");
+    expect(restored && canEnterStoryboard(restored.project)).toBe(true);
+    const markup = renderVisualSetupFixture(restored!.project);
+    expect(markup).toContain("人物与场景已完成");
+    expect(markup).toContain("进入分镜制作");
+    expect(markup).toContain("制作分镜");
+  });
+
+  it("rejects final visual setup confirmation when a required item is not confirmed", async () => {
+    const created = await createAnonymousProject("anchor-session-a");
+    const ready = persistentReadyVisualSetupProject();
+    const sceneId = ready.sceneVisualSpecs![0]!.id;
+    const confirmedCandidateId = getVisualAnchorSelection(ready, "scene", sceneId)!.confirmedCandidateId;
+    const alternative = ready.visualAnchorWorkspace!.sceneCandidates.find((item) => item.targetId === sceneId && item.id !== confirmedCandidateId)!;
+    const incomplete = selectVisualAnchorCandidate(ready, "scene", sceneId, alternative.id);
+    const seeded = await mutateOwnedAnonymousProject("anchor-session-a", created.id, () => incomplete, created.version);
+
+    const response = await updateWorkflow(new Request(`http://localhost/api/projects/${created.id}/workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "confirm-visual-setup", expectedVersion: seeded.version })
+    }), { params: Promise.resolve({ projectId: created.id }) });
+    const payload = await response.json() as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(400);
+    expect(payload.error.code).toBe("VISUAL_ANCHORS_INCOMPLETE");
+    expect(payload.error.message).toContain("还需要确认场景");
+  });
+
+  it("leaves completed state when a confirmed character selection changes", () => {
+    let project = lockStageInProject(readyVisualSetupProject(), "anchors");
+    const characterId = project.characterVisualSpecs![0]!.id;
+    const alternative = project.visualAnchorWorkspace!.characterCandidates.find((item) => item.targetId === characterId && item.id !== getVisualAnchorSelection(project, "character", characterId)?.confirmedCandidateId)!;
+    project = selectVisualAnchorCandidate(project, "character", characterId, alternative.id);
+    expect(deriveVisualSetupStageState(project).status).toBe("outdated");
+    expect(canEnterStoryboard(project)).toBe(false);
+  });
+
+  it("maps an old locked visual-anchor stage to completed", () => {
+    const current = lockStageInProject(readyVisualSetupProject(), "anchors");
+    const legacy = { ...current, visualAnchorWorkspace: undefined };
+    expect(deriveVisualSetupStageState(legacy).status).toBe("completed");
+    expect(deriveVisualSetupStageState(legacy).blockers).toEqual([]);
+  });
+
   it("builds candidate prompts that forbid multi-person sheets, scene panels and generated text", () => {
     const project = anchorProject();
     const characterPrompt = buildCharacterCandidatePrompt(project.visualAnchorWorkspace!.characterBriefs[0]!, fallbackCharacterDirections(project.visualAnchorWorkspace!.characterBriefs[0]!)[0]!);
@@ -221,6 +330,53 @@ function anchorProject(): GenerationProject {
     }
   });
   return ensureVisualAnchorWorkspace(project, "2026-09-10T00:00:00.000Z");
+}
+
+function readyVisualSetupProject(): GenerationProject {
+  let project = lockVisualAnchorMaster(anchorProject(), "product");
+  const characterId = project.characterVisualSpecs![0]!.id;
+  const sceneId = project.sceneVisualSpecs![0]!.id;
+  project = replaceVisualAnchorCandidates(project, "character", characterId, makeCandidates("character", characterId, characterAssetIds));
+  project = selectVisualAnchorCandidate(project, "character", characterId, project.visualAnchorWorkspace!.characterCandidates[0]!.id);
+  project = lockVisualAnchorMaster(project, "character", characterId);
+  project = replaceVisualAnchorCandidates(project, "scene", sceneId, makeCandidates("scene", sceneId, sceneAssetIds));
+  project = selectVisualAnchorCandidate(project, "scene", sceneId, project.visualAnchorWorkspace!.sceneCandidates[0]!.id);
+  return lockVisualAnchorMaster(project, "scene", sceneId);
+}
+
+function persistentReadyVisualSetupProject(): GenerationProject {
+  const project = readyVisualSetupProject();
+  const thirdShot = { ...project.shots[1]!, id: "shot-day-followup", index: 3, durationSec: 4 };
+  return {
+    ...project,
+    planningConstraints: { shotCount: 3, targetDurationSec: 12, aspectRatio: project.brief.aspectRatio, platform: project.brief.platform },
+    shotCount: 3,
+    targetDurationSec: 12,
+    durationSec: 12,
+    brief: { ...project.brief, durationSec: 12 },
+    shots: [...project.shots, thirdShot]
+  };
+}
+
+function renderVisualSetupFixture(project: GenerationProject) {
+  const noop = () => undefined;
+  return renderToStaticMarkup(createElement("div", null,
+    createElement(StageDirectorRail, { project, activeStage: "anchors", states: project.stageStates!, onSelect: noop }),
+    createElement(StageContextPanel, { project, activeStage: "anchors", onSelect: noop }),
+    createElement(VisualAnchorsCanvas, {
+      project,
+      busyTarget: null,
+      onInitialize: noop,
+      onGenerateAll: noop,
+      onConfirmProduct: noop,
+      onGenerateCandidates: noop,
+      onSetCurrent: noop,
+      onConfirmTarget: noop,
+      onConfirmSelection: noop,
+      onEnterStoryboard: noop
+    }),
+    createElement(StageInspector, { project, activeStage: "anchors", state: project.stageStates!.anchors, busy: false, onLock: noop, onOpenModels: noop, canConfirm: false })
+  ));
 }
 
 function sceneShot(id: string, index: number, visualDescription: string): StoryboardShot {

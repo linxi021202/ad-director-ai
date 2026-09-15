@@ -48,6 +48,7 @@ import {
 } from "@/lib/schemas/project";
 import { assertStoryboardMatchesPlanning, planningConstraintsFromBrief, resolveProjectPlanningConstraints } from "@/lib/projects/planningConstraints";
 import { ensureVisualAnchorWorkspace } from "@/lib/visual/visualAnchors";
+import { deriveVisualSetupStageState } from "@/lib/visual/visualSetupStage";
 import { normalizeProductAssetState } from "@/lib/productImages";
 import {
   STAGE_LABELS,
@@ -686,6 +687,36 @@ export function lockOwnedProjectStage(
       stage: stageId,
       action: "锁定阶段",
       message: `${STAGE_LABELS[stageId]}已由用户锁定。`
+    });
+  }, expectedVersion);
+}
+
+export function confirmOwnedVisualSetup(
+  sessionId: string,
+  projectId: string,
+  expectedVersion?: number
+): Promise<AnonymousProjectRecord> {
+  return mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
+    const visualSetup = deriveVisualSetupStageState(project);
+    if (!visualSetup.allItemsConfirmed) {
+      throw new StageGateError(
+        "VISUAL_ANCHORS_INCOMPLETE",
+        visualSetup.blockers.map((item) => item.title).join("；") || "人物与场景确认失败，请重试。"
+      );
+    }
+    if (visualSetup.status === "completed") return project;
+    const normalized = ensureStageWorkflow(project);
+    const readyProject: GenerationProject = {
+      ...normalized,
+      stageStates: {
+        ...normalized.stageStates!,
+        anchors: { status: "ready", updatedAt: Date.now() }
+      }
+    };
+    return appendSystemEvent(lockStageInProject(readyProject, "anchors"), {
+      stage: "anchors",
+      action: "确认人物与场景",
+      message: "人物与场景设置已确认。"
     });
   }, expectedVersion);
 }
