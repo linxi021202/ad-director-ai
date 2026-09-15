@@ -2,7 +2,6 @@ import type {
   CharacterAnchorBrief,
   CharacterVisualSpec,
   GenerationProject,
-  ProductImage,
   SceneAnchorState,
   SceneLayout,
   SceneVisualSpec,
@@ -12,6 +11,7 @@ import type {
   VisualAnchorSelectionState,
   VisualAnchorWorkspace
 } from "@/lib/schemas/project";
+import { getProjectProductAssets } from "@/lib/productImages";
 
 export type VisualAnchorReadiness = {
   ready: boolean;
@@ -45,9 +45,9 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
     return { ...shot, sceneId, sceneGroupId: sceneId, sceneStateId: remapSceneStateId(shot.sceneStateId, sceneId) };
   });
   const usedCharacterIds = new Set(normalizedShots.flatMap((shot) => shot.characterIds ?? []));
-  const mainProduct = selectMainProduct(project.brief.productImages);
-  const referenceAssetIds = (project.brief.productImages ?? [])
-    .filter((image) => image.role === "reference" && image.assetId)
+  const mainProduct = getProjectProductAssets(project).primaryAsset;
+  const referenceAssetIds = getProjectProductAssets(project).assets
+    .filter((image) => image.assetId && image.assetId !== mainProduct?.assetId)
     .map((image) => image.assetId!)
     .slice(0, 2);
   const stageWasLocked = project.stageStates?.anchors.status === "locked";
@@ -60,6 +60,7 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
     locked: Boolean(
       mainProduct?.assetId
       && (previous?.productMaster.locked || stageWasLocked)
+      && (!previous?.productMaster.assetId || previous.productMaster.assetId === mainProduct.assetId)
     ),
     ...((previous?.productMaster.lockedAt || stageWasLocked) ? { lockedAt: previous?.productMaster.lockedAt ?? now } : {})
   };
@@ -87,8 +88,12 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
 
 export function getVisualAnchorReadiness(project: GenerationProject): VisualAnchorReadiness {
   const workspace = project.visualAnchorWorkspace;
-  const mainProduct = selectMainProduct(project.brief.productImages);
-  const productLocked = Boolean(workspace?.productMaster.locked && mainProduct?.assetId);
+  const mainProduct = getProjectProductAssets(project).primaryAsset;
+  const productLocked = Boolean(
+    workspace?.productMaster.locked
+    && mainProduct?.assetId
+    && workspace.productMaster.assetId === mainProduct.assetId
+  );
   const requiredCharacterIds = workspace?.requiredCharacterIds ?? project.characterVisualSpecs?.map((item) => item.id) ?? [];
   const requiredSceneIds = workspace?.requiredSceneIds ?? project.sceneVisualSpecs?.map((item) => item.id) ?? [];
   const lockedCharacters = new Set((project.characterVisualSpecs ?? []).filter((item) => {
@@ -185,7 +190,7 @@ export function lockVisualAnchorMaster(
   const normalized = ensureVisualAnchorWorkspace(project, now);
   const workspace = normalized.visualAnchorWorkspace!;
   if (kind === "product") {
-    const mainProduct = selectMainProduct(normalized.brief.productImages);
+    const mainProduct = getProjectProductAssets(normalized).primaryAsset;
     if (!mainProduct?.assetId) throw new Error("PRODUCT_REFERENCE_REQUIRED");
     return applyVisualAnchorReadiness({
       ...normalized,
@@ -491,9 +496,6 @@ function remapSceneStateId(stateId: string | undefined, sceneId: string) {
   return sceneId;
 }
 
-function selectMainProduct(images?: ProductImage[]) {
-  return images?.find((image) => image.role === "main-product") ?? images?.find((image) => image.role !== "logo");
-}
 
 function resourceVersion(project: GenerationProject, resourceId: string) {
   return Math.max(0, ...(project.resourceVersions ?? []).filter((item) => item.resourceId === resourceId && item.status === "current").map((item) => item.version));

@@ -6,6 +6,7 @@ import type { GenerationProject, VisualAnchorCandidate, VisualAnchorCandidateKin
 import { getVisualAnchorReadiness, getVisualAnchorSelection } from "@/lib/visual/visualAnchors";
 import { getActionBlockers } from "@/lib/workflow/actionBlockers";
 import { GuardedActionButton } from "@/components/workflow/GuardedActionButton";
+import { getProjectProductAssets } from "@/lib/productImages";
 
 type Props = {
   project: GenerationProject;
@@ -22,8 +23,8 @@ type Props = {
 export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGenerateAll, onConfirmProduct, onGenerateCandidates, onSetCurrent, onConfirmTarget, onConfirmSelection }: Props) {
   const workspace = project.visualAnchorWorkspace;
   const readiness = getVisualAnchorReadiness(project);
-  const mainProduct = project.brief.productImages?.find((image) => image.role === "main-product")
-    ?? project.brief.productImages?.find((image) => image.role !== "logo");
+  const productAssets = getProjectProductAssets(project);
+  const mainProduct = productAssets.primaryAsset;
   const characters = (project.characterVisualSpecs ?? []).filter((item) => workspace?.requiredCharacterIds.includes(item.id));
   const scenes = (project.sceneVisualSpecs ?? []).filter((item) => workspace?.requiredSceneIds.includes(item.id));
   const hasCandidates = characters.every((spec) => activeCandidates(workspace?.characterCandidates, spec.id).length > 0)
@@ -44,7 +45,7 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
         <div className="anchor-product-layout">
           <div className="anchor-product-media">
             {mainProduct?.assetId ? <AdaptiveMediaFrame aspectRatio="1:1" stage="product" src={assetUrl(project.id, mainProduct.assetId)} mediaType="image" fit="contain" showBlurredBackdrop={false} alt={mainProduct.name} />
-              : <div className="anchor-media-empty"><strong>还没有主产品图</strong><span>请先回到商品信息上传真实图片。</span></div>}
+              : <div className="anchor-media-empty"><strong>还没有产品图片</strong><span>请先添加至少 1 张真实产品图片。</span><Link href={`/generate?projectId=${encodeURIComponent(project.id)}&stage=brief#product-assets-title`}>添加产品图片</Link></div>}
           </div>
           <div className="anchor-product-spec">
             <strong>{mainProduct?.assetId ? "已使用你上传的真实产品图" : "请上传真实产品图"}</strong>

@@ -15,7 +15,7 @@ import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { UsageGuideSheet } from "@/components/workspace/UsageGuideSheet";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ProductImageUploader } from "@/components/ProductImageUploader";
-import { buildProductAssetCollection } from "@/lib/productImages";
+import { buildProductAssetCollection, getProjectProductAssets, normalizeProductAssetState } from "@/lib/productImages";
 import { StageContextPanel, StageDirectorRail, StageInspector, stageStatusLabel } from "@/components/StageDirectorRail";
 import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
@@ -226,6 +226,22 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }), [activeProject, briefDraft.brief.aspectRatio]);
 
   useEffect(() => {
+    const revealKey = "ad-director-workspace-reveal";
+    const shouldReveal = document.documentElement.dataset.workspaceReveal === "pending"
+      || window.sessionStorage.getItem(revealKey) === "pending";
+    if (!shouldReveal) return;
+    document.documentElement.dataset.workspaceReveal = "active";
+    window.sessionStorage.removeItem(revealKey);
+    const timer = window.setTimeout(() => {
+      delete document.documentElement.dataset.workspaceReveal;
+    }, 380);
+    return () => {
+      window.clearTimeout(timer);
+      delete document.documentElement.dataset.workspaceReveal;
+    };
+  }, []);
+
+  useEffect(() => {
     const key = "ad-director-usage-guide-seen-v1";
     if (window.localStorage.getItem(key)) return;
     window.localStorage.setItem(key, "1");
@@ -235,6 +251,30 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
   function trackServerVersion(version: number) {
     activeVersionRef.current = Math.max(activeVersionRef.current, version);
+  }
+
+  async function refreshProductStateAfterUpload(version: number) {
+    trackServerVersion(version);
+    try {
+      const snapshot = await fetchServerProject(activeProject.id);
+      const serverBrief = normalizeProductAssetState(snapshot.project.brief);
+      const serverAssets = getProjectProductAssets(serverBrief);
+      trackServerVersion(snapshot.version);
+      setActiveProject((current) => current.id === snapshot.project.id
+        ? normalizeProjectDuration({ ...snapshot.project, brief: serverBrief })
+        : current);
+      setBriefDraft((current) => ({
+        ...current,
+        brief: {
+          ...current.brief,
+          productImages: serverBrief.productImages,
+          productAssetIds: serverAssets.assetIds,
+          ...(serverAssets.primaryAssetId ? { primaryProductAssetId: serverAssets.primaryAssetId } : {})
+        }
+      }));
+    } catch {
+      setError("产品图片已保存，但服务器状态刷新失败，请稍后重试。");
+    }
   }
 
   function applyWorkflowState(next: WorkflowStepState) {
@@ -737,6 +777,11 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setContextOpen(false);
     setInspectorOpen(false);
     router.replace(stageUrl(activeProject.id, stageId), { scroll: false });
+    if (stageId === "anchors") {
+      void fetchServerProject(activeProject.id).then((snapshot) => applyProjectUpdate(snapshot)).catch(() => {
+        setError("人物与场景页面刷新失败，请稍后重试。");
+      });
+    }
   }
 
   function applyProjectUpdate(saved: ProjectPatchData) {
@@ -1128,7 +1173,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
                 onTargetDurationChange={updateTargetDuration}
                 onRequestShotCountChange={requestGeneratedShotCountChange}
               />
-              <ProductImageUploader projectId={activeProject.id} images={briefDraft.brief.productImages ?? []} disabled={isGenerating} onChange={(images) => updateBrief({ productImages: images, ...buildProductAssetCollection(images) })} onPersistedVersion={trackServerVersion} />
+              <ProductImageUploader projectId={activeProject.id} images={briefDraft.brief.productImages ?? []} disabled={isGenerating} onChange={(images) => updateBrief({ productImages: images, ...buildProductAssetCollection(images) })} onPersistedVersion={(version) => void refreshProductStateAfterUpload(version)} />
               <footer className="stage-brief-savebar">
                 <div><span className={`brief-save-state is-${briefSaveStatus}`}>{briefSaveStatusLabel(briefSaveStatus, activeProject.briefSavedAt)}</span>{briefNotice ? <small>{briefNotice}</small> : null}</div>
                 <button type="button" className="button-primary-v3" onClick={() => void saveBriefAndGenerateCreative()} disabled={briefSaveStatus === "saving" || isGenerating}>{isGenerating || briefSaveStatus === "saving" ? "处理中…" : briefSaveStatus === "saved" ? "生成创意方向" : "保存并生成创意"}</button>

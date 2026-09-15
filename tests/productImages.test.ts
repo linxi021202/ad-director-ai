@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildProductAssetCollection,
   createProductImageMetadata,
+  getProjectProductAssets,
+  normalizeProductAssetState,
   releaseOwnedProductImageUrl,
   removeProductImage,
   resolveProductImageUrl,
@@ -150,6 +153,45 @@ describe("product image input support", () => {
     ];
 
     expect(selectPrimaryProductImage(images)?.id).toBe("main");
+  });
+
+  it("canonicalizes one uploaded product across all product asset fields", () => {
+    const assetId = "10000000-0000-4000-8000-000000000001";
+    const image = {
+      ...createProductImageMetadata({ name: "one.png", type: "image/png", size: 1000 }, "/api/assets/one", "reference", "one"),
+      assetId
+    };
+    const brief = normalizeProductAssetState({ ...coldBrewDemo.brief, productImages: [image] });
+
+    expect(brief.productAssetIds).toEqual([assetId]);
+    expect(brief.primaryProductAssetId).toBe(assetId);
+    expect(brief.productImages?.[0]?.role).toBe("main-product");
+    expect(getProjectProductAssets(brief).primaryAsset?.id).toBe("one");
+  });
+
+  it("keeps A, B and C ordered while every stage resolves B as the primary product", () => {
+    const assetIds = [
+      "20000000-0000-4000-8000-000000000001",
+      "20000000-0000-4000-8000-000000000002",
+      "20000000-0000-4000-8000-000000000003"
+    ];
+    const images = assetIds.map((assetId, index) => ({
+      ...createProductImageMetadata({ name: `${index}.png`, type: "image/png", size: 1000 }, `/api/assets/${index}`, index === 1 ? "main-product" as const : "reference" as const, `image-${index}`),
+      assetId
+    }));
+    const collection = buildProductAssetCollection(images);
+    const brief = normalizeProductAssetState({
+      ...coldBrewDemo.brief,
+      productImages: images,
+      productAssetIds: ["30000000-0000-4000-8000-000000000099", ...assetIds],
+      primaryProductAssetId: collection.primaryProductAssetId
+    });
+    const selection = getProjectProductAssets(brief);
+
+    expect(selection.assetIds).toEqual(assetIds);
+    expect(selection.primaryAssetId).toBe(assetIds[1]);
+    expect(selection.primaryAsset?.id).toBe("image-1");
+    expect(brief.productImages?.filter((image) => image.role === "main-product")).toHaveLength(1);
   });
 
   it("builds a multimodal Qwen request with the real product reference before the shot prompt", () => {

@@ -1,5 +1,6 @@
 import type { GenerationProject } from "../schemas/project";
 import { getVisualAnchorReadiness } from "../visual/visualAnchors";
+import { getProjectProductAssets } from "../productImages";
 
 export type WorkflowAction =
   | "CONFIRM_PRODUCT" | "GENERATE_CHARACTER" | "CONFIRM_CHARACTER" | "GENERATE_SCENE" | "CONFIRM_SCENE"
@@ -10,7 +11,7 @@ export type ActionBlocker = { title: string; description: string; targetAction?:
 
 export function getActionBlockers(project: GenerationProject, action: WorkflowAction): ActionBlocker[] {
   const projectHref = `/generate?projectId=${encodeURIComponent(project.id)}`;
-  const productExists = Boolean(project.brief.productImages?.some((image) => image.role !== "logo" && image.assetId));
+  const productExists = getProjectProductAssets(project).assetIds.length > 0;
   const readiness = getVisualAnchorReadiness(project);
   const blockers: ActionBlocker[] = [];
 

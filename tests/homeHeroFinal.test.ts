@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const page = readFileSync("app/page.tsx", "utf8");
+const transition = readFileSync("components/ParticleTransitionOverlay.tsx", "utf8");
+const workspace = readFileSync("components/GenerateWorkflow.tsx", "utf8");
+const workspaceStyles = readFileSync("app/workspace-v3.css", "utf8");
 const styles = readFileSync("app/home-final.css", "utf8");
 const layout = readFileSync("app/layout.tsx", "utf8");
 const backdrop = readFileSync("components/SiteVideoBackdrop.tsx", "utf8");
@@ -30,15 +33,23 @@ describe("homepage final hero", () => {
     expect(styles).toContain("@media (max-width: 767px)");
     expect(styles).toContain("prefers-reduced-motion: reduce");
     expect(styles).toContain("min-height: 100dvh");
-    expect(page).toContain("home-route-transition");
-    expect(page).toContain("transitionParticles.map");
-    expect(page).toContain("Array.from({ length: 64 }");
-    expect(page).toContain("1080");
-    expect(page).toContain("1500");
+    expect(page).toContain("ParticleTransitionOverlay");
+    expect(page).not.toContain("transitionParticles.map");
+    expect(transition).toContain("Math.min(900, Math.max(500");
+    expect(transition).toContain("Math.min(350, Math.max(180");
+    expect(transition).toContain("Math.min(window.devicePixelRatio || 1, 2)");
+    expect(transition).toContain("particle.depth");
+    expect(transition).toContain("window.cancelAnimationFrame(frame)");
+    expect(transition).toContain('window.removeEventListener("resize", resize)');
+    expect(page).toContain("1180");
+    expect(page).toContain("1600");
     expect(page).toContain("router.prefetch");
-    expect(styles).toContain("home-particle-collapse");
+    expect(page).toContain("ad-director-workspace-reveal");
+    expect(workspace).toContain("ad-director-workspace-reveal");
+    expect(workspaceStyles).toContain("workspace-route-reveal 320ms");
     expect(styles).toContain("1100ms");
     expect(styles).toContain("home-transition-bloom");
+    expect(styles).toContain("home-route-transition__ring--middle");
   });
 
   it("explains the staged generation flow on the homepage", () => {

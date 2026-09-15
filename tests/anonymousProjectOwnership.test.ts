@@ -30,6 +30,7 @@ import {
   createAnonymousProject,
   createColdBrewDemoForSession,
   getOwnedAnonymousProject,
+  mutateOwnedAnonymousProject,
   resetAnonymousProjectQueuesForTests,
   resolveProjectJsonPath,
   saveOwnedProjectBrief,
@@ -37,6 +38,7 @@ import {
   updateOwnedShotDurations
 } from "../lib/projects/anonymousProjectStore";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
+import { ensureVisualAnchorWorkspace, getVisualAnchorReadiness, lockVisualAnchorMaster } from "../lib/visual/visualAnchors";
 
 let storageRoot = "";
 const originalEnv = { ...process.env };
@@ -325,6 +327,46 @@ describe("anonymous project ownership and persistence", () => {
       localUrl: `/api/projects/${created.id}/assets/${assetId}`
     });
     expect(saved.project.brief.productImages?.[0]?.previewUrl).toBeUndefined();
+  });
+
+  it("preserves three product assets, the selected primary and its lock through creative mutations", async () => {
+    const created = await createAnonymousProject("session-a");
+    const assetIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const productImages = assetIds.map((assetId, index) => ({
+      id: `product-${index}`,
+      assetId,
+      name: `product-${index}.png`,
+      type: "image/png" as const,
+      size: 1024,
+      localUrl: `/api/projects/${created.id}/assets/${assetId}`,
+      role: index === 1 ? "main-product" as const : "reference" as const
+    }));
+    const uploaded = await updateOwnedAnonymousProject("session-a", created.id, {
+      brief: {
+        ...created.project.brief,
+        productImages,
+        productAssetIds: assetIds,
+        primaryProductAssetId: assetIds[1]
+      }
+    }, created.version);
+    const locked = await mutateOwnedAnonymousProject("session-a", created.id, (latest) => (
+      lockVisualAnchorMaster(ensureVisualAnchorWorkspace(latest), "product")
+    ), uploaded.version);
+
+    const afterCreative = await mutateOwnedAnonymousProject("session-a", created.id, (latest) => ({
+      ...latest,
+      status: "ready",
+      stageStates: {
+        ...latest.stageStates!,
+        creative: { status: "ready", updatedAt: Date.now() }
+      }
+    }), locked.version);
+
+    expect(afterCreative.project.brief.productImages?.map((image) => image.assetId)).toEqual(assetIds);
+    expect(afterCreative.project.brief.productAssetIds).toEqual(assetIds);
+    expect(afterCreative.project.brief.primaryProductAssetId).toBe(assetIds[1]);
+    expect(afterCreative.project.visualAnchorWorkspace?.productMaster.assetId).toBe(assetIds[1]);
+    expect(getVisualAnchorReadiness(afterCreative.project).productLocked).toBe(true);
   });
 
   it("rejects invalid, foreign and stale duration updates", async () => {

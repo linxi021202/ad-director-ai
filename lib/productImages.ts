@@ -1,4 +1,4 @@
-import type { ProductImage, ProductImageRole } from "./schemas/project";
+import type { GenerationProject, ProductBrief, ProductImage, ProductImageRole } from "./schemas/project";
 
 export const MAX_PRODUCT_IMAGES = 3;
 export const MAX_PRODUCT_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
@@ -69,12 +69,59 @@ export function buildProductAssetCollection(images: ProductImage[]): {
   primaryProductAssetId?: string;
   productAssetIds: string[];
 } {
-  const productImages = images.filter((image) => image.role !== "logo" && image.assetId);
-  const primaryProductAssetId = productImages.find((image) => image.role === "main-product")?.assetId;
+  const selection = getProjectProductAssets({ productImages: images });
   return {
-    ...(primaryProductAssetId ? { primaryProductAssetId } : {}),
-    productAssetIds: productImages.flatMap((image) => image.assetId ? [image.assetId] : []).slice(0, MAX_PRODUCT_IMAGES)
+    ...(selection.primaryAssetId ? { primaryProductAssetId: selection.primaryAssetId } : {}),
+    productAssetIds: selection.assetIds
   };
+}
+
+type ProductAssetSource = GenerationProject | Pick<ProductBrief, "productImages" | "primaryProductAssetId" | "productAssetIds">;
+
+export function getProjectProductAssets(source: ProductAssetSource) {
+  const brief = "brief" in source ? source.brief : source;
+  const assets = (brief.productImages ?? []).filter((image) => image.role !== "logo").slice(0, MAX_PRODUCT_IMAGES);
+  const candidateAssetIds = uniqueAssetIds([
+    ...(brief.productAssetIds ?? []),
+    ...assets.flatMap((image) => image.assetId ? [image.assetId] : [])
+  ]);
+  const assetIds = candidateAssetIds.filter((assetId) => assets.some((image) => image.assetId === assetId));
+  const primaryAssetId = [
+    brief.primaryProductAssetId,
+    assets.find((image) => image.role === "main-product")?.assetId,
+    assetIds[0]
+  ].find((assetId) => assetId && assets.some((image) => image.assetId === assetId));
+  const primaryAsset = assets.find((image) => image.assetId === primaryAssetId)
+    ?? assets.find((image) => image.role === "main-product")
+    ?? assets[0];
+  return { assets, assetIds, primaryAssetId: primaryAsset?.assetId, primaryAsset };
+}
+
+export function normalizeProductAssetState(
+  brief: ProductBrief,
+  fallbackPrimaryAssetId?: string
+): ProductBrief {
+  const initial = getProjectProductAssets(brief);
+  const primaryAssetId = [brief.primaryProductAssetId, fallbackPrimaryAssetId, initial.primaryAssetId, initial.assetIds[0]]
+    .find((assetId) => assetId && initial.assets.some((image) => image.assetId === assetId));
+  const productImages = (brief.productImages ?? []).map((image) => image.role === "logo" ? image : {
+    ...image,
+    role: image.assetId === primaryAssetId || (!primaryAssetId && image === initial.assets[0])
+      ? "main-product" as const
+      : "reference" as const
+  });
+  const assetIds = uniqueAssetIds(productImages.flatMap((image) => image.role !== "logo" && image.assetId ? [image.assetId] : []));
+  const { primaryProductAssetId: _oldPrimary, productAssetIds: _oldIds, ...rest } = brief;
+  return {
+    ...rest,
+    productImages,
+    productAssetIds: assetIds,
+    ...(primaryAssetId ? { primaryProductAssetId: primaryAssetId } : {})
+  };
+}
+
+function uniqueAssetIds(ids: string[]) {
+  return Array.from(new Set(ids)).slice(0, MAX_PRODUCT_IMAGES);
 }
 
 export async function detectLikelyMultiViewProductImage(file: File): Promise<boolean> {

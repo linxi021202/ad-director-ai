@@ -48,6 +48,7 @@ import {
 } from "@/lib/schemas/project";
 import { assertStoryboardMatchesPlanning, planningConstraintsFromBrief, resolveProjectPlanningConstraints } from "@/lib/projects/planningConstraints";
 import { ensureVisualAnchorWorkspace } from "@/lib/visual/visualAnchors";
+import { normalizeProductAssetState } from "@/lib/productImages";
 import {
   STAGE_LABELS,
   STAGE_RESOURCE,
@@ -391,9 +392,13 @@ export async function saveOwnedProjectBrief(
             previewUrl: undefined
           };
         });
+    const normalizedBrief = normalizeProductAssetState(
+      { ...input.brief, durationSec: targetDurationSec, productImages: incomingProductImages },
+      project.brief.primaryProductAssetId
+    );
     let next: GenerationProject = {
       ...normalized,
-      brief: { ...input.brief, durationSec: targetDurationSec, productImages: incomingProductImages },
+      brief: normalizedBrief,
       planningConstraints: planningConstraintsFromBrief(input.brief, input.shotCount, targetDurationSec),
       shotCount: input.shotCount,
       targetDurationSec,
@@ -473,12 +478,16 @@ export async function mutateOwnedAnonymousProject(
     }
     const now = Date.now();
     const mutated = mutate(clone(current.project));
-    const nextProject = sanitizeProjectForStorage(normalizeProjectTimeline(generationProjectSchema.parse({
+    const parsedProject = generationProjectSchema.parse({
       ...mutated,
       id: current.id,
       createdAt: current.project.createdAt,
       updatedAt: new Date(now).toISOString()
-    })));
+    });
+    const nextProject = sanitizeProjectForStorage(normalizeProjectTimeline({
+      ...parsedProject,
+      brief: normalizeProductAssetState(parsedProject.brief)
+    }));
     const nextRecord = anonymousProjectRecordSchema.parse({
       ...current,
       updatedAt: now,

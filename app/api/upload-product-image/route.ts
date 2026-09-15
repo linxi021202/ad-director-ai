@@ -10,6 +10,7 @@ import { mutateOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStor
 import { productImageRoleSchema } from "@/lib/schemas/project";
 import { getAnonymousApiSession } from "@/lib/session/api";
 import { extractProductVisualSpec } from "@/lib/visual/productVisualSpec";
+import { getProjectProductAssets, normalizeProductAssetState } from "@/lib/productImages";
 
 export async function POST(request: Request) {
   const sessionResult = await getAnonymousApiSession();
@@ -62,12 +63,14 @@ export async function POST(request: Request) {
         const retained = currentImages.filter((image) => image.id !== clientImageId);
         if (retained.length >= 3) throw new Error("PRODUCT_IMAGE_LIMIT_REACHED");
         replacedAssetId = previous?.assetId;
+        const brief = normalizeProductAssetState({
+          ...project.brief,
+          productImages: [...retained, nextImage],
+          ...(role === "main-product" ? { primaryProductAssetId: asset.id } : {})
+        }, project.brief.primaryProductAssetId);
         return {
           ...project,
-          brief: {
-            ...project.brief,
-            productImages: [...retained, nextImage]
-          }
+          brief
         };
       });
     } catch (error) {
@@ -97,6 +100,7 @@ export async function POST(request: Request) {
       }
     }
 
+    const productAssets = getProjectProductAssets(updated.project);
     return response(true, {
       assetId: asset.id,
       localUrl,
@@ -105,6 +109,9 @@ export async function POST(request: Request) {
       height: inspected.height,
       mimeType: inspected.mimeType,
       sizeBytes: asset.sizeBytes,
+      productImages: updated.project.brief.productImages ?? [],
+      productAssetIds: productAssets.assetIds,
+      primaryProductAssetId: productAssets.primaryAssetId,
       visualSpecStatus,
       ...(visualSpecError ? { visualSpecError } : {})
     }, null, 201);

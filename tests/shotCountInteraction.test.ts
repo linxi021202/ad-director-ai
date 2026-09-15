@@ -23,7 +23,8 @@ describe("generate workflow shot count interaction", () => {
     expect(workflow).toContain('setBriefSaveStatus("dirty")');
     expect(workflow).toContain("saveProjectBriefWithConflictRetry(activeProject.id, activeVersionRef.current, briefDraft)");
     expect(workflow).toContain("await projectWriteQueueRef.current");
-    expect(workflow).toContain("onPersistedVersion={trackServerVersion}");
+    expect(workflow).toContain("onPersistedVersion={(version) => void refreshProductStateAfterUpload(version)}");
+    expect(workflow).toContain("const snapshot = await fetchServerProject(activeProject.id)");
     expect(workflow).toContain("projectWriteQueueRef.current = operation.then");
     expect(workflow).not.toContain("setWorkflowSteps((current)");
     expect(workflow).toContain("保存广告需求");

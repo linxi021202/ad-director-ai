@@ -2,29 +2,28 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { CSSProperties, MouseEvent } from "react";
-import { useState } from "react";
+import type { MouseEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ModelSettingsSheet } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
+import { ParticleTransitionOverlay } from "@/components/ParticleTransitionOverlay";
 import "./home-final.css";
 import "./home-api-settings.css";
-
-const transitionParticles = Array.from({ length: 64 }, (_, index) => ({
-  angle: `${index * 137.5}deg`,
-  distance: `${30 + (index % 9) * 4.5}vmax`,
-  delay: `${(index % 12) * 42}ms`,
-  size: `${2 + (index % 3)}px`
-}));
 
 export default function HomePage() {
   const router = useRouter();
   const [isNavigating, setIsNavigating] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const navigationTimersRef = useRef<number[]>([]);
   const workspaceTarget = "/generate";
   const { status: modelStatus, setStatus: setModelStatus } = useModelSettingsStatus();
+
+  useEffect(() => () => {
+    navigationTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+  }, []);
 
   const handleTransition = (target: string) => (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -33,16 +32,18 @@ export default function HomePage() {
     setMenuOpen(false);
     setIsNavigating(true);
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.setTimeout(() => router.push(target), reducedMotion ? 300 : 1080);
-    window.setTimeout(() => {
+    document.documentElement.dataset.workspaceReveal = "pending";
+    window.sessionStorage.setItem("ad-director-workspace-reveal", "pending");
+    navigationTimersRef.current.push(window.setTimeout(() => router.push(target), reducedMotion ? 340 : 1180));
+    navigationTimersRef.current.push(window.setTimeout(() => {
       if (window.location.pathname !== target) window.location.assign(target);
-    }, 1500);
+    }, 1600));
   };
 
   const exitClass = isNavigating ? "home-is-exiting" : "";
 
   return (
-    <main className="home-final">
+    <main className={`home-final${isNavigating ? " is-transitioning" : ""}`}>
       <header className={`home-header ${exitClass}`}>
         <div className="home-header-inner">
           <Link href="/" className="home-brand" aria-label="AdDirector AI 首页">
@@ -100,25 +101,7 @@ export default function HomePage() {
         </div>
       </section>
       <section className="home-process" aria-label="制作流程"><div><h2>制作流程</h2><ol>{["添加产品图片", "选择创意方向", "确认人物与场景", "制作分镜与视频"].map((step, index) => <li key={step}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong></li>)}</ol></div></section>
-      <div className={`home-route-transition${isNavigating ? " is-active" : ""}`} aria-hidden="true">
-        <div className="home-route-transition__vortex" />
-        <div className="home-route-transition__glow" />
-        <div className="home-route-transition__ring home-route-transition__ring--outer" />
-        <div className="home-route-transition__ring home-route-transition__ring--inner" />
-        <div className="home-route-transition__core" />
-        <div className="home-route-transition__bloom" />
-        {transitionParticles.map((particle, index) => (
-          <i
-            key={index}
-            style={{
-              "--particle-angle": particle.angle,
-              "--particle-distance": particle.distance,
-              "--particle-delay": particle.delay,
-              "--particle-size": particle.size
-            } as CSSProperties}
-          />
-        ))}
-      </div>
+      <ParticleTransitionOverlay active={isNavigating} />
       <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} />
     </main>
   );
