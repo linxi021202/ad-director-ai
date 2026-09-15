@@ -52,7 +52,7 @@ export function ParticleTransitionOverlay({ active }: { active: boolean }) {
 
     const draw = (now: number) => {
       const elapsed = now - startedAt;
-      const progress = Math.min(1, elapsed / 1250);
+      const progress = Math.min(1, elapsed / 1080);
       const dt = Math.min(32, now - previousAt) / 16.667;
       previousAt = now;
       const centerX = width / 2;
@@ -88,6 +88,7 @@ export function ParticleTransitionOverlay({ active }: { active: boolean }) {
         particle.previousX = x;
         particle.previousY = y;
       }
+      drawEnergyCore(context, centerX, centerY, progress, width);
       context.globalCompositeOperation = "source-over";
       if (progress < 1) frame = window.requestAnimationFrame(draw);
     };
@@ -110,8 +111,9 @@ export function ParticleTransitionOverlay({ active }: { active: boolean }) {
       <div className="home-route-transition__glow" />
       <div className="home-route-transition__ring home-route-transition__ring--outer" />
       <div className="home-route-transition__ring home-route-transition__ring--middle" />
-      <div className="home-route-transition__ring home-route-transition__ring--inner" />
-      <div className="home-route-transition__core" />
+      <div className="home-route-transition__filament home-route-transition__filament--a" />
+      <div className="home-route-transition__filament home-route-transition__filament--b" />
+      <div className="home-route-transition__core-field"><i /><i /><i /></div>
       <div className="home-route-transition__bloom" />
     </div>
   );
@@ -121,8 +123,8 @@ function createParticles(width: number, height: number): Particle[] {
   const mobile = width < 768;
   const area = width * height;
   const count = mobile
-    ? Math.round(Math.min(350, Math.max(180, area / 1800)))
-    : Math.round(Math.min(900, Math.max(500, area / 2500)));
+    ? Math.round(Math.min(220, Math.max(110, area / 2800)))
+    : Math.round(Math.min(460, Math.max(240, area / 4300)));
   const maxRadius = Math.hypot(width, height) * 0.72;
   return Array.from({ length: count }, (_, index) => {
     const depth = index % 11 < 5 ? 0.25 : index % 11 < 9 ? 0.62 : 1;
@@ -144,6 +146,33 @@ function createParticles(width: number, height: number): Particle[] {
       previousY: y
     };
   });
+}
+
+function drawEnergyCore(context: CanvasRenderingContext2D, x: number, y: number, progress: number, width: number) {
+  const strength = smoothstep(clamp((progress - 0.28) / 0.55)) * (1 - smoothstep(clamp((progress - 0.9) / 0.1)) * 0.35);
+  if (strength <= 0) return;
+  const radius = Math.min(118, Math.max(72, width * 0.075)) * (0.7 + strength * 0.3);
+  context.save();
+  context.translate(x, y);
+  context.scale(1, 0.7);
+  const haze = context.createRadialGradient(-radius * 0.14, -radius * 0.1, 0, 0, 0, radius);
+  haze.addColorStop(0, `rgba(247, 253, 255, ${0.32 * strength})`);
+  haze.addColorStop(0.18, `rgba(195, 244, 250, ${0.2 * strength})`);
+  haze.addColorStop(0.48, `rgba(73, 190, 218, ${0.1 * strength})`);
+  haze.addColorStop(1, "rgba(18, 84, 124, 0)");
+  context.fillStyle = haze;
+  context.beginPath();
+  context.arc(0, 0, radius, 0, Math.PI * 2);
+  context.fill();
+  context.lineCap = "round";
+  for (let index = 0; index < 3; index += 1) {
+    context.beginPath();
+    context.arc(0, 0, radius * (0.28 + index * 0.14), progress * 4 + index, progress * 4 + index + 1.25);
+    context.strokeStyle = `rgba(${index === 1 ? "214, 249, 252" : "120, 218, 232"}, ${(0.12 - index * 0.02) * strength})`;
+    context.lineWidth = 0.7;
+    context.stroke();
+  }
+  context.restore();
 }
 
 function clamp(value: number) {

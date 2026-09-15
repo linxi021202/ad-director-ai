@@ -12,14 +12,23 @@ function resetEnv() {
   process.env.DEEPSEEK_MODEL = "deepseek-v4-pro";
 }
 
-function mockDeepSeekResponse(content: string) {
+function mockDeepSeekResponse(content: string, finishReason: string | null = null) {
   return new Response(
     JSON.stringify({
-      choices: [{ message: { content } }],
+      choices: [{ finish_reason: finishReason, message: { content } }],
       usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 }
     }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
+}
+
+function requestedChunk(init: RequestInit | undefined, shots: ReturnType<typeof detailedShot>[]) {
+  const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+  const prompt = body.messages.findLast((message) => /本次只生成第/.test(message.content))?.content ?? "";
+  const range = prompt.match(/本次只生成第 (\d+)-(\d+) 镜/);
+  const first = Number(range?.[1] ?? 1);
+  const last = Number(range?.[2] ?? shots.length);
+  return shots.slice(first - 1, last);
 }
 
 function detailedShot(shot: (typeof coldBrewDemo.shots)[number]) {
@@ -30,6 +39,7 @@ function detailedShot(shot: (typeof coldBrewDemo.shots)[number]) {
   }));
   return {
     ...shot,
+    visualDescription: `${shot.visualDescription}，画面同时明确人物单一动作、真实产品位置、场景光线与前中后景关系。`,
     title: `镜头 ${shot.index} 导演标题`,
     narrativePurpose: "承接前一镜人物与产品状态，通过一个清晰动作引入新的广告信息，并为下一镜建立自然、可执行且连续的动作动机，同时保持观众注意力始终落在当前唯一叙事目标上。",
     commercialPurpose: "建立稳定产品记忆，让核心卖点通过人物行为与产品状态变化得到清晰、可信且可见的证明。",
@@ -44,6 +54,9 @@ function detailedShot(shot: (typeof coldBrewDemo.shots)[number]) {
     transitionOut: "以人物手部停点和产品稳定状态连接下一镜。",
     continuityNotes: ["同一人物身份和服装", "同一真实产品结构和朝向", "同一办公室空间和道具", "同一主光方向和综合色调"],
     riskNotes: ["避免复杂手部动作和产品结构变形"],
+    containsProduct: true,
+    continuityConstraints: ["保持产品身份与包装结构", "保持人物服装和场景空间连续"],
+    shotDirection: ["人物只完成一个主要动作", "摄影机只使用一条连续运镜"],
     microBeats: beats.map((beat) => ({ ...beat, characterAction: "人物身体只发生一次清晰的小幅姿态变化", continuityConstraint: "保持同一人物、服装、产品和场景空间关系" }))
   };
 }
@@ -92,10 +105,13 @@ describe("deepseekProvider", () => {
   it("retries once when Zod validation fails and then returns valid storyboard", async () => {
     const invalidShots = { shots: [{ ...coldBrewDemo.shots[0], recommendedModel: "forbidden-model" }] };
     const validShots = { shots: coldBrewDemo.shots.map((shot) => ({ ...detailedShot(shot), recommendedModel: "qwen-image" })) };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(mockDeepSeekResponse(JSON.stringify(invalidShots)))
-      .mockResolvedValueOnce(mockDeepSeekResponse(JSON.stringify(validShots)));
+    let callCount = 0;
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      callCount += 1;
+      return Promise.resolve(callCount === 1
+        ? mockDeepSeekResponse(JSON.stringify(invalidShots))
+        : mockDeepSeekResponse(JSON.stringify({ shots: requestedChunk(init, validShots.shots) })));
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy);
@@ -104,7 +120,32 @@ describe("deepseekProvider", () => {
     expect(result.data).toHaveLength(8);
     expect(result.data?.every((shot) => shot.recommendedModel === "qwen-image")).toBe(true);
     expect(result.fallbackUsed).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("splits a truncated storyboard chunk, preserves successful parts, and continues", async () => {
+    const shots = coldBrewDemo.shots.map((shot) => ({ ...detailedShot(shot), recommendedModel: "qwen-image" }));
+    const saved: number[][] = [];
+    let callCount = 0;
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      callCount += 1;
+      return Promise.resolve(callCount === 1
+        ? mockDeepSeekResponse('{"shots":[', "length")
+        : mockDeepSeekResponse(JSON.stringify({ shots: requestedChunk(init, shots) })));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy, {
+      onStoryboardChunk: async (chunk) => { saved.push(chunk.map((shot) => shot.index)); }
+    });
+
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(result.data).toHaveLength(8);
+    expect(saved).toEqual([[1, 2], [3, 4], [5, 6, 7, 8]]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const call of fetchMock.mock.calls) {
+      expect(JSON.parse(String(call[1]?.body)).max_tokens).toBeLessThanOrEqual(3600);
+    }
   });
 
   it("honors a custom storyboard count and duration plan", async () => {

@@ -4,6 +4,7 @@ import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import {
   buildAdScorePrompt,
   buildPromptGenerationPrompt,
+  buildStoryboardChunkPrompt,
   buildStoryboardPrompt,
   buildStrategyPrompt
 } from "../lib/prompts";
@@ -34,6 +35,20 @@ describe("DeepSeek prompt pipeline", () => {
     expect(storyboardPrompt).toContain(String(coldBrewDemo.shots.length));
     expect(storyboardPrompt).toContain(getDefaultShotDurations(40).join("、"));
     expect(generationPrompt).toContain(String(coldBrewDemo.shots.length));
+  });
+
+  it("keeps storyboard chunks structural and leaves detailed prompts for per-shot expansion", () => {
+    const chunk = buildStoryboardChunkPrompt(coldBrewDemo.brief, coldBrewDemo.strategy, {
+      shotDurationPlan: [5, 5, 5, 5],
+      shotIndexOffset: 0,
+      totalShotCount: 8,
+      totalDurationSec: 40
+    });
+    expect(chunk).toContain("只生成文字分镜结构");
+    expect(chunk).toContain("第 1-4 镜");
+    expect(chunk).toContain("详细 Qwen 图片提示词、Wan 视频提示词");
+    expect(chunk).not.toContain('"frames":');
+    expect(chunk).not.toContain('"microBeats":');
   });
 
   it("keeps visual model prompts free of readable model-generated text", () => {

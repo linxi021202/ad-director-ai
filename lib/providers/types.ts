@@ -168,6 +168,7 @@ export type ProviderRequestContext = {
   providerTimeoutMs?: number;
   maxProviderAttempts?: number;
   productVisualSpec?: ProductVisualSpec;
+  onStoryboardChunk?: (shots: StoryboardShot[], progress: { completed: number; total: number; splitRetry: boolean }) => Promise<void>;
 };
 
 export type TextProvider = {

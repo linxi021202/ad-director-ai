@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   buildProductAssetCollection,
@@ -17,6 +18,18 @@ import { buildQwenImageContent } from "../lib/image/qwenImageClient";
 import { selectPrimaryProductImage } from "../lib/image/productReference";
 
 describe("product image input support", () => {
+  it("explains and exposes main versus supplemental product image roles", () => {
+    const uploader = readFileSync("components/ProductImageUploader.tsx", "utf8");
+    const anchors = readFileSync("components/VisualAnchorsCanvas.tsx", "utf8");
+    for (const label of ["主产品图", "补充参考图", "锁定产品身份", "提高生成一致性"]) {
+      expect(`${uploader}\n${anchors}`).toContain(label);
+    }
+    expect(anchors).toContain("设为主产品图");
+    expect(anchors).toContain("删除");
+    expect(anchors).toContain("查看原图");
+    expect(anchors).toContain("不会单独替代主图");
+  });
+
   it("creates preview metadata for one uploaded image", () => {
     const file = { name: "coffee.png", type: "image/png", size: 1200 };
     const validation = validateProductImageFiles([file], 0);

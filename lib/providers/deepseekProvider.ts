@@ -8,7 +8,7 @@ import type { LLMMessage, LLMTokenUsage } from "../llm/types";
 import {
   buildAdScorePrompt,
   buildPromptGenerationPrompt,
-  buildStoryboardPrompt,
+  buildStoryboardChunkPrompt,
   buildStrategyPrompt
 } from "../prompts";
 import {
@@ -39,7 +39,6 @@ import { buildShotPromptExpansionPrompt, type ShotPromptExpansionInput } from ".
 import {
   creativeDirectionSetPayloadSchema,
   detailedShotPromptPackageSchema,
-  detailedStoryboardShotSchema,
   type CreativeDirectionSetPayload,
   type DetailedShotPromptPackage,
   type ProjectPlanningConstraints
@@ -54,6 +53,48 @@ const routedShotSchema = storyboardShotSchema.extend({
 const subtitleSafeShotSchema = routedShotSchema.refine((shot) => [...shot.subtitle].length <= 16, {
   message: "subtitle must be no more than 16 Chinese characters"
 });
+
+export const TEXT_OUTPUT_BUDGETS = {
+  strategy: 1800,
+  storyboardChunk: 3600,
+  narration: 1400,
+  visualDirection: 2200,
+  creativeDirections: 7600,
+  promptExpansion: 5000,
+  shotPromptExpansion: 7200,
+  scoring: 1800,
+  copyShortening: 240
+} as const;
+
+const storyboardStructureShotSchema = routedShotSchema.extend({
+  narrativePurpose: z.string().trim().min(24),
+  commercialPurpose: z.string().trim().min(16),
+  previousState: z.string().trim().min(12),
+  newInformation: z.string().trim().min(12),
+  resultingState: z.string().trim().min(12),
+  visualDescription: z.string().trim().min(40),
+  compositionIntent: z.string().trim().min(12),
+  emotionalIntent: z.string().trim().min(8),
+  productVisibilityIntent: z.string().trim().min(10),
+  transitionIn: z.string().trim().min(6),
+  transitionOut: z.string().trim().min(6),
+  containsProduct: z.boolean(),
+  continuityConstraints: z.array(z.string().trim().min(4)).min(2),
+  shotDirection: z.array(z.string().trim().min(4)).min(1)
+}).refine((shot) => [...shot.subtitle].length <= 16, {
+  message: "subtitle must be no more than 16 Chinese characters"
+});
+
+function createStoryboardChunkSchema(shotDurationPlan: number[], shotIndexOffset: number): z.ZodType<StoryboardShot[]> {
+  return z.preprocess((value) => value && typeof value === "object" && !Array.isArray(value) && "shots" in value
+    ? (value as { shots?: unknown }).shots
+    : value,
+  z.array(storyboardStructureShotSchema).length(shotDurationPlan.length).transform((shots) => shots.map((shot, index) => ({
+    ...shot,
+    index: shotIndexOffset + index + 1,
+    durationSec: shotDurationPlan[index]!
+  })))) as z.ZodType<StoryboardShot[]>;
+}
 
 function createShotsPayloadSchema(shotDurationPlan: number[]): z.ZodType<StoryboardShot[]> {
   const expectedShotCount = shotDurationPlan.length;
@@ -73,20 +114,6 @@ function createShotsPayloadSchema(shotDurationPlan: number[]): z.ZodType<Storybo
     (shots) => validateShotConfiguration(expectedShotCount, shots, shotDurationPlan).valid,
     { message: `storyboard must contain exactly ${expectedShotCount} shots using the requested duration plan` }
   );
-}
-function createDetailedShotsPayloadSchema(shotDurationPlan: number[]): z.ZodType<StoryboardShot[]> {
-  const expectedShotCount = shotDurationPlan.length;
-  return z.preprocess((value) => value && typeof value === "object" && !Array.isArray(value) && "shots" in value
-    ? (value as { shots?: unknown }).shots
-    : value,
-  z.array(detailedStoryboardShotSchema).length(expectedShotCount).transform((shots) => shots.map((shot, index) => ({
-    ...shot,
-    index: index + 1,
-    durationSec: shotDurationPlan[index]!
-  })))).refine(
-    (shots) => validateShotConfiguration(expectedShotCount, shots, shotDurationPlan).valid,
-    { message: `storyboard must contain exactly ${expectedShotCount} detailed shots using the requested duration plan` }
-  ) as z.ZodType<StoryboardShot[]>;
 }
 const adScoreSchema = z.object({
   overallScore: z.number().min(0).max(100),
@@ -216,6 +243,7 @@ async function callAndValidate<TData>(
 
     if (!result.success) {
       lastError = result.error ?? "DeepSeek LLM call failed.";
+      if (isOutputTruncated(lastError)) break;
       messages.push(retryMessage(lastError));
       continue;
     }
@@ -239,7 +267,7 @@ export const deepseekProvider = {
   async generateStrategy(brief: ProductBrief, context?: ProviderRequestContext): Promise<RealTextProviderResponse<AdStrategy>> {
     return callAndValidate(buildStrategyPrompt(brief, context), adStrategySchema, {
       temperature: 0.35,
-      maxTokens: 1800
+      maxTokens: TEXT_OUTPUT_BUDGETS.strategy
     }, context);
   },
 
@@ -253,11 +281,57 @@ export const deepseekProvider = {
       context?.shotDurationPlan,
       context?.targetDurationSec ?? (context?.shotDurationPlan ? undefined : brief.durationSec)
     );
-    const response = await callAndValidate(buildStoryboardPrompt(brief, strategy, { ...timeline, productVisualSpec: context?.productVisualSpec }), createDetailedShotsPayloadSchema(timeline.shotDurationPlan), {
-      temperature: 0.45,
-      maxTokens: Math.max(6000, timeline.shotCount * 1050)
-    }, context);
-    return response.success && response.data ? { ...response, data: ensureStoryboardArchitecture(applyProductLockRules(response.data, context?.productVisualSpec)) } : response;
+    const startedAt = Date.now();
+    const model = getDeepSeekRuntimeConfig().model;
+    const generated: StoryboardShot[] = [];
+    let tokenUsage: LLMTokenUsage | undefined;
+    let lastError = "分镜生成失败，请稍后重试。";
+
+    const generateChunk = async (shotIndexOffset: number, shotDurationPlan: number[], splitRetry = false): Promise<boolean> => {
+      const response = await callAndValidate(
+        buildStoryboardChunkPrompt(brief, strategy, {
+          shotDurationPlan,
+          shotIndexOffset,
+          totalShotCount: timeline.shotCount,
+          totalDurationSec: timeline.totalDurationSec,
+          productVisualSpec: context?.productVisualSpec,
+          previousShot: generated.at(-1)
+        }),
+        createStoryboardChunkSchema(shotDurationPlan, shotIndexOffset),
+        { temperature: 0.42, maxTokens: TEXT_OUTPUT_BUDGETS.storyboardChunk },
+        context
+      );
+      tokenUsage = addTokenUsage(tokenUsage, response.tokenUsage);
+      if (response.success && response.data) {
+        const normalized = applyProductLockRules(response.data, context?.productVisualSpec);
+        generated.push(...normalized);
+        await context?.onStoryboardChunk?.(normalized, {
+          completed: generated.length,
+          total: timeline.shotCount,
+          splitRetry
+        });
+        return true;
+      }
+
+      lastError = response.error ?? lastError;
+      if (isOutputTruncated(lastError) && shotDurationPlan.length > 1) {
+        const midpoint = Math.ceil(shotDurationPlan.length / 2);
+        return await generateChunk(shotIndexOffset, shotDurationPlan.slice(0, midpoint), true)
+          && await generateChunk(shotIndexOffset + midpoint, shotDurationPlan.slice(midpoint), true);
+      }
+      return false;
+    };
+
+    for (let offset = 0; offset < timeline.shotCount; offset += 4) {
+      const completed = await generateChunk(offset, timeline.shotDurationPlan.slice(offset, offset + 4));
+      if (!completed) return failureResponse(model, Date.now() - startedAt, lastError, tokenUsage);
+    }
+
+    const storyboard = ensureStoryboardArchitecture(applyProductLockRules(
+      generated.sort((left, right) => left.index - right.index),
+      context?.productVisualSpec
+    ));
+    return successResponse(storyboard, model, Date.now() - startedAt, tokenUsage);
   },
 
   async optimizeCopy(storyboard: StoryboardShot[]): Promise<RealTextProviderResponse<OptimizedCopy>> {
@@ -288,7 +362,7 @@ export const deepseekProvider = {
       const response = await callAndValidate(
         buildPromptGenerationPrompt(brief, strategy, [shot], context?.productVisualSpec),
         createShotsPayloadSchema([shot.durationSec]),
-        { temperature: 0.35, maxTokens: 5000 },
+        { temperature: 0.35, maxTokens: TEXT_OUTPUT_BUDGETS.promptExpansion },
         context
       );
       tokenUsage = addTokenUsage(tokenUsage, response.tokenUsage);
@@ -308,7 +382,7 @@ export const deepseekProvider = {
   ): Promise<RealTextProviderResponse<AdScoreResult>> {
     return callAndValidate(buildAdScorePrompt(brief, strategy, shots), adScoreSchema, {
       temperature: 0.2,
-      maxTokens: 1800
+      maxTokens: TEXT_OUTPUT_BUDGETS.scoring
     }, context);
   }
 } satisfies TextProvider;
@@ -327,9 +401,13 @@ export async function generateNarrationPlan(
 Ending brand-payoff 必须动态使用产品名“${brief.productName}”，不得写死其他品牌。字幕与 TTS 均直接使用 beat.text；只有确需缩写时才提供不改变含义的 displayText。
 镜头：${JSON.stringify(shots.map((shot) => ({ id: shot.id, index: shot.index, durationSec: shot.durationSec, goal: shot.goal, visualDescription: shot.visualDescription })))}
 返回结构：{"mode":"partial","beats":[{"id":"narration-1","shotId":"shot-id","role":"problem|transition|benefit|brand-payoff|cta","text":"短句","tone":"语气","maxDurationSec":2.5,"subtitleEnabled":true}]}`;
-  const response = await callAndValidate(prompt, partialNarrationSchema, { temperature: 0.25, maxTokens: 1400 }, context);
+  const response = await callAndValidate(prompt, partialNarrationSchema, { temperature: 0.25, maxTokens: TEXT_OUTPUT_BUDGETS.narration }, context);
   if (!response.success || !response.data) return response;
   return { ...response, data: normalizeNarrationPlan(response.data, brief, strategy, shots) };
+}
+
+function isOutputTruncated(error: string) {
+  return error.includes("DEEPSEEK_OUTPUT_TRUNCATED");
 }
 
 export async function generateCharacterAnchorBriefs(
@@ -351,7 +429,7 @@ Creative Bible：${JSON.stringify(creativeBible)}
 Required Characters：${JSON.stringify(defaults)}
 返回与 Required Characters 等长的数组，字段严格为 id, role, apparentAgeRange, faceAppearance, hairstyle, hairColor, skinTone, wardrobe, accessories, bodyBuild, immutableTraits, states。`,
     schema,
-    { temperature: 0.3, maxTokens: Math.max(1000, defaults.length * 850) },
+    { temperature: 0.3, maxTokens: Math.min(TEXT_OUTPUT_BUDGETS.visualDirection, Math.max(1000, defaults.length * 850)) },
     context
   );
   if (!response.success || !response.data) return response;
@@ -375,7 +453,7 @@ export async function generateCharacterCandidateDirections(
 人物简报：${JSON.stringify(brief)}
 每项字段严格为 title, castingPositioning, ageTexture, faceStructure, facialFeatures, hairstyle, wardrobeMood, bodyLanguage, differentiation, continuityStability, recommendationReason。全部使用中文。`,
     z.array(characterCandidateDirectionSchema).length(3),
-    { temperature: 0.72, maxTokens: 2200 },
+    { temperature: 0.72, maxTokens: TEXT_OUTPUT_BUDGETS.visualDirection },
     { ...context, maxProviderAttempts: 1 }
   );
 }
@@ -390,7 +468,7 @@ export async function generateSceneCandidateDirections(
 场景设定：${JSON.stringify(spec)}
 每项字段严格为 title, spatialConcept, cameraPosition, depthStructure, dominantMaterials, heroPropArrangement, lightingDesign, differentiation, continuityStability, recommendationReason。全部使用中文。`,
     z.array(sceneCandidateDirectionSchema).length(3),
-    { temperature: 0.72, maxTokens: 2200 },
+    { temperature: 0.72, maxTokens: TEXT_OUTPUT_BUDGETS.visualDirection },
     { ...context, maxProviderAttempts: 1 }
   );
 }
@@ -403,7 +481,7 @@ export async function generateCreativeDirectionSet(
   const initial = await callAndValidate(
     buildCreativeDirectionsPrompt(brief, constraints),
     creativeDirectionSetPayloadSchema,
-    { temperature: 0.72, maxTokens: 7600 },
+    { temperature: 0.72, maxTokens: TEXT_OUTPUT_BUDGETS.creativeDirections },
     { ...context, maxProviderAttempts: 2 }
   );
   if (!initial.success || !initial.data) return initial;
@@ -414,7 +492,7 @@ export async function generateCreativeDirectionSet(
   const deepened = await callAndValidate(
     buildDeepenCreativeDirectionsPrompt(brief, constraints, initial.data, quality.issues),
     creativeDirectionSetPayloadSchema,
-    { temperature: 0.55, maxTokens: 7600 },
+    { temperature: 0.55, maxTokens: TEXT_OUTPUT_BUDGETS.creativeDirections },
     { ...context, maxProviderAttempts: 1 }
   );
   return deepened.success && deepened.data ? deepened : initial;
@@ -445,7 +523,7 @@ export async function expandShotPrompts(
   return callAndValidate(
     buildShotPromptExpansionPrompt(input),
     schema,
-    { temperature: 0.35, maxTokens: 7200 },
+    { temperature: 0.35, maxTokens: TEXT_OUTPUT_BUDGETS.shotPromptExpansion },
     { ...context, maxProviderAttempts: 2 }
   );
 }
@@ -459,7 +537,7 @@ export async function shortenNarration(
   return callAndValidate(
     `只输出 JSON。将旁白缩短到自然朗读不超过 ${maxDurationSec.toFixed(1)} 秒。保持原意，不添加原文和广告需求之外的事实、数字、价格、折扣、认证、医学作用或排名。商品：${brief.productName}。原文：${text}\n返回 {"text":"缩短后的旁白"}`,
     shortenedNarrationSchema,
-    { temperature: 0.15, maxTokens: 240 },
+    { temperature: 0.15, maxTokens: TEXT_OUTPUT_BUDGETS.copyShortening },
     context
   );
 }

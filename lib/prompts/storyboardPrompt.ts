@@ -8,6 +8,84 @@ import { serializeProductVisualSpecForPrompt } from "../visual/productVisualSpec
 const allowedModels = ["deepseek-v4-pro", "qwen-image", "wan2.7-i2v", "remotion"];
 type ShotPlanInput = { requestedShotCount?: number; targetDurationSec?: number; shotDurationPlan?: number[]; productVisualSpec?: ProductVisualSpec };
 
+type StoryboardChunkInput = {
+  shotDurationPlan: number[];
+  shotIndexOffset: number;
+  totalShotCount: number;
+  totalDurationSec: number;
+  productVisualSpec?: ProductVisualSpec;
+  previousShot?: Pick<import("../schemas/project").StoryboardShot, "index" | "goal" | "resultingState" | "visualDescription">;
+};
+
+export function buildStoryboardChunkPrompt(brief: ProductBrief, strategy: AdStrategy, input: StoryboardChunkInput): string {
+  const firstIndex = input.shotIndexOffset + 1;
+  const lastIndex = input.shotIndexOffset + input.shotDurationPlan.length;
+  const heroIndex = getDefaultHeroShotArrayIndex(input.totalShotCount) + 1;
+  const previousContext = input.previousShot
+    ? `上一段最后一镜：${JSON.stringify(input.previousShot)}`
+    : "这是第一段，不需要继承更早镜头。";
+  const exampleShot = {
+    id: `shot-${String(firstIndex).padStart(2, "0")}`,
+    index: firstIndex,
+    durationSec: input.shotDurationPlan[0],
+    goal: "本镜头唯一叙事目标",
+    narrativePurpose: "说明如何承接前态、增加一项新信息并形成下一镜可继承的结果。",
+    commercialPurpose: "说明注意力、卖点证明、产品记忆或行动转化职责。",
+    previousState: "进入本镜头前的人物、产品和场景状态。",
+    newInformation: "本镜头新增的一项信息。",
+    resultingState: "本镜头结束后可直接继承的状态。",
+    visualDescription: "一个完整画面中的场景、人物单一动作、产品位置、光线和构图。",
+    compositionIntent: "主体位置、视觉重心和前中后景。",
+    emotionalIntent: "人物情绪及其克制变化。",
+    productVisibilityIntent: "产品位置、朝向、比例和可见程度。",
+    transitionIn: "如何进入本镜头。",
+    transitionOut: "如何衔接下一镜。",
+    cameraAngle: "机位与景别",
+    cameraMovement: "一条连续且克制的运镜",
+    subtitle: "不超过16字的旁白建议",
+    imagePromptCn: "当前只保留关键画面摘要，详细图片提示词稍后逐镜扩写。",
+    imagePromptEn: "One complete frame; detailed image prompt will be expanded per shot later.",
+    videoPromptCn: "当前只保留节奏和动作摘要，详细视频提示词稍后逐镜扩写。",
+    recommendedModel: firstIndex === heroIndex ? "wan2.7-i2v" : "qwen-image",
+    fallbackPlan: "使用关键帧与 Remotion 图片动效完成。",
+    continuityGroupId: "narrative-main",
+    sceneGroupId: "scene-main",
+    sceneId: "scene-main",
+    characterIds: ["character-main"],
+    productIds: ["product-master"],
+    containsProduct: true,
+    productFidelityMode: "exact",
+    productShotType: "product-in-scene",
+    sceneStateBefore: { shotId: `shot-${String(firstIndex).padStart(2, "0")}`, characterStates: [], productStates: [], propStates: [] },
+    sceneStateAfter: { shotId: `shot-${String(firstIndex).padStart(2, "0")}`, characterStates: [], productStates: [], propStates: [] },
+    continuityConstraints: ["产品身份不变", "人物与空间连续", "画面不得生成可读文字"],
+    shotDirection: ["只执行一个主要动作", "使用一条连续运镜"],
+    motionComplexityScore: 3,
+    textSafeZone: "bottom-left"
+  };
+
+  return `你是短视频广告分镜导演。当前只生成文字分镜结构，不生成逐帧提示词、完整图片提示词或完整视频提示词。
+只输出合法 JSON，不要输出 Markdown、解释或代码围栏。所有面向用户的字段使用简体中文。
+
+广告需求：${JSON.stringify(textBriefForPrompt(brief))}
+广告策略：${JSON.stringify(strategy)}
+${serializeProductVisualSpecForPrompt(input.productVisualSpec)}
+${previousContext}
+
+本次只生成第 ${firstIndex}-${lastIndex} 镜，共 ${input.shotDurationPlan.length} 镜；整片共 ${input.totalShotCount} 镜、${input.totalDurationSec} 秒。
+本段 durationSec 依次固定为：${input.shotDurationPlan.join("、")}。index 必须从 ${firstIndex} 连续到 ${lastIndex}。
+每镜只写：镜头目标、画面内容、人物动作、产品位置、场景状态、旁白建议、节奏、时长，以及必要的连续性字段。
+visualDescription 必须明确一个完整画面，人物只做一个主要动作；subtitle 不超过 16 个中文字符。
+第 ${heroIndex} 镜是唯一 Wan 2.7 主镜头，其余镜头使用 qwen-image 或 remotion。
+continuityGroupId、sceneStateBefore、sceneStateAfter、continuityConstraints、shotDirection 必须完整。
+真实产品身份不可改变；不得发明 verifiedClaims 之外的数字或功效：${JSON.stringify(brief.verifiedClaims ?? [])}。
+${NO_READABLE_TEXT_CN}
+${NO_READABLE_TEXT_EN}
+详细 Qwen 图片提示词、Wan 视频提示词、frames 和 microBeats 将在后续逐镜扩写，本次不要输出这些大段内容。
+
+返回 {"shots":[...]}，单镜字段结构参考：${JSON.stringify(exampleShot)}`;
+}
+
 export function buildStoryboardPrompt(brief: ProductBrief, strategy: AdStrategy, input: ShotPlanInput = {}): string {
   const timeline = resolveShotPlan(
     input.requestedShotCount,

@@ -15,6 +15,8 @@ type Props = {
   onInitialize: () => void;
   onGenerateAll: () => void;
   onConfirmProduct: () => void;
+  onSetMainProduct: (imageId: string) => void;
+  onRemoveProductReference: (imageId: string) => void;
   onGenerateCandidates: (kind: VisualAnchorCandidateKind, targetId: string) => void;
   onSetCurrent: (kind: VisualAnchorCandidateKind, targetId: string, candidateId: string) => void;
   onConfirmTarget: (kind: VisualAnchorCandidateKind, targetId: string) => void;
@@ -22,11 +24,12 @@ type Props = {
   onEnterStoryboard: () => void;
 };
 
-export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGenerateAll, onConfirmProduct, onGenerateCandidates, onSetCurrent, onConfirmTarget, onConfirmSelection, onEnterStoryboard }: Props) {
+export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGenerateAll, onConfirmProduct, onSetMainProduct, onRemoveProductReference, onGenerateCandidates, onSetCurrent, onConfirmTarget, onConfirmSelection, onEnterStoryboard }: Props) {
   const workspace = project.visualAnchorWorkspace;
   const visualSetup = deriveVisualSetupStageState(project);
   const productAssets = getProjectProductAssets(project);
   const mainProduct = productAssets.primaryAsset;
+  const supplementalProducts = productAssets.assets.filter((image) => image.id !== mainProduct?.id).slice(0, 2);
   const characters = (project.characterVisualSpecs ?? []).filter((item) => workspace?.requiredCharacterIds.includes(item.id));
   const scenes = (project.sceneVisualSpecs ?? []).filter((item) => workspace?.requiredSceneIds.includes(item.id));
   const hasCandidates = characters.every((spec) => activeCandidates(workspace?.characterCandidates, spec.id).length > 0)
@@ -45,21 +48,31 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
 
       <section className="anchor-work-section anchor-product-section" id="anchor-product">
         <SectionTitle label="真实商品" title="产品图" status={visualSetup.productConfirmed ? "已确认" : mainProduct?.assetId ? "待确认" : "未开始"} />
+        {productAssets.assets.length ? <p className="anchor-product-count">已上传 {productAssets.assets.length} 张产品图：{mainProduct ? "1 张主产品图" : "尚未设置主产品图"} + {supplementalProducts.length} 张补充参考图</p> : null}
         <div className="anchor-product-layout">
           <div className="anchor-product-media">
             {mainProduct?.assetId ? <AdaptiveMediaFrame aspectRatio="1:1" stage="product" src={assetUrl(project.id, mainProduct.assetId)} mediaType="image" fit="contain" showBlurredBackdrop={false} alt={mainProduct.name} />
               : <div className="anchor-media-empty"><strong>还没有产品图片</strong><span>请先添加至少 1 张真实产品图片。</span><Link href={`/generate?projectId=${encodeURIComponent(project.id)}&stage=brief#product-assets-title`}>添加产品图片</Link></div>}
           </div>
           <div className="anchor-product-spec">
-            <strong>{mainProduct?.assetId ? "已使用你上传的真实产品图" : "请上传真实产品图"}</strong>
-            <p>{mainProduct?.assetId ? "一致性保护已开启。后续广告将以这张真实商品图作为产品外观参考。" : "保存产品图片后即可开启一致性保护，外观分析不会阻止后续操作。"}</p>
+            <strong>{mainProduct?.assetId ? "主产品图用于锁定产品身份" : "请上传真实产品图"}</strong>
+            <p>{mainProduct?.assetId ? "后续流程以这张主产品图为主要参考，用于锁定外形、包装、颜色和比例。" : "保存产品图片后即可开启一致性保护，外观分析不会阻止后续操作。"}</p>
             <div className="anchor-inline-actions">
               {mainProduct?.assetId ? <a href={assetUrl(project.id, mainProduct.assetId)} target="_blank" rel="noreferrer">查看原图</a> : null}
-              <Link href={`/generate?projectId=${encodeURIComponent(project.id)}&stage=brief`}>更换产品图</Link>
+              <Link href={`/generate?projectId=${encodeURIComponent(project.id)}&stage=brief#product-assets-title`}>更换主图</Link>
             </div>
             {!visualSetup.productConfirmed ? <GuardedActionButton className="button-secondary-v3" blockers={getActionBlockers(project, "CONFIRM_PRODUCT")} busy={busyTarget === "lock:product"} busyLabel="确认中…" onAction={onConfirmProduct}>确认产品</GuardedActionButton> : <span className="anchor-lock-confirmation">产品已确认</span>}
             <details className="stage-provider-details"><summary>生成详情</summary><p>{project.productVisualSpec ? "已识别外形、材质与主要颜色，用于加强背景和光线适配。" : "图片分析未完成也不会阻止你继续选择人物和场景。"}</p></details>
           </div>
+        </div>
+        <div className="anchor-product-references">
+          <header><div><strong>补充参考图</strong><span>用于补充角度、侧面、背面、材质、杯盖和比例细节，提高生成一致性。</span></div><small>{supplementalProducts.length} / 2</small></header>
+          {supplementalProducts.length ? <div className="anchor-product-reference-grid">{supplementalProducts.map((image, index) => <article key={image.id}>
+            <AdaptiveMediaFrame aspectRatio="1:1" stage="product" src={assetUrl(project.id, image.assetId!)} mediaType="image" fit="contain" showBlurredBackdrop={false} alt={image.name} />
+            <div><strong>{image.name}</strong><span>{index === 0 ? "补充其他角度与结构信息" : "补充材质、杯盖与比例细节"}</span></div>
+            <footer><a href={assetUrl(project.id, image.assetId!)} target="_blank" rel="noreferrer">查看原图</a><button type="button" disabled={busyTarget !== null} onClick={() => onSetMainProduct(image.id)}>设为主产品图</button><button type="button" disabled={busyTarget !== null} onClick={() => onRemoveProductReference(image.id)}>删除</button></footer>
+          </article>)}</div> : <div className="anchor-product-reference-empty"><strong>尚未添加补充参考图</strong><span>你仍可只使用主产品图继续；添加其他角度能帮助模型理解更多产品细节。</span><Link href={`/generate?projectId=${encodeURIComponent(project.id)}&stage=brief#product-assets-title`}>添加补充参考图</Link></div>}
+          <p>当前流程以后续主产品图为主要参考；补充参考图会在适合的产品镜头中用于一致性参考，不会单独替代主图。</p>
         </div>
       </section>
 

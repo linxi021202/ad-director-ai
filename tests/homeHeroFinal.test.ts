@@ -35,25 +35,26 @@ describe("homepage final hero", () => {
     expect(styles).toContain("min-height: 100dvh");
     expect(page).toContain("ParticleTransitionOverlay");
     expect(page).not.toContain("transitionParticles.map");
-    expect(transition).toContain("Math.min(900, Math.max(500");
-    expect(transition).toContain("Math.min(350, Math.max(180");
+    expect(transition).toContain("Math.min(460, Math.max(240");
+    expect(transition).toContain("Math.min(220, Math.max(110");
     expect(transition).toContain("Math.min(window.devicePixelRatio || 1, 2)");
     expect(transition).toContain("particle.depth");
     expect(transition).toContain("window.cancelAnimationFrame(frame)");
     expect(transition).toContain('window.removeEventListener("resize", resize)');
-    expect(page).toContain("1180");
+    expect(page).toContain("1020");
     expect(page).toContain("1600");
     expect(page).toContain("router.prefetch");
     expect(page).toContain("ad-director-workspace-reveal");
     expect(workspace).toContain("ad-director-workspace-reveal");
     expect(workspaceStyles).toContain("workspace-route-reveal 320ms");
-    expect(styles).toContain("1100ms");
+    expect(styles).toContain("home-transition-core-field");
     expect(styles).toContain("home-transition-bloom");
     expect(styles).toContain("home-route-transition__ring--middle");
+    expect(styles).not.toContain("home-route-transition__core {");
   });
 
   it("explains the staged generation flow on the homepage", () => {
-    expect(page).toContain("从产品图片到成片，让广告生成更稳定、更好改");
+    expect(page).toContain("上传商品，一键成片");
     expect(page).toContain("开始制作广告");
     expect(page).not.toContain("home-hero-summary");
     for (const label of ["添加产品图片", "选择创意方向", "确认人物与场景", "制作分镜与视频"]) expect(page).toContain(label);
@@ -76,7 +77,8 @@ describe("homepage final hero", () => {
 
   it("keeps the cover responsive without affecting product pages", () => {
     expect(styles).toContain("text-wrap: balance");
-    expect(styles).toContain("clamp(22px, 7vw, 34px)");
+    expect(styles).toContain("font-size: 30px");
+    expect(styles).toContain("overflow-wrap: anywhere");
     expect(cinemaStyles).toContain(".site-video-backdrop.is-home");
   });
 });

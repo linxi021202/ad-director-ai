@@ -369,6 +369,8 @@ function renderVisualSetupFixture(project: GenerationProject) {
       onInitialize: noop,
       onGenerateAll: noop,
       onConfirmProduct: noop,
+      onSetMainProduct: noop,
+      onRemoveProductReference: noop,
       onGenerateCandidates: noop,
       onSetCurrent: noop,
       onConfirmTarget: noop,

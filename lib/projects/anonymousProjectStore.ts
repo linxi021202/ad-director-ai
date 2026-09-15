@@ -577,6 +577,33 @@ export async function replaceOwnedProjectShots(
   }, expectedVersion ?? current.version);
 }
 
+export async function saveOwnedStoryboardChunk(
+  sessionId: string,
+  projectId: string,
+  chunk: StoryboardShot[]
+): Promise<AnonymousProjectRecord> {
+  const current = await requireOwnedAnonymousProject(sessionId, projectId);
+  const constraints = resolveProjectPlanningConstraints(current.project);
+  const durations = allocateShotDurations(constraints.shotCount, constraints.targetDurationSec);
+  const byIndex = new Map(chunk.map((shot) => [shot.index, shot]));
+  const invalid = chunk.some((shot) => shot.index < 1
+    || shot.index > constraints.shotCount
+    || shot.durationSec !== durations[shot.index - 1]);
+  if (!chunk.length || invalid || byIndex.size !== chunk.length) {
+    throw new ShotConfigurationError("DURATION_PLAN_MISMATCH");
+  }
+
+  if (current.project.shots.length !== constraints.shotCount) {
+    throw new ShotConfigurationError("SHOT_COUNT_MISMATCH");
+  }
+  const baseline = current.project.shots;
+  const merged = ensureStoryboardArchitecture(baseline.map((shot, index) => byIndex.get(index + 1) ?? shot));
+  return updateOwnedAnonymousProject(sessionId, projectId, {
+    shots: merged,
+    prompts: promptsFromShots(merged)
+  }, current.version);
+}
+
 export async function updateOwnedShotDurations(
   sessionId: string,
   projectId: string,

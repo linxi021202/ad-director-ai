@@ -15,7 +15,7 @@ import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { UsageGuideSheet } from "@/components/workspace/UsageGuideSheet";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ProductImageUploader } from "@/components/ProductImageUploader";
-import { buildProductAssetCollection, getProjectProductAssets, normalizeProductAssetState } from "@/lib/productImages";
+import { buildProductAssetCollection, getProjectProductAssets, normalizeProductAssetState, removeProductImage, setMainProductImage } from "@/lib/productImages";
 import { StageContextPanel, StageDirectorRail, StageInspector, stageStatusLabel } from "@/components/StageDirectorRail";
 import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
@@ -1021,6 +1021,29 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }
 
+  async function updateAnchorProductImages(nextImages: ProductBrief["productImages"]) {
+    if (!nextImages || anchorBusyTarget || isGenerating) return;
+    setAnchorBusyTarget("product-images");
+    setError(null);
+    try {
+      const collection = buildProductAssetCollection(nextImages);
+      const saved = await saveProjectBriefWithConflictRetry(activeProject.id, activeVersionRef.current, {
+        brief: { ...activeProject.brief, productImages: nextImages, ...collection },
+        shotCount: getEffectiveShotCount(activeProject),
+        targetDurationSec: activeProject.targetDurationSec ?? activeProject.brief.durationSec,
+        createVersion: true
+      });
+      const refreshed = applyProjectUpdate(saved);
+      setBriefDraft((current) => ({ ...current, brief: refreshed.brief }));
+      setBriefSaveStatus("saved");
+      setTraceLabel("产品图片设置已更新，请重新确认产品");
+    } catch (productError) {
+      setError(productError instanceof Error ? productError.message : "产品图片更新失败，请重试。");
+    } finally {
+      setAnchorBusyTarget(null);
+    }
+  }
+
   async function setCurrentVisualAnchor(kind: VisualAnchorCandidateKind, targetId: string, candidateId: string) {
     const candidate = activeProject.visualAnchorWorkspace?.[kind === "character" ? "characterCandidates" : "sceneCandidates"]
       .find((item) => item.id === candidateId && item.targetId === targetId);
@@ -1193,6 +1216,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               onInitialize={() => void initializeVisualAnchors()}
               onGenerateAll={() => void generateAllVisualCandidates()}
               onConfirmProduct={() => void lockVisualMaster("product")}
+              onSetMainProduct={(imageId) => void updateAnchorProductImages(setMainProductImage(activeProject.brief.productImages ?? [], imageId))}
+              onRemoveProductReference={(imageId) => void updateAnchorProductImages(removeProductImage(activeProject.brief.productImages ?? [], imageId))}
               onGenerateCandidates={(kind, targetId) => void generateVisualAnchorCandidates(kind, targetId)}
               onSetCurrent={(kind, targetId, candidateId) => void setCurrentVisualAnchor(kind, targetId, candidateId)}
               onConfirmTarget={(kind, targetId) => void lockVisualMaster(kind, targetId)}

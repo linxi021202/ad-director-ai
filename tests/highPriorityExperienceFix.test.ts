@@ -34,9 +34,20 @@ describe("high-priority experience and generation fixes", () => {
     const uploader = readFileSync("components/ProductImageUploader.tsx", "utf8");
     expect(uploader).toContain("产品图片");
     expect(uploader).toContain("已达到 3 张上限");
-    expect(uploader).toContain("设为主要图片");
+    expect(uploader).toContain("设为主产品图");
     expect(uploader).toContain("这张图片包含多个产品视图");
-    expect(uploader).not.toContain("补充参考");
+    expect(uploader).toContain("补充参考图");
+  });
+
+  it("persists storyboard chunks and maps truncation details to Chinese", () => {
+    const route = readFileSync("app/api/generate-storyboard/route.ts", "utf8");
+    const provider = readFileSync("lib/providers/deepseekProvider.ts", "utf8");
+    expect(route).toContain("saveOwnedStoryboardChunk");
+    expect(route).toContain("本次生成内容较长，系统正在拆分生成，请稍候。");
+    expect(route).toContain("本次生成内容过多，已超出单次长度限制。系统建议分段生成分镜内容。");
+    expect(provider).toContain("offset += 4");
+    expect(provider).toContain("shotDurationPlan.length > 1");
+    expect(provider).toContain("TEXT_OUTPUT_BUDGETS.storyboardChunk");
   });
 
   it("never returns a raw provider or Zod error from creative generation", () => {

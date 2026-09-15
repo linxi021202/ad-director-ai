@@ -34,7 +34,7 @@ export default function HomePage() {
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     document.documentElement.dataset.workspaceReveal = "pending";
     window.sessionStorage.setItem("ad-director-workspace-reveal", "pending");
-    navigationTimersRef.current.push(window.setTimeout(() => router.push(target), reducedMotion ? 340 : 1180));
+    navigationTimersRef.current.push(window.setTimeout(() => router.push(target), reducedMotion ? 280 : 1020));
     navigationTimersRef.current.push(window.setTimeout(() => {
       if (window.location.pathname !== target) window.location.assign(target);
     }, 1600));
@@ -89,7 +89,7 @@ export default function HomePage() {
 
       <section className="home-hero">
         <div className={`home-hero-copy ${exitClass}`}>
-          <h1>从产品图片到成片，让广告生成更稳定、更好改</h1>
+          <h1>上传商品，一键成片</h1>
 
           <div className="home-actions">
             <Link href={workspaceTarget} onMouseEnter={() => router.prefetch(workspaceTarget)} onFocus={() => router.prefetch(workspaceTarget)} onClick={handleTransition(workspaceTarget)} className="home-primary-action">

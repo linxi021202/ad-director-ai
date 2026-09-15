@@ -30,9 +30,9 @@ type LocalUploadResponse = {
 };
 
 const roleLabels: Record<ProductImage["role"], string> = {
-  "main-product": "主要图片",
+  "main-product": "主产品图",
   logo: "品牌标识",
-  reference: "其他角度"
+  reference: "补充参考图"
 };
 
 export function ProductImageUploader({ images, onChange, onPersistedVersion, projectId, disabled = false }: ProductImageUploaderProps) {
@@ -172,6 +172,9 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
   }
 
   const mainImage = images.find((image) => image.role === "main-product");
+  const supplementalImages = images.filter((image) => image.role === "reference");
+  const logoImages = images.filter((image) => image.role === "logo");
+  const productImageCount = (mainImage ? 1 : 0) + supplementalImages.length;
 
   function renderAsset(image: ProductImage, variant: "primary" | "supplemental") {
     const source = resolveProductImageUrl(image);
@@ -203,7 +206,7 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
         <div className="product-asset__actions">
           <button type="button" onClick={() => setLightboxImage(image)} disabled={isBroken} aria-label={`查看 ${image.name}`}>查看</button>
           <button type="button" onClick={() => { replaceTargetRef.current = image.id; replaceInputRef.current?.click(); }} disabled={disabled} aria-label={`替换 ${image.name}`}>替换</button>
-          {image.role !== "main-product" && image.role !== "logo" ? <button type="button" onClick={() => handleSetMain(image.id)} disabled={disabled} aria-label={`将 ${image.name} 设为主要图片`}>设为主要图片</button> : null}
+          {image.role === "reference" ? <button type="button" onClick={() => handleSetMain(image.id)} disabled={disabled} aria-label={`将 ${image.name} 设为主产品图`}>设为主产品图</button> : null}
           <button type="button" onClick={() => handleRemove(image.id)} disabled={disabled} aria-label={`删除 ${image.name}`}>删除</button>
         </div>
       </article>
@@ -218,9 +221,25 @@ export function ProductImageUploader({ images, onChange, onPersistedVersion, pro
         </div>
         <button type="button" onClick={() => images.length >= 3 ? setError("最多可上传 3 张产品图片；如需添加，请先删除一张现有图片。") : openAddPicker(mainImage ? "reference" : "main-product")} disabled={disabled} aria-label="添加产品图片">{images.length >= 3 ? "已达到 3 张上限" : "添加图片"}</button>
       </div>
-      <p className="product-assets__help">最多上传 3 张真实产品图片。一张清晰图片即可开始；第一张会自动设为主要图片，你也可以随时更换。</p>
+      <p className="product-assets__help">主产品图用于锁定产品身份；最多两张补充参考图用于补充角度、结构和材质细节，提高后续画面一致性。</p>
 
-      {images.length ? <div className="product-assets__unified-grid" aria-label="产品图片列表">{images.map((image) => renderAsset(image, image.role === "main-product" ? "primary" : "supplemental"))}</div> : (
+      {images.length ? <>
+        <p className="product-assets__count-summary">已上传 {productImageCount} 张产品图：{mainImage ? "1 张主产品图" : "尚未设置主产品图"} + {supplementalImages.length} 张补充参考图</p>
+        <section className="product-assets__primary" aria-label="主产品图">
+          <div className="product-assets__section-heading"><strong>主产品图</strong><span>锁定产品身份，作为全流程主要参考</span></div>
+          {mainImage ? renderAsset(mainImage, "primary") : null}
+        </section>
+        <section className="product-assets__supplemental" aria-label="补充参考图">
+          <div className="product-assets__section-heading"><strong>补充参考图</strong><span>补充侧面、背面、杯盖、材质与比例细节</span></div>
+          {supplementalImages.length
+            ? <div className="product-assets__reference-grid">{supplementalImages.map((image) => renderAsset(image, "supplemental"))}</div>
+            : <button type="button" className="product-assets__reference-empty" disabled={disabled || images.length >= 3} onClick={() => openAddPicker("reference")}><span aria-hidden="true">+</span>添加其他角度，提高一致性</button>}
+        </section>
+        {logoImages.length ? <section className="product-assets__legacy" aria-label="品牌标识">
+          <div className="product-assets__section-heading"><strong>品牌标识</strong><span>用于品牌元素参考，不计入产品主图与补充参考图</span></div>
+          <div className="product-assets__reference-grid">{logoImages.map((image) => renderAsset(image, "supplemental"))}</div>
+        </section> : null}
+      </> : (
         <button
           type="button"
           className="product-assets__empty product-assets__empty--primary"
