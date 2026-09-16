@@ -305,6 +305,8 @@ export function inheritSceneState(
   shotId: string
 ): SceneState {
   return {
+    ...(previous ?? {}),
+    ...current,
     shotId,
     characterStates: mergeStateItems(previous?.characterStates ?? [], current.characterStates, "characterId"),
     productStates: mergeStateItems(previous?.productStates ?? [], current.productStates, "productId"),

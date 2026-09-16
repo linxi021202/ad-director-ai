@@ -51,21 +51,30 @@ export async function POST(request: Request) {
       return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "shot-config" }, fallbackUsed: false, error: "镜头时长计划与分镜数量不一致。" }, 400);
     }
     const event = await startGenerationEvent(session.id, projectId, {
-      stage: "storyboard", provider: "deepseek", action: "生成分镜脚本", message: "DeepSeek 正在生成分镜脚本与镜头结构。"
+      stage: "storyboard", provider: "deepseek", action: "生成分镜脚本", message: "DeepSeek 正在生成分镜脚本与镜头结构。", schemaVersion: 2
     });
     eventId = event.id;
 
     const route = selectProviderModel({ taskType: "storyboard" });
     const generateDetailedStoryboard = process.env.AI_MODE === "real" ? deepseekProvider.generateStoryboard : generateRoutedStoryboard;
     let partialShotCount = 0;
+    const normalizationWarnings: string[] = [];
+    const completedIndices = new Set(owned.project.storyboardContract?.completedShotIndices ?? []);
+    const resumeStoryboardShots = completedIndices.size && completedIndices.size < timeline.shotCount
+      ? owned.project.shots.filter((shot) => completedIndices.has(shot.index))
+      : [];
+    partialShotCount = resumeStoryboardShots.length;
+    await updateStoryboardStageStatus(session.id, projectId, "running");
     let result = await generateDetailedStoryboard(owned.project.brief, owned.project.strategy, {
       sessionId: session.id,
       requestedShotCount: timeline.shotCount,
       targetDurationSec: timeline.targetDurationSec,
       shotDurationPlan: timeline.shotDurationPlan,
       productVisualSpec: productSpec.spec,
+      resumeStoryboardShots,
       onStoryboardChunk: async (shots, progress) => {
-        await saveOwnedStoryboardChunk(session.id, projectId!, shots);
+        normalizationWarnings.push(...progress.normalizationWarnings);
+        await saveOwnedStoryboardChunk(session.id, projectId!, shots, progress.normalizationWarnings);
         partialShotCount = progress.completed;
         await updateGenerationEventProgress(
           session.id,
@@ -78,6 +87,11 @@ export async function POST(request: Request) {
             : `正在分段生成文字分镜，已保存 ${progress.completed} / ${progress.total} 镜。`
         );
       },
+      onStoryboardRepair: async (details) => {
+        await updateStoryboardStageStatus(session.id, projectId!, "repairing", "MODEL_SCHEMA_DRIFT");
+        await updateGenerationEventProgress(session.id, projectId!, eventId!, partialShotCount, timeline.shotCount,
+          `正在整理分镜结构，请稍候… 位置：${details.location}${details.unknownFields.length ? `；待整理字段：${details.unknownFields.join("、")}` : ""}`);
+      },
       ...(parsed.data.regenerateExisting ? { providerTimeoutMs: 20_000, maxProviderAttempts: 1 } : {})
     });
     if (result.data && !storyboardMatchesPlanning(owned.project, result.data)) {
@@ -88,9 +102,15 @@ export async function POST(request: Request) {
         shotDurationPlan: timeline.shotDurationPlan,
         productVisualSpec: productSpec.spec,
         onStoryboardChunk: async (shots, progress) => {
-          await saveOwnedStoryboardChunk(session.id, projectId!, shots);
+          normalizationWarnings.push(...progress.normalizationWarnings);
+          await saveOwnedStoryboardChunk(session.id, projectId!, shots, progress.normalizationWarnings);
           partialShotCount = progress.completed;
           await updateGenerationEventProgress(session.id, projectId!, eventId!, progress.completed, progress.total, `正在修复分镜结构，已保存 ${progress.completed} / ${progress.total} 镜。`);
+        },
+        onStoryboardRepair: async (details) => {
+          await updateStoryboardStageStatus(session.id, projectId!, "repairing", "MODEL_SCHEMA_DRIFT");
+          await updateGenerationEventProgress(session.id, projectId!, eventId!, partialShotCount, timeline.shotCount,
+            `正在整理分镜结构，请稍候… 位置：${details.location}${details.unknownFields.length ? `；待整理字段：${details.unknownFields.join("、")}` : ""}`);
         },
         maxProviderAttempts: 1
       });
@@ -130,10 +150,12 @@ export async function POST(request: Request) {
         `分镜生成完成，共 ${responseShots.length} 个镜头，总时长 ${responseShots.reduce((sum, shot) => sum + shot.durationSec, 0)} 秒。`,
         { status: "completed", latencyMs: result.latencyMs, progressCurrent: responseShots.length, progressTotal: responseShots.length }
       );
+      await updateStoryboardStageStatus(session.id, projectId, "ready");
     } else {
       await failGenerationEvent(session.id, projectId, eventId, partialShotCount
         ? `分镜未全部生成，已保留前 ${partialShotCount} 镜。${storyboardPublicError(result.error)}`
-        : storyboardPublicError(result.error));
+        : storyboardPublicError(result.error), /MODEL_STATE_CONTINUITY/.test(result.error ?? "") ? "MODEL_STATE_CONTINUITY" : /MODEL_SCHEMA_DRIFT/.test(result.error ?? "") ? "MODEL_SCHEMA_DRIFT" : "PROVIDER_REQUEST_FAILED");
+      await updateStoryboardStageStatus(session.id, projectId, "failed", /MODEL_SCHEMA_DRIFT/.test(result.error ?? "") ? "MODEL_SCHEMA_DRIFT" : "PROVIDER_REQUEST_FAILED");
     }
 
     const publicError = result.error ? storyboardPublicError(result.error) : null;
@@ -145,15 +167,20 @@ export async function POST(request: Request) {
         route: "generate-storyboard", taskType: "storyboard", provider: result.provider, model: result.model,
         latencyMs: result.latencyMs, tokenUsage: result.tokenUsage, costEstimate: result.costEstimate,
         plannedRoute: route,
-        diagnostic: publicError ? { title: "DeepSeek 生成失败", detail: publicError } : null
+        diagnostic: publicError ? { title: /MODEL_SCHEMA_DRIFT/.test(result.error ?? "") ? "结构校验错误" : "DeepSeek 生成失败", detail: publicError } : null,
+        schemaVersion: 2,
+        normalizationWarnings: Array.from(new Set(normalizationWarnings))
       },
       fallbackUsed: false,
       fallbackReason: null,
       error: publicError
     });
   } catch (error) {
-    const detail = sanitizeApiError(error);
-    if (eventId && projectId) await failGenerationEvent(session.id, projectId, eventId, `分镜生成或保存失败：${detail}`).catch(() => undefined);
+    const detail = storyboardPublicError(sanitizeApiError(error));
+    if (eventId && projectId) {
+      await failGenerationEvent(session.id, projectId, eventId, `分镜生成或保存失败：${detail}`, "MODEL_SCHEMA_DRIFT").catch(() => undefined);
+      await updateStoryboardStageStatus(session.id, projectId, "failed", "MODEL_SCHEMA_DRIFT").catch(() => undefined);
+    }
     const projectError = projectStoreErrorResponse(error);
     if (projectError) return projectError;
     return apiJson({ success: false, data: null, trace: { route: "generate-storyboard", stage: "exception" }, fallbackUsed: false, error: detail }, 500);
@@ -165,7 +192,27 @@ function storyboardPublicError(error?: string | null) {
     return "本次生成内容过多，已超出单次长度限制。系统建议分段生成分镜内容。";
   }
   if (/DEEPSEEK_/i.test(error ?? "")) return "DeepSeek 暂时未能完成文字分镜，请稍后重试。";
-  return error || "文字分镜生成失败，请稍后重试。";
+  if (/MODEL_SCHEMA_DRIFT|unrecognized_keys|结构.*不完整|Zod/i.test(error ?? "")) {
+    return "文字分镜的数据结构不完整，系统未保存错误结果，请重新生成。";
+  }
+  if (/MODEL_STATE_CONTINUITY/i.test(error ?? "")) return "文字分镜的前后状态未能完整衔接，系统未保存错误结果，请重新生成。";
+  return error && !/[\[\]{}]/.test(error) ? error : "文字分镜生成失败，请稍后重试。";
+}
+
+async function updateStoryboardStageStatus(
+  sessionId: string,
+  projectId: string,
+  status: "running" | "repairing" | "ready" | "failed",
+  errorCode?: string
+) {
+  const current = await requireOwnedAnonymousProject(sessionId, projectId);
+  if (!current.project.stageStates) return;
+  await updateOwnedAnonymousProject(sessionId, projectId, {
+    stageStates: {
+      ...current.project.stageStates,
+      storyboard: { status, updatedAt: Date.now(), ...(errorCode ? { errorCode } : {}) }
+    }
+  }, current.version);
 }
 
 function storyboardMatchesPlanning(project: GenerationProject, shots: GenerationProject["shots"]): boolean {

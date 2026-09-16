@@ -34,6 +34,7 @@ import {
   stageIdSchema,
   stageStatesSchema,
   storyboardShotSchema,
+  storyboardContractMetadataSchema,
   dependencyNodeSchema,
   detailedShotPromptPackageSchema,
   versionedResourceSchema,
@@ -109,6 +110,7 @@ export const anonymousProjectPatchSchema = z.object({
   narrationPlan: narrationPlanSchema.optional(),
   shotPromptPackages: z.array(detailedShotPromptPackageSchema).max(12).optional(),
   shots: z.array(storyboardShotSchema).min(1).max(12).optional(),
+  storyboardContract: storyboardContractMetadataSchema.optional(),
   prompts: z.array(projectPromptSchema).max(12).optional(),
   aspectRatio: aspectRatioSchema.optional(),
   durationSec: z.number().int().positive().max(120).optional(),
@@ -554,6 +556,12 @@ export async function replaceOwnedProjectShots(
     shotCount: constraints.shotCount,
     shots,
     prompts: promptsFromShots(shots),
+    storyboardContract: {
+      schemaVersion: 2,
+      normalizationWarnings: current.project.storyboardContract?.normalizationWarnings ?? [],
+      continuityWarnings: current.project.storyboardContract?.continuityWarnings ?? [],
+      completedShotIndices: shots.map((shot) => shot.index)
+    },
     durationSec: validation.totalDurationSec,
     brief: { ...current.project.brief, durationSec: constraints.targetDurationSec },
     heroShotId: options.invalidateExistingAssets ? null : shots[heroIndex]!.id,
@@ -580,7 +588,8 @@ export async function replaceOwnedProjectShots(
 export async function saveOwnedStoryboardChunk(
   sessionId: string,
   projectId: string,
-  chunk: StoryboardShot[]
+  chunk: StoryboardShot[],
+  normalizationWarnings: string[] = []
 ): Promise<AnonymousProjectRecord> {
   const current = await requireOwnedAnonymousProject(sessionId, projectId);
   const constraints = resolveProjectPlanningConstraints(current.project);
@@ -600,7 +609,13 @@ export async function saveOwnedStoryboardChunk(
   const merged = ensureStoryboardArchitecture(baseline.map((shot, index) => byIndex.get(index + 1) ?? shot));
   return updateOwnedAnonymousProject(sessionId, projectId, {
     shots: merged,
-    prompts: promptsFromShots(merged)
+    prompts: promptsFromShots(merged),
+    storyboardContract: {
+      schemaVersion: 2,
+      normalizationWarnings: Array.from(new Set([...(current.project.storyboardContract?.normalizationWarnings ?? []), ...normalizationWarnings])).slice(-100),
+      continuityWarnings: current.project.storyboardContract?.continuityWarnings ?? [],
+      completedShotIndices: Array.from(new Set([...(current.project.storyboardContract?.completedShotIndices ?? []), ...chunk.map((shot) => shot.index)])).sort((left, right) => left - right)
+    }
   }, current.version);
 }
 
@@ -752,7 +767,7 @@ export function setOwnedProjectStageStatus(
   sessionId: string,
   projectId: string,
   stageId: StageId,
-  status: "draft" | "running" | "ready" | "failed",
+  status: "draft" | "running" | "repairing" | "ready" | "failed",
   expectedVersion?: number,
   errorCode?: string
 ): Promise<AnonymousProjectRecord> {

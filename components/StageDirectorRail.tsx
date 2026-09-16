@@ -70,11 +70,12 @@ function actionForStage(stage: StageId): WorkflowAction {
 }
 
 export function stageStatusLabel(status: StageState["status"]): string {
-  return ({ draft: "未开始", running: "生成中", ready: "待确认", locked: "已确认", outdated: "需要更新", failed: "失败", blocked: "未开始" } as const)[status];
+  return ({ draft: "未开始", running: "生成中", repairing: "正在整理", ready: "待确认", locked: "已确认", outdated: "需要更新", failed: "生成失败", blocked: "未开始" } as const)[status];
 }
 
 function majorStatus(states: StageState[]): StageState["status"] {
   if (states.some((state) => state.status === "failed")) return "failed";
+  if (states.some((state) => state.status === "repairing")) return "repairing";
   if (states.some((state) => state.status === "running")) return "running";
   if (states.some((state) => state.status === "outdated")) return "outdated";
   if (states.every((state) => state.status === "locked")) return "locked";

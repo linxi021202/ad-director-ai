@@ -45,7 +45,7 @@ describe("high-priority experience and generation fixes", () => {
     expect(route).toContain("saveOwnedStoryboardChunk");
     expect(route).toContain("本次生成内容较长，系统正在拆分生成，请稍候。");
     expect(route).toContain("本次生成内容过多，已超出单次长度限制。系统建议分段生成分镜内容。");
-    expect(provider).toContain("offset += 4");
+    expect(provider).toContain("durations.length < 4");
     expect(provider).toContain("shotDurationPlan.length > 1");
     expect(provider).toContain("TEXT_OUTPUT_BUDGETS.storyboardChunk");
   });

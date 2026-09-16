@@ -71,7 +71,7 @@ describe("project visual continuity architecture", () => {
     }));
     project.shots[0]!.sceneStateAfter = {
       shotId: project.shots[0]!.id,
-      characterStates: [{ characterId: "character-main", holding: "product-master", holdingHand: "right" }],
+      characterStates: [{ characterId: "character-main", productInteraction: "持有 product-master", handState: "右手持握" }],
       productStates: [{ productId: "product-master", opened: true, liquidLevel: "80%" }],
       propStates: [{ propId: "laptop", position: "desk-left", state: "open" }]
     };
@@ -79,7 +79,7 @@ describe("project visual continuity architecture", () => {
     const architecture = ensureProjectContinuity(project);
     const secondBefore = architecture.shots[1]!.sceneStateBefore!;
 
-    expect(secondBefore.characterStates[0]).toMatchObject({ holding: "product-master", holdingHand: "right" });
+    expect(secondBefore.characterStates[0]).toMatchObject({ productInteraction: "持有 product-master", handState: "右手持握" });
     expect(secondBefore.productStates[0]).toMatchObject({ opened: true, liquidLevel: "80%" });
     expect(secondBefore.propStates[0]).toMatchObject({ propId: "laptop", position: "desk-left", state: "open" });
   });

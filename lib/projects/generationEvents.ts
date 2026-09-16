@@ -40,6 +40,8 @@ const ALLOWED_ERROR_CODES = new Set([
   "SCENE_MASTER_REQUIRED",
   "DEPENDENCY_OUTDATED",
   "PROJECT_VERSION_CONFLICT",
+  "MODEL_SCHEMA_DRIFT",
+  "MODEL_STATE_CONTINUITY",
   "NOT_CONFIGURED",
   "RATE_LIMITED",
   "QUOTA_EXHAUSTED"
@@ -72,6 +74,7 @@ type NewEventInput = {
   progressTotal?: number;
   errorCode?: string;
   runId?: string;
+  schemaVersion?: number;
 };
 
 export function sanitizeGenerationEvent(event: GenerationEvent): GenerationEvent {
@@ -104,7 +107,8 @@ export async function appendGenerationEvent(
     ...(input.progressTotal !== undefined ? { progressTotal: input.progressTotal } : {}),
     startedAt: now,
     ...(isTerminal(input.status) ? { completedAt: now } : {}),
-    ...(input.errorCode ? { errorCode: input.errorCode } : {})
+    ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+    ...(input.schemaVersion ? { schemaVersion: input.schemaVersion } : {})
   });
 
   await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({

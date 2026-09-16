@@ -28,7 +28,7 @@ const workflowActionSchema = z.discriminatedUnion("action", [
     action: z.literal("set-stage-status"),
     expectedVersion: z.number().int().positive(),
     stageId: stageIdSchema,
-    status: z.enum(["draft", "running", "ready", "failed"]),
+    status: z.enum(["draft", "running", "repairing", "ready", "failed"]),
     errorCode: z.string().trim().min(1).max(80).optional()
   }).strict(),
   z.object({

@@ -169,12 +169,12 @@ export function lockStageInProject(project: GenerationProject, stageId: StageId,
 export function setStageStatusInProject(
   project: GenerationProject,
   stageId: StageId,
-  status: Extract<StageState["status"], "draft" | "running" | "ready" | "failed">,
+  status: Extract<StageState["status"], "draft" | "running" | "repairing" | "ready" | "failed">,
   now = Date.now(),
   errorCode?: string
 ): GenerationProject {
   const normalized = ensureStageWorkflow(project, now);
-  if (status === "running" || status === "ready") {
+  if (status === "running" || status === "repairing" || status === "ready") {
     const gate = canRunStage(normalized.stageStates!, stageId);
     if (!gate.allowed) throw new StageGateError(prerequisiteErrorCode(stageId), gate.reason ?? "前置阶段尚未锁定。");
   }

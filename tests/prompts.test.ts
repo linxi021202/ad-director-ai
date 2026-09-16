@@ -48,7 +48,8 @@ describe("DeepSeek prompt pipeline", () => {
     expect(chunk).toContain("第 1-4 镜");
     expect(chunk).toContain("详细 Qwen 图片提示词、Wan 视频提示词");
     expect(chunk).not.toContain('"frames":');
-    expect(chunk).not.toContain('"microBeats":');
+    expect(chunk).toContain('"microBeats":');
+    expect(chunk).toContain("characterStates 只允许这些字段");
   });
 
   it("keeps visual model prompts free of readable model-generated text", () => {

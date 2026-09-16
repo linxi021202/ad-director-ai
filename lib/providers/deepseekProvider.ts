@@ -34,6 +34,13 @@ import { repairShotProductTerminology } from "../visual/productTerminology";
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
 import { ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
+import {
+  buildStoryboardRepairPrompt,
+  mergeStoryboardChunks,
+  normalizeStoryboardOutput,
+  validateStateContinuity,
+  validateStoryboardGlobalConstraints
+} from "../ai/contracts/storyboard";
 import { buildCreativeDirectionsPrompt, buildDeepenCreativeDirectionsPrompt, validateCreativeDirectionSetQuality } from "../creative/creativeDirections";
 import { buildShotPromptExpansionPrompt, type ShotPromptExpansionInput } from "../prompts/detailedDirectorPrompts";
 import {
@@ -84,17 +91,6 @@ const storyboardStructureShotSchema = routedShotSchema.extend({
 }).refine((shot) => [...shot.subtitle].length <= 16, {
   message: "subtitle must be no more than 16 Chinese characters"
 });
-
-function createStoryboardChunkSchema(shotDurationPlan: number[], shotIndexOffset: number): z.ZodType<StoryboardShot[]> {
-  return z.preprocess((value) => value && typeof value === "object" && !Array.isArray(value) && "shots" in value
-    ? (value as { shots?: unknown }).shots
-    : value,
-  z.array(storyboardStructureShotSchema).length(shotDurationPlan.length).transform((shots) => shots.map((shot, index) => ({
-    ...shot,
-    index: shotIndexOffset + index + 1,
-    durationSec: shotDurationPlan[index]!
-  })))) as z.ZodType<StoryboardShot[]>;
-}
 
 function createShotsPayloadSchema(shotDurationPlan: number[]): z.ZodType<StoryboardShot[]> {
   const expectedShotCount = shotDurationPlan.length;
@@ -261,6 +257,110 @@ async function callAndValidate<TData>(
   return failureResponse(model, Date.now() - startedAt, lastError, tokenUsage);
 }
 
+type StoryboardChunkResponse = RealTextProviderResponse<StoryboardShot[]> & { normalizationWarnings?: string[] };
+
+async function callStoryboardChunk(
+  prompt: string,
+  shotDurationPlan: number[],
+  shotIndexOffset: number,
+  context?: ProviderRequestContext
+): Promise<StoryboardChunkResponse> {
+  const startedAt = Date.now();
+  const runtime = getDeepSeekRuntimeConfig();
+  const model = runtime.model;
+  const secret = await resolveProviderSecret("deepseek", context?.sessionId ?? "");
+  if (!secret.value) return failureResponse(model, Date.now() - startedAt, "DeepSeek尚未配置。");
+  const timeoutMs = Math.max(5_000, Math.min(runtime.timeoutMs, context?.providerTimeoutMs ?? runtime.timeoutMs));
+  const client = createDeepSeekClient({ apiKey: secret.value, baseUrl: runtime.baseUrl, model, timeoutMs });
+  const first = await client.call({
+    model,
+    messages: [
+      { role: "system", content: "你是 AdDirector AI 的文字分镜导演。严格遵守正式 JSON 契约，只输出合法 JSON，不创造字段。" },
+      { role: "user", content: prompt }
+    ],
+    responseFormat: "json",
+    temperature: 0.42,
+    maxTokens: Math.min(TEXT_OUTPUT_BUDGETS.storyboardChunk, runtime.maxOutputTokens)
+  });
+  let tokenUsage = first.tokenUsage;
+  if (!first.success) return failureResponse(model, Date.now() - startedAt, first.error ?? "DeepSeek 文字分镜调用失败。", tokenUsage);
+
+  const normalized = normalizeStoryboardOutput(first.json);
+  const rawShots = storyboardEnvelopeShots(normalized.value);
+  if (!rawShots || rawShots.length !== shotDurationPlan.length) {
+    return failureResponse(model, Date.now() - startedAt, "MODEL_SCHEMA_DRIFT：模型返回的分镜段数量与正式契约不一致。", tokenUsage);
+  }
+
+  const warnings = normalized.warnings.map((warning) => `${warning.path}：${warning.alias} 已归一化为 ${warning.canonical}`);
+  const shots: StoryboardShot[] = [];
+  for (let localIndex = 0; localIndex < rawShots.length; localIndex += 1) {
+    const globalIndex = shotIndexOffset + localIndex + 1;
+    const durationSec = shotDurationPlan[localIndex]!;
+    const initial = parseStoryboardShot(rawShots[localIndex], globalIndex, durationSec);
+    if (initial.success) {
+      shots.push(initial.data);
+      continue;
+    }
+
+    const diagnostic = storyboardValidationDiagnostic(initial.error, globalIndex);
+    await context?.onStoryboardRepair?.({ shotIndex: globalIndex, location: diagnostic.location, unknownFields: diagnostic.unknownFields });
+    const repaired = await client.call({
+      model,
+      messages: [
+        { role: "system", content: "你只修复 JSON 结构。不得改变、删减或概括原分镜内容，只输出合法 JSON。" },
+        { role: "user", content: buildStoryboardRepairPrompt(rawShots[localIndex], diagnostic.technicalSummary) }
+      ],
+      responseFormat: "json",
+      temperature: 0.1,
+      maxTokens: Math.min(TEXT_OUTPUT_BUDGETS.storyboardChunk, runtime.maxOutputTokens)
+    });
+    tokenUsage = addTokenUsage(tokenUsage, repaired.tokenUsage);
+    if (!repaired.success) {
+      return failureResponse(model, Date.now() - startedAt, repaired.error ?? "MODEL_SCHEMA_DRIFT：单镜头结构修复失败。", tokenUsage);
+    }
+    const repairValue = repaired.json && typeof repaired.json === "object" && !Array.isArray(repaired.json) && "shot" in repaired.json
+      ? (repaired.json as { shot?: unknown }).shot
+      : repaired.json;
+    const repairNormalized = normalizeStoryboardOutput({ shots: [repairValue] });
+    warnings.push(...repairNormalized.warnings.map((warning) => `第 ${globalIndex} 镜 ${warning.path}：${warning.alias} 已归一化为 ${warning.canonical}`));
+    const repairedShot = storyboardEnvelopeShots(repairNormalized.value)?.[0];
+    const final = parseStoryboardShot(repairedShot, globalIndex, durationSec);
+    if (!final.success) {
+      return failureResponse(model, Date.now() - startedAt, "MODEL_SCHEMA_DRIFT：文字分镜的数据结构不完整，单镜头自动修复后仍未通过。", tokenUsage);
+    }
+    shots.push(final.data);
+  }
+
+  return { ...successResponse(shots, model, Date.now() - startedAt, tokenUsage), normalizationWarnings: warnings };
+}
+
+function storyboardEnvelopeShots(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const shots = (value as { shots?: unknown }).shots;
+  return Array.isArray(shots) ? shots : null;
+}
+
+function parseStoryboardShot(value: unknown, index: number, durationSec: number) {
+  const parsed = storyboardStructureShotSchema.safeParse(value);
+  return parsed.success
+    ? { success: true as const, data: { ...parsed.data, index, durationSec } as StoryboardShot }
+    : { success: false as const, error: parsed.error };
+}
+
+function storyboardValidationDiagnostic(error: z.ZodError, shotIndex: number) {
+  const unknownFields = error.issues.flatMap((issue) => issue.code === "unrecognized_keys" ? issue.keys : []);
+  const first = error.issues[0];
+  const location = `第 ${shotIndex} 个镜头${first?.path.length ? ` → ${first.path.map(chinesePathSegment).join(" → ")}` : ""}`;
+  const technicalSummary = error.issues.map((issue) => `${issue.path.join(".") || "镜头"}: ${issue.message}`).join("；");
+  return { unknownFields: Array.from(new Set(unknownFields)), location, technicalSummary };
+}
+
+function chinesePathSegment(segment: string | number) {
+  if (typeof segment === "number") return `第 ${segment + 1} 项`;
+  return ({ sceneStateBefore: "场景开始状态", sceneStateAfter: "场景结束状态", characterStates: "人物状态", productStates: "产品状态", microBeats: "动作节拍" } as Record<string, string>)[segment] ?? segment;
+}
+
 export const deepseekProvider = {
   provider: "deepseek",
 
@@ -283,22 +383,25 @@ export const deepseekProvider = {
     );
     const startedAt = Date.now();
     const model = getDeepSeekRuntimeConfig().model;
-    const generated: StoryboardShot[] = [];
+    const generated: StoryboardShot[] = (context?.resumeStoryboardShots ?? [])
+      .filter((shot) => shot.index >= 1 && shot.index <= timeline.shotCount)
+      .map((shot) => ({ ...shot, durationSec: timeline.shotDurationPlan[shot.index - 1]! }))
+      .sort((left, right) => left.index - right.index);
     let tokenUsage: LLMTokenUsage | undefined;
     let lastError = "分镜生成失败，请稍后重试。";
 
     const generateChunk = async (shotIndexOffset: number, shotDurationPlan: number[], splitRetry = false): Promise<boolean> => {
-      const response = await callAndValidate(
+      const response = await callStoryboardChunk(
         buildStoryboardChunkPrompt(brief, strategy, {
           shotDurationPlan,
           shotIndexOffset,
           totalShotCount: timeline.shotCount,
           totalDurationSec: timeline.totalDurationSec,
           productVisualSpec: context?.productVisualSpec,
-          previousShot: generated.at(-1)
+          previousShot: generated.find((shot) => shot.index === shotIndexOffset)
         }),
-        createStoryboardChunkSchema(shotDurationPlan, shotIndexOffset),
-        { temperature: 0.42, maxTokens: TEXT_OUTPUT_BUDGETS.storyboardChunk },
+        shotDurationPlan,
+        shotIndexOffset,
         context
       );
       tokenUsage = addTokenUsage(tokenUsage, response.tokenUsage);
@@ -308,7 +411,8 @@ export const deepseekProvider = {
         await context?.onStoryboardChunk?.(normalized, {
           completed: generated.length,
           total: timeline.shotCount,
-          splitRetry
+          splitRetry,
+          normalizationWarnings: response.normalizationWarnings ?? []
         });
         return true;
       }
@@ -322,15 +426,33 @@ export const deepseekProvider = {
       return false;
     };
 
-    for (let offset = 0; offset < timeline.shotCount; offset += 4) {
-      const completed = await generateChunk(offset, timeline.shotDurationPlan.slice(offset, offset + 4));
+    for (let offset = 0; offset < timeline.shotCount;) {
+      if (generated.some((shot) => shot.index === offset + 1)) {
+        offset += 1;
+        continue;
+      }
+      const start = offset;
+      const durations: number[] = [];
+      while (offset < timeline.shotCount && durations.length < 4 && !generated.some((shot) => shot.index === offset + 1)) {
+        durations.push(timeline.shotDurationPlan[offset]!);
+        offset += 1;
+      }
+      const completed = await generateChunk(start, durations);
       if (!completed) return failureResponse(model, Date.now() - startedAt, lastError, tokenUsage);
     }
 
-    const storyboard = ensureStoryboardArchitecture(applyProductLockRules(
+    const storyboard = mergeStoryboardChunks(ensureStoryboardArchitecture(applyProductLockRules(
       generated.sort((left, right) => left.index - right.index),
       context?.productVisualSpec
-    ));
+    )));
+    const globalValidation = validateStoryboardGlobalConstraints(storyboard, timeline.shotCount, timeline.totalDurationSec, timeline.shotDurationPlan);
+    if (!globalValidation.valid) {
+      return failureResponse(model, Date.now() - startedAt, `MODEL_SCHEMA_DRIFT：${globalValidation.issues.join("；")}`, tokenUsage);
+    }
+    const continuity = validateStateContinuity(storyboard);
+    if (!continuity.valid) {
+      return failureResponse(model, Date.now() - startedAt, `MODEL_STATE_CONTINUITY：${continuity.issues.join("；")}`, tokenUsage);
+    }
     return successResponse(storyboard, model, Date.now() - startedAt, tokenUsage);
   },
 

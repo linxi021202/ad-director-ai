@@ -1,5 +1,41 @@
 import { z } from "zod";
-import { DEFAULT_SHOT_DURATION_SEC, MAX_SHOT_COUNT, MAX_SHOT_DURATION_SEC, MAX_TARGET_DURATION_SEC, MIN_SHOT_COUNT, MIN_SHOT_DURATION_SEC, MIN_TARGET_DURATION_SEC } from "../video/shotConfig";
+import { MAX_SHOT_COUNT, MAX_SHOT_DURATION_SEC, MAX_TARGET_DURATION_SEC, MIN_SHOT_COUNT, MIN_TARGET_DURATION_SEC } from "../video/shotConfig";
+import {
+  detailedStoryboardShotSchema,
+  microBeatPurposeSchema,
+  microBeatSchema,
+  narrativeProgressionSchema,
+  productFidelityModeSchema,
+  productShotTypeSchema,
+  sceneStateSchema,
+  shotFrameRoleSchema,
+  shotFrameSchema,
+  shotFrameStatusSchema,
+  shotGenerationModeSchema,
+  shotSubclipSchema,
+  storyboardShotSchema,
+  textSafeZoneSchema
+} from "../ai/contracts/storyboard";
+
+export {
+  characterSceneStateSchema,
+  detailedStoryboardShotSchema,
+  microBeatPurposeSchema,
+  microBeatSchema,
+  narrativeProgressionSchema,
+  productFidelityModeSchema,
+  productSceneStateSchema,
+  productShotTypeSchema,
+  propSceneStateSchema,
+  sceneStateSchema,
+  shotFrameRoleSchema,
+  shotFrameSchema,
+  shotFrameStatusSchema,
+  shotGenerationModeSchema,
+  shotSubclipSchema,
+  storyboardShotSchema,
+  textSafeZoneSchema
+} from "../ai/contracts/storyboard";
 
 export const platformSchema = z.enum(["douyin", "xiaohongshu", "ecommerce"]);
 export const aspectRatioSchema = z.enum(["9:16", "1:1", "16:9"]);
@@ -203,36 +239,6 @@ export const continuityGroupSchema = z.object({
   immutableTraits: z.array(z.string().min(1)).min(1).max(30)
 }).strict();
 
-const characterSceneStateSchema = z.object({
-  characterId: z.string().min(1),
-  position: z.string().min(1).optional(),
-  pose: z.string().min(1).optional(),
-  holding: z.string().min(1).optional(),
-  holdingHand: z.enum(["left", "right"]).optional(),
-  wardrobeState: z.string().min(1).optional()
-}).strict();
-
-const productSceneStateSchema = z.object({
-  productId: z.string().min(1),
-  position: z.string().min(1).optional(),
-  orientation: z.string().min(1).optional(),
-  opened: z.boolean().optional(),
-  liquidLevel: z.string().min(1).optional()
-}).strict();
-
-const propSceneStateSchema = z.object({
-  propId: z.string().min(1),
-  position: z.string().min(1).optional(),
-  state: z.string().min(1).optional()
-}).strict();
-
-export const sceneStateSchema = z.object({
-  shotId: z.string().min(1),
-  characterStates: z.array(characterSceneStateSchema).max(12),
-  productStates: z.array(productSceneStateSchema).max(12),
-  propStates: z.array(propSceneStateSchema).max(20)
-}).strict();
-
 export const visualContinuityBibleSchema = z.object({
   characters: z.array(characterIdentitySchema).max(12),
   products: z.array(productIdentitySchema).min(1).max(12),
@@ -266,8 +272,6 @@ export const referencePackSchema = z.object({
 export const productContainerTypeSchema = z.enum([
   "bottle", "carton", "can", "pouch", "jar", "tube", "box", "cup", "other"
 ]);
-export const productFidelityModeSchema = z.enum(["exact", "reference", "not-visible"]);
-export const productShotTypeSchema = z.enum(["packshot", "product-in-scene", "human-product-interaction", "not-visible"]);
 export const productVisualSpecSchema = z.object({
   sourceAssetId: z.string().uuid(),
   containerType: productContainerTypeSchema,
@@ -480,120 +484,6 @@ export const videoQAResultSchema = visualQABaseSchema.extend({
   temporalConsistencyPassed: z.boolean()
 }).strict();
 
-export const shotGenerationModeSchema = z.enum([
-  "r2v", "i2v", "i2v-first-frame", "first-last-frame", "i2v-first-last", "continuation", "remotion-motion"
-]);
-export const textSafeZoneSchema = z.enum(["top-left", "top-center", "bottom-left", "none"]);
-
-export const shotFrameRoleSchema = z.enum(["start", "setup", "action", "product", "reaction", "transition", "end"]);
-export const shotFrameStatusSchema = z.enum(["pending", "generating", "qa-review", "ready", "needs-review", "failed"]);
-export const shotFrameSchema = z.object({
-  id: z.string().min(1), shotId: z.string().min(1), index: z.number().int().nonnegative(),
-  role: shotFrameRoleSchema, timestampSec: z.number().nonnegative(), description: z.string().min(1),
-  imagePromptCn: z.string().min(1), imagePromptEn: z.string().min(1),
-  negativePromptCn: z.string().min(1).optional(), negativePromptEn: z.string().min(1).optional(),
-  assetId: z.string().uuid().optional(), status: shotFrameStatusSchema.default("pending"), isLocked: z.boolean().default(false),
-  sceneStateBefore: sceneStateSchema.optional(), sceneStateAfter: sceneStateSchema.optional()
-}).strict();
-export const microBeatPurposeSchema = z.enum(["orient", "reveal", "demonstrate", "emphasize", "react", "transition", "resolve"]);
-export const microBeatSchema = z.object({
-  id: z.string().min(1), shotId: z.string().min(1), index: z.number().int().nonnegative(), purpose: microBeatPurposeSchema,
-  startSec: z.number().nonnegative(), endSec: z.number().positive(), action: z.string().min(1), stateChange: z.string().min(1),
-  characterAction: z.string().min(1).optional(), handAction: z.string().min(1).optional(), gazeAction: z.string().min(1).optional(),
-  productAction: z.string().min(1).optional(), cameraAction: z.string().min(1).optional(), environmentAction: z.string().min(1).optional(),
-  expressionChange: z.string().min(1).optional(), continuityConstraint: z.string().min(1).optional(),
-  complexity: z.number().int().min(1).max(4), frameId: z.string().min(1).optional()
-}).strict();
-export const shotSubclipSchema = z.object({
-  id: z.string().min(1), shotId: z.string().min(1), index: z.number().int().nonnegative(), startSec: z.number().nonnegative(),
-  durationSec: z.number().positive(), startFrameId: z.string().min(1), endFrameId: z.string().min(1).optional(),
-  assetId: z.string().uuid().optional(), status: z.enum(["pending", "generating", "ready", "needs-review", "failed"]).default("pending")
-}).strict();
-export const narrativeProgressionSchema = z.object({
-  previousState: z.string().min(1), newInformation: z.string().min(1), resultingState: z.string().min(1)
-}).strict();
-
-export const storyboardShotSchema = z.object({
-  id: z.string().min(1),
-  index: z.number().int().positive(),
-  durationSec: z.number().int().min(MIN_SHOT_DURATION_SEC).max(MAX_SHOT_DURATION_SEC).default(DEFAULT_SHOT_DURATION_SEC),
-  goal: z.string().min(1),
-  title: z.string().min(1).optional(),
-  narrativePurpose: z.string().min(1).optional(),
-  commercialPurpose: z.string().min(1).optional(),
-  previousState: z.string().min(1).optional(),
-  newInformation: z.string().min(1).optional(),
-  resultingState: z.string().min(1).optional(),
-  visualDescription: z.string().min(1),
-  visualSummary: z.string().min(1).optional(),
-  compositionIntent: z.string().min(1).optional(),
-  emotionalIntent: z.string().min(1).optional(),
-  productVisibilityIntent: z.string().min(1).optional(),
-  transitionIn: z.string().min(1).optional(),
-  transitionOut: z.string().min(1).optional(),
-  continuityNotes: z.array(z.string().min(1)).max(30).optional(),
-  riskNotes: z.array(z.string().min(1)).max(20).optional(),
-  cameraAngle: z.string().min(1),
-  cameraMovement: z.string().min(1),
-  subtitle: z.string().min(1),
-  imagePromptCn: z.string().min(1),
-  imagePromptEn: z.string().min(1),
-  videoPromptCn: z.string().min(1),
-  videoPromptEn: z.string().min(1).optional(),
-  negativePromptCn: z.string().min(1).optional(),
-  negativePromptEn: z.string().min(1).optional(),
-  recommendedModel: z.string().min(1),
-  fallbackPlan: z.string().min(1),
-  sceneGroupId: z.string().min(1).optional(),
-  continuityGroupId: z.string().min(1).optional(),
-  generationMode: shotGenerationModeSchema.optional(),
-  characterIds: z.array(z.string().min(1)).max(12).optional(),
-  productIds: z.array(z.string().min(1)).max(12).optional(),
-  containsProduct: z.boolean().optional(),
-  exactProductShot: z.boolean().optional(),
-  productFidelityMode: productFidelityModeSchema.optional(),
-  productShotType: productShotTypeSchema.optional(),
-  lowRiskProductFallback: z.boolean().optional(),
-  sceneId: z.string().min(1).optional(),
-  sceneStateId: z.string().min(1).optional(),
-  sceneTransitionReason: z.string().min(1).optional(),
-  referenceImageAssetIds: referenceAssetIdsSchema.optional(),
-  referenceVideoAssetIds: referenceAssetIdsSchema.optional(),
-  sceneStateBefore: sceneStateSchema.optional(),
-  sceneStateAfter: sceneStateSchema.optional(),
-  continuityConstraints: z.array(z.string().min(1)).min(1).max(30).optional(),
-  shotDirection: z.array(z.string().min(1)).min(1).max(20).optional(),
-  motionComplexityScore: z.number().int().min(0).max(10).optional(),
-  textSafeZone: textSafeZoneSchema.optional(),
-  frames: z.array(shotFrameSchema).min(1).max(5).optional(),
-  microBeats: z.array(microBeatSchema).min(1).max(9).optional(),
-  subclips: z.array(shotSubclipSchema).max(2).optional(),
-  narrativeProgression: narrativeProgressionSchema.optional(),
-  primaryKeyframeAssetId: z.string().uuid().optional(),
-  keyframeAssetId: z.string().uuid().optional()
-});
-
-export const detailedStoryboardShotSchema = storyboardShotSchema.extend({
-  title: z.string().trim().min(4),
-  narrativePurpose: z.string().trim().min(60),
-  commercialPurpose: z.string().trim().min(30),
-  previousState: z.string().trim().min(20),
-  newInformation: z.string().trim().min(20),
-  resultingState: z.string().trim().min(20),
-  visualSummary: z.string().trim().min(120),
-  compositionIntent: z.string().trim().min(30),
-  emotionalIntent: z.string().trim().min(20),
-  productVisibilityIntent: z.string().trim().min(20),
-  transitionIn: z.string().trim().min(12),
-  transitionOut: z.string().trim().min(12),
-  microBeats: z.array(microBeatSchema.extend({
-    characterAction: z.string().trim().min(12),
-    continuityConstraint: z.string().trim().min(12)
-  })).min(2).max(9),
-  continuityNotes: z.array(z.string().trim().min(8)).min(4).max(30),
-  riskNotes: z.array(z.string().trim().min(6)).min(1).max(20)
-});
-
 const detailedFramePromptSchema = z.object({
   frameId: z.string().min(1), timestampSec: z.number().nonnegative(), role: z.string().min(1), frozenMoment: z.string().min(20),
   subject: z.string().min(12), subjectPosition: z.string().min(8), characterPose: z.string().min(8), facialExpression: z.string().min(6),
@@ -720,6 +610,7 @@ export const stageIdSchema = z.enum([
 export const stageStatusSchema = z.enum([
   "draft",
   "running",
+  "repairing",
   "ready",
   "locked",
   "outdated",
@@ -845,7 +736,14 @@ export const generationEventSchema = z.object({
   startedAt: z.number().int().nonnegative(),
   completedAt: z.number().int().nonnegative().optional(),
   latencyMs: z.number().int().nonnegative().optional(),
-  errorCode: z.string().min(1).max(80).optional()
+  errorCode: z.string().min(1).max(80).optional(),
+  schemaVersion: z.number().int().positive().optional()
+}).strict();
+export const storyboardContractMetadataSchema = z.object({
+  schemaVersion: z.literal(2),
+  normalizationWarnings: z.array(z.string().min(1).max(500)).max(100).default([]),
+  continuityWarnings: z.array(z.string().min(1).max(500)).max(100).default([]),
+  completedShotIndices: z.array(z.number().int().positive().max(MAX_SHOT_COUNT)).max(MAX_SHOT_COUNT).default([])
 }).strict();
 export const projectPromptSchema = z.object({
   shotId: z.string().min(1),
@@ -936,6 +834,7 @@ export const generationProjectSchema = z.object({
   narrationPlan: narrationPlanSchema.optional(),
   shotPromptPackages: z.array(detailedShotPromptPackageSchema).max(MAX_SHOT_COUNT).optional(),
   shots: z.array(storyboardShotSchema).min(1),
+  storyboardContract: storyboardContractMetadataSchema.optional(),
   modelRoutes: z.array(modelRouteSchema).min(1),
   costEstimates: z.array(costModeEstimateSchema).min(1),
   heroShotId: z.string().min(1).optional(),

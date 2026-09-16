@@ -102,23 +102,39 @@ describe("deepseekProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("retries once when Zod validation fails and then returns valid storyboard", async () => {
-    const invalidShots = { shots: [{ ...coldBrewDemo.shots[0], recommendedModel: "forbidden-model" }] };
+  it("repairs only the drifting shot when an unknown character state field is returned", async () => {
     const validShots = { shots: coldBrewDemo.shots.map((shot) => ({ ...detailedShot(shot), recommendedModel: "qwen-image" })) };
+    const driftingFirstChunk = structuredClone(validShots.shots.slice(0, 4));
+    driftingFirstChunk[0]!.sceneStateAfter = {
+      shotId: driftingFirstChunk[0]!.id,
+      characterStates: [{
+        characterId: "character-main", position: "桌边", pose: "坐姿", gaze: "产品", expression: "眉眼放松",
+        emotion: "疲惫但开始恢复", energyLevel: "逐步提升", handState: "右手靠近产品",
+        completelyInventedField: "不允许"
+      }],
+      productStates: [], propStates: []
+    } as never;
+    const repairs: Array<{ shotIndex: number; unknownFields: string[] }> = [];
     let callCount = 0;
     const fetchMock = vi.fn().mockImplementation((_url, init) => {
       callCount += 1;
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+      const repairing = body.messages.some((message) => message.content.includes("待修复镜头"));
+      if (repairing) return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ shot: validShots.shots[0] })));
       return Promise.resolve(callCount === 1
-        ? mockDeepSeekResponse(JSON.stringify(invalidShots))
+        ? mockDeepSeekResponse(JSON.stringify({ shots: driftingFirstChunk }))
         : mockDeepSeekResponse(JSON.stringify({ shots: requestedChunk(init, validShots.shots) })));
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy);
+    const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy, {
+      onStoryboardRepair: async ({ shotIndex, unknownFields }) => { repairs.push({ shotIndex, unknownFields }); }
+    });
 
     expect(result.success, result.error ?? undefined).toBe(true);
     expect(result.data).toHaveLength(8);
     expect(result.data?.every((shot) => shot.recommendedModel === "qwen-image")).toBe(true);
+    expect(repairs).toEqual([{ shotIndex: 1, unknownFields: ["completelyInventedField"] }]);
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -146,6 +162,27 @@ describe("deepseekProvider", () => {
     for (const call of fetchMock.mock.calls) {
       expect(JSON.parse(String(call[1]?.body)).max_tokens).toBeLessThanOrEqual(3600);
     }
+  });
+
+  it("continues from persisted storyboard chunks instead of regenerating completed shots", async () => {
+    const shots = coldBrewDemo.shots.map((shot) => ({ ...detailedShot(shot), recommendedModel: "qwen-image" }));
+    const saved: number[][] = [];
+    const fetchMock = vi.fn().mockImplementation((_url, init) => Promise.resolve(
+      mockDeepSeekResponse(JSON.stringify({ shots: requestedChunk(init, shots) }))
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy, {
+      resumeStoryboardShots: shots.slice(0, 4),
+      onStoryboardChunk: async (chunk) => { saved.push(chunk.map((shot) => shot.index)); }
+    });
+
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(result.data).toHaveLength(8);
+    expect(saved).toEqual([[5, 6, 7, 8]]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { messages: Array<{ content: string }> };
+    expect(requestBody.messages.some((message) => message.content.includes("本次只生成第 5-8 镜"))).toBe(true);
   });
 
   it("honors a custom storyboard count and duration plan", async () => {

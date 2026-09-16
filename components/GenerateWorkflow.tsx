@@ -1125,8 +1125,14 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
     setIsGenerating(true);
     setError(null);
+    let storyboardStatusTimer: number | undefined;
     try {
       await postWorkflowAction({ action: "set-stage-status", stageId: "storyboard", status: "running" });
+      storyboardStatusTimer = window.setInterval(() => {
+        void fetchServerProject(activeProject.id).then((snapshot) => {
+          if (["running", "repairing", "failed"].includes(snapshot.project.stageStates?.storyboard.status ?? "")) applyProjectUpdate(snapshot);
+        }).catch(() => undefined);
+      }, 1_000);
       const response = await postApi<{ shots: StoryboardShot[] }>("/api/generate-storyboard", { projectId: activeProject.id, brief: activeProject.brief, strategy: activeProject.strategy });
       if (!response.success || !response.data?.shots) throw new Error(response.error || "文字分镜生成失败。");
       const snapshot = await fetchServerProject(activeProject.id);
@@ -1137,7 +1143,18 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       selectStage("storyboard");
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "文字分镜生成失败。");
+      setTraceLabel("文字分镜生成失败");
+      try {
+        const snapshot = await fetchServerProject(activeProject.id);
+        const refreshed = applyProjectUpdate(snapshot);
+        if (refreshed.stageStates?.storyboard.status !== "failed") {
+          await postWorkflowAction({ action: "set-stage-status", stageId: "storyboard", status: "failed", errorCode: "MODEL_SCHEMA_DRIFT" }, snapshot.version);
+        }
+      } catch {
+        // The generation route normally persists the failed state; keep the visible error if refresh is unavailable.
+      }
     } finally {
+      if (storyboardStatusTimer !== undefined) window.clearInterval(storyboardStatusTimer);
       setIsGenerating(false);
       await refreshServerEvents(activeProject.id);
     }
@@ -1150,6 +1167,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       ? { ...persistedStageStates, brief: { status: "running", updatedAt: Date.now() } }
       : persistedStageStates;
   const activeStageState = stageStates[activeStage];
+  const latestStoryboardEvent = [...(activeProject.generationEvents ?? [])].reverse().find((event) => event.stage === "storyboard");
   const visualSetupState = deriveVisualSetupStageState({ ...activeProject, stageStates });
   const stageStatus = activeStage === "anchors" ? visualSetupStatusLabel(visualSetupState.status) : stageStatusLabel(activeStageState.status);
   const shotCountLocked = hasGeneratedStoryboard(activeProject);
@@ -1225,7 +1243,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               onEnterStoryboard={() => selectStage("storyboard")}
             /> : null}
 
-            {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}
+            {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : activeStageState.status === "repairing" ? <div className="storyboard-loading"><strong>正在校正文字分镜结构…</strong><span>系统只整理数据结构，不会缩短或重写已经生成的创意内容。</span></div> : activeStageState.status === "failed" ? <div className="creative-empty-state"><strong>文字分镜生成失败</strong><p>{latestStoryboardEvent?.progressCurrent ? `已完成 ${latestStoryboardEvent.progressCurrent} / ${latestStoryboardEvent.progressTotal ?? activeProject.shots.length} 镜头，成功内容已经保留。` : "文字分镜的数据结构不完整，系统未保存错误结果。"}</p><button type="button" className="button-secondary-v3" disabled={isGenerating} onClick={() => void runStoryboardStage()}>{latestStoryboardEvent?.progressCurrent ? "继续生成剩余镜头" : "重新生成文字分镜"}</button></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}
 
             {activeStage === "keyframes" ? <ResultBoard project={previewProject} keyframes={liveKeyframes} callTrace={[]} projectId={activeProject.id} generated={generated} isGenerating={isGenerating} /> : null}
             {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已确认关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
@@ -1761,16 +1779,26 @@ function generationEventsToTrace(events: GenerationEvent[] | undefined): string[
     .map((event) => {
       const provider = event.provider === "system" ? "系统" : event.provider === "qwen-image" ? "Qwen-Image" : event.provider === "wan" ? "Wan 2.7" : event.provider === "happyhorse" ? "HappyHorse（历史）" : event.provider === "remotion" ? "Remotion" : "DeepSeek";
       const progress = event.progressTotal ? `｜${event.progressCurrent ?? 0} / ${event.progressTotal}` : "";
-      const errorCode = event.errorCode ? `｜错误码 ${event.errorCode}` : "";
+      const errorCode = event.errorCode ? `｜错误类型 ${friendlyGenerationErrorCode(event.errorCode)}` : "";
       return `${provider}｜${event.action}｜${eventStatusLabel(event.status)}${progress}${errorCode}｜${event.message}`;
     });
 }
 
+function friendlyGenerationErrorCode(code: string) {
+  return ({
+    MODEL_SCHEMA_DRIFT: "模型输出结构不一致",
+    MODEL_STATE_CONTINUITY: "镜头状态衔接不一致",
+    PROVIDER_REQUEST_FAILED: "模型请求失败",
+    TASK_INTERRUPTED: "任务已中断"
+  } as Record<string, string>)[code] ?? "生成任务异常";
+}
+
 function initialTraceLabel(events: GenerationEvent[] | undefined): string {
   if (!events?.length) return "未调用";
-  if (events.some((event) => event.status === "running" || event.status === "queued")) return "执行中";
-  if (events.some((event) => event.status === "failed" || event.status === "interrupted")) return "部分任务需重试";
-  if (events.some((event) => event.status === "fallback")) return "部分回退完成";
+  const latest = [...events].sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id)).at(-1)!;
+  if (latest.status === "failed" || latest.status === "interrupted") return "生成失败";
+  if (latest.status === "running" || latest.status === "queued") return latest.message.includes("整理") ? "正在整理" : "执行中";
+  if (latest.status === "fallback") return "部分回退完成";
   return "服务端日志已恢复";
 }
 
