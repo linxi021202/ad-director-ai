@@ -28,8 +28,11 @@ describe("DeepSeek staged director quality", () => {
   it("uses per-shot expansion and persists full packages", () => {
     const route = readFileSync("app/api/generate-assets/route.ts", "utf8");
     const store = readFileSync("lib/projects/anonymousProjectStore.ts", "utf8");
-    expect(route).toContain("for (const shot of sourceShots)");
+    expect(route).toContain("for (const [shotOffset, shot] of sourceShots.entries())");
     expect(route).toContain("expandShotPrompts");
+    expect(route).toContain("persistPromptPackage");
+    expect(route).toContain("updateGenerationEventProgress");
+    expect(route).toContain("completedShotIds.has(shot.id)");
     expect(route).toContain("shotPromptPackages");
     expect(store).toContain("shotPromptPackages: project.shotPromptPackages");
   });

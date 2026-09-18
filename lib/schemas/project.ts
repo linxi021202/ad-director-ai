@@ -484,7 +484,7 @@ export const videoQAResultSchema = visualQABaseSchema.extend({
   temporalConsistencyPassed: z.boolean()
 }).strict();
 
-const detailedFramePromptSchema = z.object({
+export const detailedFramePromptSchema = z.object({
   frameId: z.string().min(1), timestampSec: z.number().nonnegative(), role: z.string().min(1), frozenMoment: z.string().min(20),
   subject: z.string().min(12), subjectPosition: z.string().min(8), characterPose: z.string().min(8), facialExpression: z.string().min(6),
   gazeDirection: z.string().min(5), handState: z.string().min(8), productPosition: z.string().min(8), productOrientation: z.string().min(8),
@@ -505,18 +505,23 @@ export const promptQualityScoresSchema = z.object({
   textRisk: z.number().min(0).max(10), deformationRisk: z.number().min(0).max(10)
 }).strict();
 
-export const detailedShotPromptPackageSchema = z.object({
+export const promptContinuityContextSchema = z.object({
+  product: z.string().min(10), character: z.string().min(10), wardrobe: z.string().min(8), scene: z.string().min(10), sceneState: z.string().min(8),
+  majorProps: z.array(z.string().min(1)), previousShotState: z.string().min(8), immutableElements: z.array(z.string().min(4)).min(3), allowedChanges: z.array(z.string().min(4)).min(1)
+}).strict();
+
+export const detailedShotPromptFoundationSchema = z.object({
   shotId: z.string().min(1),
-  continuityContext: z.object({
-    product: z.string().min(10), character: z.string().min(10), wardrobe: z.string().min(8), scene: z.string().min(10), sceneState: z.string().min(8),
-    majorProps: z.array(z.string().min(1)), previousShotState: z.string().min(8), immutableElements: z.array(z.string().min(4)).min(3), allowedChanges: z.array(z.string().min(4)).min(1)
-  }).strict(),
+  continuityContext: promptContinuityContextSchema,
   directingNotesCn: z.string().trim().min(120), directingNotesEn: z.string().trim().min(60),
-  framePrompts: z.array(detailedFramePromptSchema).min(1).max(5),
   videoPromptCn: z.string().trim().min(300), videoPromptEn: z.string().trim().min(120),
   negativePromptCn: z.string().trim().min(60), negativePromptEn: z.string().trim().min(30),
   narrationDirection: z.string().min(1).optional(), textSafeZone: z.string().min(1), qaChecklist: z.array(z.string().min(6)).min(6),
   qualityScores: promptQualityScoresSchema
+}).strict();
+
+export const detailedShotPromptPackageSchema = detailedShotPromptFoundationSchema.extend({
+  framePrompts: z.array(detailedFramePromptSchema).min(1).max(5)
 }).strict().superRefine((value, context) => {
   const scores = value.qualityScores;
   if (scores.creativeDepth < 8 || scores.visualSpecificity < 8 || scores.actionExecutability < 8 || scores.textRisk > 2 || scores.deformationRisk > 3) {

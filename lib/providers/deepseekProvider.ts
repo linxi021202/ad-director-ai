@@ -33,7 +33,7 @@ import { inferProductShotType, shotContainsProduct } from "../continuity/project
 import { repairShotProductTerminology } from "../visual/productTerminology";
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
-import { ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
+import { ensureShotArchitecture, ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
 import {
   buildStoryboardRepairPrompt,
   mergeStoryboardChunks,
@@ -42,10 +42,16 @@ import {
   validateStoryboardGlobalConstraints
 } from "../ai/contracts/storyboard";
 import { buildCreativeDirectionsPrompt, buildDeepenCreativeDirectionsPrompt, validateCreativeDirectionSetQuality } from "../creative/creativeDirections";
-import { buildShotPromptExpansionPrompt, type ShotPromptExpansionInput } from "../prompts/detailedDirectorPrompts";
+import {
+  buildShotPromptFoundationPrompt,
+  buildSingleFramePromptExpansionPrompt,
+  type ShotPromptExpansionInput
+} from "../prompts/detailedDirectorPrompts";
 import {
   creativeDirectionSetPayloadSchema,
+  detailedFramePromptSchema,
   detailedShotPromptPackageSchema,
+  detailedShotPromptFoundationSchema,
   type CreativeDirectionSetPayload,
   type DetailedShotPromptPackage,
   type ProjectPlanningConstraints
@@ -69,6 +75,8 @@ export const TEXT_OUTPUT_BUDGETS = {
   creativeDirections: 7600,
   promptExpansion: 5000,
   shotPromptExpansion: 7200,
+  shotPromptFoundation: 3200,
+  shotPromptFrame: 3000,
   scoring: 1800,
   copyShortening: 240
 } as const;
@@ -624,30 +632,90 @@ export async function expandShotPrompts(
   input: ShotPromptExpansionInput,
   context?: ProviderRequestContext
 ): Promise<RealTextProviderResponse<DetailedShotPromptPackage>> {
-  const schema = detailedShotPromptPackageSchema.superRefine((value, refinement) => {
-    if (value.shotId !== input.shot.id) {
-      refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["shotId"], message: "SHOT_ID_MISMATCH" });
-    }
-    const requiredCn = ["单一完整", "可读文字"];
-    for (const frame of value.framePrompts) {
-      if (frame.imagePromptCn.length < 400 || requiredCn.some((term) => !frame.imagePromptCn.includes(term))) {
-        refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["framePrompts"], message: "PROMPT_DEPTH_VALIDATION_FAILED：图片提示词缺少单帧或零文字硬约束。" });
-      }
-    }
-    const concreteTerms = ["机位", "焦段", "前景", "中景", "背景", "主光", "材质", "产品"];
-    if (concreteTerms.filter((term) => value.directingNotesCn.includes(term) || value.framePrompts.some((frame) => frame.imagePromptCn.includes(term))).length < 6) {
-      refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["directingNotesCn"], message: "VAGUE_PROMPT：缺少可执行摄影信息。" });
-    }
+  const startedAt = Date.now();
+  const model = getDeepSeekRuntimeConfig().model;
+  let tokenUsage: LLMTokenUsage | undefined;
+  const foundationSchema = detailedShotPromptFoundationSchema.superRefine((value, refinement) => {
+    if (value.shotId !== input.shot.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["shotId"], message: "SHOT_ID_MISMATCH" });
     if (!/[0-9]+(?:\.[0-9]+)?s/i.test(value.videoPromptCn) || !/Start State|开始状态/i.test(value.videoPromptCn) || !/End State|结束状态/i.test(value.videoPromptCn)) {
       refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["videoPromptCn"], message: "VIDEO_TIMELINE_REQUIRED" });
     }
   });
-  return callAndValidate(
-    buildShotPromptExpansionPrompt(input),
-    schema,
-    { temperature: 0.35, maxTokens: TEXT_OUTPUT_BUDGETS.shotPromptExpansion },
-    { ...context, maxProviderAttempts: 2 }
+  const foundation = await callPromptSegment(
+    buildShotPromptFoundationPrompt(input),
+    buildShotPromptFoundationPrompt(input, true),
+    foundationSchema,
+    TEXT_OUTPUT_BUDGETS.shotPromptFoundation,
+    context
   );
+  tokenUsage = addTokenUsage(tokenUsage, foundation.tokenUsage);
+  if (!foundation.success || !foundation.data) {
+    return failureResponse(model, Date.now() - startedAt, foundation.error ?? "镜头导演基础信息生成失败。", tokenUsage);
+  }
+  const foundationData = foundation.data;
+
+  const framePrompts: DetailedShotPromptPackage["framePrompts"] = [];
+  const shot = ensureShotArchitecture(input.shot);
+  const frames = shot.frames ?? [];
+  for (let frameOffset = 0; frameOffset < frames.length; frameOffset += 2) {
+    const frameBatch = frames.slice(frameOffset, frameOffset + 2);
+    const results = await Promise.all(frameBatch.map(async (frame) => {
+      const frameSchema = detailedFramePromptSchema.superRefine((value, refinement) => {
+        if (value.frameId !== frame.id || value.timestampSec !== frame.timestampSec || value.role !== frame.role) {
+          refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["frameId"], message: "FRAME_IDENTITY_MISMATCH" });
+        }
+        if (!["单一完整", "可读文字"].every((term) => value.imagePromptCn.includes(term))) {
+          refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["imagePromptCn"], message: "PROMPT_SAFETY_CONSTRAINT_MISSING" });
+        }
+      });
+      return {
+        frame,
+        result: await callPromptSegment(
+          buildSingleFramePromptExpansionPrompt(input, frame, foundationData),
+          buildSingleFramePromptExpansionPrompt(input, frame, foundationData, true),
+          frameSchema,
+          TEXT_OUTPUT_BUDGETS.shotPromptFrame,
+          context
+        )
+      };
+    }));
+    for (const { frame, result } of results) {
+      tokenUsage = addTokenUsage(tokenUsage, result.tokenUsage);
+      if (!result.success || !result.data) {
+        return failureResponse(model, Date.now() - startedAt, result.error ?? `第 ${frame.index + 1} 帧提示词生成失败。`, tokenUsage);
+      }
+      framePrompts.push(result.data);
+    }
+  }
+
+  const assembled = detailedShotPromptPackageSchema.safeParse({ ...foundationData, framePrompts });
+  if (!assembled.success) {
+    return failureResponse(model, Date.now() - startedAt, `MODEL_SCHEMA_DRIFT：${assembled.error.message}`, tokenUsage);
+  }
+  const concreteTerms = ["机位", "焦段", "前景", "中景", "背景", "主光", "材质", "产品"];
+  if (concreteTerms.filter((term) => assembled.data.directingNotesCn.includes(term) || assembled.data.framePrompts.some((frame) => frame.imagePromptCn.includes(term))).length < 6) {
+    return failureResponse(model, Date.now() - startedAt, "VAGUE_PROMPT：缺少可执行摄影信息。", tokenUsage);
+  }
+  return successResponse(assembled.data, model, Date.now() - startedAt, tokenUsage);
+}
+
+async function callPromptSegment<TData>(
+  prompt: string,
+  compactPrompt: string,
+  schema: z.ZodType<TData>,
+  maxTokens: number,
+  context?: ProviderRequestContext
+) {
+  const first = await callAndValidate(prompt, schema, { temperature: 0.3, maxTokens }, { ...context, maxProviderAttempts: 1 });
+  if (first.success || !shouldCompactRetry(first.error)) return first;
+  const retry = await callAndValidate(compactPrompt, schema, { temperature: 0.2, maxTokens }, { ...context, maxProviderAttempts: 1 });
+  return { ...retry, tokenUsage: addTokenUsage(first.tokenUsage, retry.tokenUsage) };
+}
+
+function shouldCompactRetry(error?: string | null) {
+  if (!error) return false;
+  if (isOutputTruncated(error)) return true;
+  return !/DEEPSEEK_(?:AUTH_FAILED|QUOTA_EXHAUSTED|RATE_LIMITED|NETWORK_ERROR|TIMEOUT|UPSTREAM_ERROR)/.test(error);
 }
 
 export async function shortenNarration(

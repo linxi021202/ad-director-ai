@@ -18,7 +18,7 @@ export async function readClientApiResponse<T>(response: Response): Promise<Clie
       trace: parsed.trace,
       fallbackUsed: parsed.fallbackUsed,
       fallbackReason: parsed.fallbackReason,
-      error: parsed.error ?? (response.ok ? null : transportError(response.status, raw))
+      error: publicClientError(parsed.error) ?? (response.ok ? null : transportError(response.status, raw))
     };
   }
 
@@ -29,6 +29,17 @@ export async function readClientApiResponse<T>(response: Response): Promise<Clie
     fallbackReason: null,
     error: transportError(response.status, raw)
   };
+}
+
+function publicClientError(error: unknown): string | null {
+  if (typeof error !== "string" || !error.trim()) return null;
+  if (/DEEPSEEK_OUTPUT_TRUNCATED|输出达到长度上限/i.test(error)) {
+    return "生成内容较长，系统已拆分处理。未完成的部分可重新生成。";
+  }
+  if (/\b(?:MODEL_SCHEMA_DRIFT|unrecognized_keys|ZodError)\b/i.test(error) || /\[\s*\{[\s\S]*(?:code|path)/.test(error)) {
+    return "生成结果的数据结构不完整，请重新生成。";
+  }
+  return error;
 }
 
 function parseJson(raw: string): unknown {

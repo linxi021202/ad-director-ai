@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
-import { deepseekProvider } from "../lib/providers/deepseekProvider";
+import { deepseekProvider, expandShotPrompts } from "../lib/providers/deepseekProvider";
+import { ensureShotArchitecture } from "../lib/storyboard/shotArchitecture";
 
 const originalEnv = { ...process.env };
 
@@ -29,6 +30,55 @@ function requestedChunk(init: RequestInit | undefined, shots: ReturnType<typeof 
   const first = Number(range?.[1] ?? 1);
   const last = Number(range?.[2] ?? shots.length);
   return shots.slice(first - 1, last);
+}
+
+function promptFoundation(shotId: string, durationSec: number) {
+  const english = "A precise commercial direction with stable product identity, character continuity, executable camera placement, controlled lighting, material detail, and spatial depth. ".repeat(3);
+  return {
+    shotId,
+    continuityContext: {
+      product: "同一真实产品的容器轮廓、包装结构和颜色区域",
+      character: "同一人物的脸型、发型、年龄感和身体比例",
+      wardrobe: "同一套已确认服装与配饰",
+      scene: "同一办公室空间、窗户、桌面和摄影轴线",
+      sceneState: "人物和产品延续上一镜结束状态",
+      majorProps: ["桌面", "显示器"],
+      previousShotState: "人物与产品均处于上一镜结束位置",
+      immutableElements: ["产品结构不变", "人物身份不变", "场景结构不变"],
+      allowedChanges: ["视线和轻微姿态可以变化"]
+    },
+    directingNotesCn: "机位保持人物视线高度，使用标准焦段；前景桌角建立空间，中景安排人物与产品，背景保留窗户和显示器。主光从右侧进入，辅光控制阴影，材质、产品位置、手部状态和摄影机运动都必须具体可执行。".repeat(2),
+    directingNotesEn: english,
+    videoPromptCn: `开始状态 Start State：人物和产品保持稳定。0.0s-${(durationSec / 2).toFixed(1)}s 人物只改变视线，双手和产品不动；${(durationSec / 2).toFixed(1)}s-${durationSec.toFixed(1)}s 摄影机沿单一路径轻微推近，人物右手缓慢靠近产品后停止。结束状态 End State：产品位置、比例、结构、材质和包装均不改变，人物身份、服装、场景结构与光线方向连续，禁止切镜、拼贴、新增人物、手部畸形、容器变化和任何可读文字。`.repeat(2),
+    videoPromptEn: english,
+    negativePromptCn: "禁止任何可读文字、乱码、水印、拼贴、分屏、重复主体、手部畸形、额外手指、额外肢体、人物身份变化、场景结构变化、产品容器变化、包装比例变化和材质颜色变化。",
+    negativePromptEn: "No readable text, gibberish, watermark, collage, split screen, duplicate subject, deformed hands, extra fingers, or product changes.",
+    narrationDirection: "旁白克制简短",
+    textSafeZone: "top-center",
+    qaChecklist: ["保持单一完整画面", "产品结构保持不变", "人物身份保持不变", "场景空间保持连续", "动作能够真实执行", "画面禁止可读文字"],
+    qualityScores: { creativeDepth: 9, visualSpecificity: 9, productConsistency: 9, characterContinuity: 9, sceneContinuity: 9, actionExecutability: 9, textRisk: 1, deformationRisk: 2 }
+  };
+}
+
+function expandedFrame(frame: NonNullable<ReturnType<typeof ensureShotArchitecture>["frames"]>[number]) {
+  const cn = `${"单一完整商业摄影画面，只呈现一个确定冻结瞬间。人物位于画面左侧，双手状态清楚，视线看向中景真实产品；产品包装正面、容器轮廓、比例、颜色区域与材质严格保持。前景桌角建立深度，中景承载人物和产品，背景办公室窗户与显示器保持稳定。机位位于人物视线高度，标准焦段，景深克制，主光从右侧进入，辅光压低阴影，反射不遮挡产品。".repeat(3)}画面不得出现任何可读文字。这是一张单一完整摄影画面，只描述一个确定时间点。`;
+  const en = "One complete frozen commercial frame with a stable subject, exact product identity, clear hand state, controlled foreground, middle ground and background, eye-level camera, standard lens, shallow depth of field, directional key light, restrained fill light, accurate materials, no readable text, no collage, and no split screen. ".repeat(3);
+  return {
+    frameId: frame.id, timestampSec: frame.timestampSec, role: frame.role,
+    frozenMoment: "人物视线刚落到产品上且双手保持稳定的确定瞬间",
+    subject: "同一位已确认人物与真实产品", subjectPosition: "人物左侧，产品右侧中景", characterPose: "坐姿微前倾且肩膀放松",
+    facialExpression: "克制专注的表情", gazeDirection: "视线明确看向产品", handState: "双手完整可见且保持自然",
+    productPosition: "产品位于桌面右侧中景", productOrientation: "包装正面朝向摄影机", productScale: "占画面高度约八分之一",
+    environment: "同一办公室空间与桌面陈设", foreground: "虚化桌角与文件", middleGround: "人物双手和真实产品", background: "窗户、显示器和座椅",
+    composition: "偏心三分构图并保留顶部安全区", cameraHeight: "人物视线高度", cameraAngle: "轻微侧前方", lens: "标准镜头", focalLength: "50mm", aperture: "f/2.8",
+    depthOfField: "主体清晰且背景轻微虚化", lightingDirection: "从右侧窗户指向左侧", lightingQuality: "柔和而有方向的主光", keyLight: "右侧窗户柔光", fillLight: "左前方低强度补光",
+    practicalLights: "背景显示器冷色环境光", shadowBehavior: "阴影向左后方自然衰减", reflections: "产品反射受控且不遮挡包装", materialDetails: "产品、杯盖和服装织物纹理清晰",
+    colorDesign: "冷灰环境配真实包装主色", atmosphere: "安静克制且保持专注的办公氛围", spatialDepth: "前中后景清晰分层",
+    continuityConstraints: ["产品结构不变", "人物身份不变", "场景空间不变"], forbiddenChanges: ["禁止新增文字", "禁止改变容器", "禁止新增人物"],
+    imagePromptCn: cn, imagePromptEn: en,
+    negativePromptCn: "禁止任何可读文字、乱码、水印、拼贴、分屏、重复主体、手部畸形、额外手指和产品容器变化。",
+    negativePromptEn: "No readable text, gibberish, watermark, collage, split screen, deformed hands, extra fingers, or changed product container."
+  };
 }
 
 function detailedShot(shot: (typeof coldBrewDemo.shots)[number]) {
@@ -183,6 +233,36 @@ describe("deepseekProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { messages: Array<{ content: string }> };
     expect(requestBody.messages.some((message) => message.content.includes("本次只生成第 5-8 镜"))).toBe(true);
+  });
+
+  it("splits a detailed prompt package into a foundation and per-frame requests with compact truncation recovery", async () => {
+    const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const frames = shot.frames ?? [];
+    let foundationAttempts = 0;
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }>; max_tokens: number };
+      const prompt = body.messages.findLast((message) => message.role !== "system")?.content ?? "";
+      if (prompt.includes("导演基础包") && !prompt.includes("关键帧提示词工程师")) {
+        foundationAttempts += 1;
+        return Promise.resolve(foundationAttempts === 1
+          ? mockDeepSeekResponse('{"shotId":', "length")
+          : mockDeepSeekResponse(JSON.stringify(promptFoundation(shot.id, shot.durationSec))));
+      }
+      const frame = frames.find((item) => prompt.includes(item.id));
+      if (!frame) throw new Error("未找到当前帧");
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame))));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot });
+
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(result.data?.framePrompts).toHaveLength(frames.length);
+    expect(foundationAttempts).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(frames.length + 2);
+    const requestBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)) as { max_tokens: number; messages: Array<{ content: string }> });
+    expect(requestBodies.every((body) => body.max_tokens <= 3200)).toBe(true);
+    expect(requestBodies.some((body) => body.messages.some((message) => message.content.includes("长度保护重试")))).toBe(true);
   });
 
   it("honors a custom storyboard count and duration plan", async () => {

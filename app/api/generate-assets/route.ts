@@ -8,7 +8,7 @@ import {
   requireOwnedAnonymousProject,
   updateOwnedAnonymousProject
 } from "../../../lib/projects/anonymousProjectStore";
-import { completeGenerationEvent, failGenerationEvent, startGenerationEvent } from "../../../lib/projects/generationEvents";
+import { completeGenerationEvent, failGenerationEvent, startGenerationEvent, updateGenerationEventProgress } from "../../../lib/projects/generationEvents";
 import { selectProviderModel } from "../../../lib/providers/providerRouter";
 import { expandShotPrompts } from "../../../lib/providers/deepseekProvider";
 import { reviewDetailedPromptPackage } from "../../../lib/director/promptQualityReview";
@@ -67,11 +67,14 @@ export async function POST(request: Request) {
         error: null
       });
     }
-    const sourceShots = owned.project.shots.filter((shot) => parsed.data.shots.some((requested) => requested.id === shot.id));
+    const completedShotIds = new Set((owned.project.shotPromptPackages ?? []).map((item) => item.shotId));
+    const sourceShots = owned.project.shots.filter((shot) =>
+      parsed.data.shots.some((requested) => requested.id === shot.id) && !completedShotIds.has(shot.id)
+    );
     const packages: DetailedShotPromptPackage[] = [];
     const failures: string[] = [];
     let totalLatencyMs = 0;
-    for (const shot of sourceShots) {
+    for (const [shotOffset, shot] of sourceShots.entries()) {
       const result = await expandShotPrompts({
         brief: owned.project.brief,
         strategy: owned.project.strategy,
@@ -84,22 +87,28 @@ export async function POST(request: Request) {
       totalLatencyMs += result.latencyMs;
       if (result.success && result.data) {
         const review = reviewDetailedPromptPackage(result.data);
-        if (review.passed) packages.push(result.data);
-        else failures.push(`镜头 ${shot.index}：质量审查未通过（${review.issues.join("、")}）`);
-      } else failures.push(`镜头 ${shot.index}：${result.error ?? "生成失败"}`);
+        if (review.passed) {
+          packages.push(result.data);
+          await persistPromptPackage(session.id, projectId, result.data);
+        } else failures.push(`镜头 ${shot.index}：详细提示词未通过完整性检查，请单独重试。`);
+      } else failures.push(`镜头 ${shot.index}：${promptExpansionPublicError(result.error)}`);
+      await updateGenerationEventProgress(
+        session.id,
+        projectId,
+        event.id,
+        shotOffset + 1,
+        sourceShots.length,
+        failures.length
+          ? `正在继续处理剩余镜头，已完成 ${packages.length} 个，${failures.length} 个等待重试。`
+          : `已完成 ${packages.length} / ${sourceShots.length} 个镜头的详细提示词。`
+      );
     }
-    let shots = owned.project.shots.map((shot) => {
-      const promptPackage = packages.find((item) => item.shotId === shot.id);
-      return promptPackage ? applyPromptPackage(shot, promptPackage) : shot;
-    });
+    let shots = (await requireOwnedAnonymousProject(session.id, projectId)).project.shots;
 
     if (packages.length > 0) {
-      await replaceOwnedProjectShots(session.id, projectId, shots);
       const current = await requireOwnedAnonymousProject(session.id, projectId);
-      const packageByShot = new Map([...(current.project.shotPromptPackages ?? []), ...packages].map((item) => [item.shotId, item]));
       const updated = await updateOwnedAnonymousProject(session.id, projectId, {
         ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
-        shotPromptPackages: [...packageByShot.values()],
         workflowSteps: {
           ...(current.project.workflowSteps ?? defaultWorkflow()),
           storyboard: failures.length ? "needs-review" : "completed"
@@ -138,7 +147,7 @@ export async function POST(request: Request) {
       },
       fallbackUsed: false,
       fallbackReason: null,
-      error: failures.length ? failures.join("；") : null
+      error: failures.length ? `${failures.length} 个镜头的详细提示词尚未完成，已保留成功结果。请重试当前步骤。` : null
     }, failures.length ? 207 : 200);
   } catch (error) {
     if (eventId && projectId) {
@@ -146,8 +155,30 @@ export async function POST(request: Request) {
     }
     const projectError = projectStoreErrorResponse(error);
     if (projectError) return projectError;
-    return apiJson({ success: false, data: null, trace: { route: "generate-assets", stage: "exception" }, fallbackUsed: false, error: sanitizeApiError(error) }, 500);
+    return apiJson({ success: false, data: null, trace: { route: "generate-assets", stage: "exception" }, fallbackUsed: false, error: promptExpansionPublicError(sanitizeApiError(error)) }, 500);
   }
+}
+
+async function persistPromptPackage(sessionId: string, projectId: string, promptPackage: DetailedShotPromptPackage) {
+  const current = await requireOwnedAnonymousProject(sessionId, projectId);
+  const shots = current.project.shots.map((shot) => shot.id === promptPackage.shotId ? applyPromptPackage(shot, promptPackage) : shot);
+  await replaceOwnedProjectShots(sessionId, projectId, shots);
+  const refreshed = await requireOwnedAnonymousProject(sessionId, projectId);
+  const packageByShot = new Map([...(refreshed.project.shotPromptPackages ?? []), promptPackage].map((item) => [item.shotId, item]));
+  await updateOwnedAnonymousProject(sessionId, projectId, { shotPromptPackages: [...packageByShot.values()] });
+}
+
+function promptExpansionPublicError(error?: string | null) {
+  if (/DEEPSEEK_OUTPUT_TRUNCATED|输出达到长度上限/i.test(error ?? "")) {
+    return "该镜头内容较长，系统拆分生成后仍未完整返回，请单独重试。";
+  }
+  if (/DEEPSEEK_(?:AUTH_FAILED|QUOTA_EXHAUSTED|RATE_LIMITED|NETWORK_ERROR|TIMEOUT|UPSTREAM_ERROR)/i.test(error ?? "")) {
+    return "DeepSeek 暂时未能完成该镜头，请稍后重试。";
+  }
+  if (/MODEL_SCHEMA_DRIFT|Zod|unrecognized_keys|PROMPT_|VAGUE_|FRAME_|SHOT_/i.test(error ?? "")) {
+    return "该镜头的详细提示词结构不完整，请单独重试。";
+  }
+  return "该镜头的详细提示词生成失败，请稍后重试。";
 }
 
 function buildPlannedAssets(shots: StoryboardShot[], imageModel: string, videoModel: string) {
