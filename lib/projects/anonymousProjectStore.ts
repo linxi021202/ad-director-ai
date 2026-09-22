@@ -42,6 +42,8 @@ import {
   visualContinuityBibleSchema,
   workflowStepsSchema,
   type GenerationProject,
+  type DetailedShotPromptPackage,
+  type ProductVisualSpec,
   type StageId,
   type StoryboardShot,
   type VersionedResourceType,
@@ -585,6 +587,33 @@ export async function replaceOwnedProjectShots(
   }, expectedVersion ?? current.version);
 }
 
+export async function saveOwnedShotPromptPackage(
+  sessionId: string,
+  projectId: string,
+  promptPackage: DetailedShotPromptPackage,
+  productVisualSpec?: ProductVisualSpec
+): Promise<AnonymousProjectRecord> {
+  const parsedPackage = detailedShotPromptPackageSchema.parse(promptPackage);
+  return mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
+    if (!project.shots.some((shot) => shot.id === parsedPackage.shotId)) {
+      throw new Error("PROMPT_PACKAGE_SHOT_NOT_FOUND");
+    }
+    const shots = project.shots.map((shot) => shot.id === parsedPackage.shotId
+      ? applyDetailedPromptPackage(shot, parsedPackage)
+      : shot);
+    const packageByShot = new Map(
+      [...(project.shotPromptPackages ?? []), parsedPackage].map((item) => [item.shotId, item])
+    );
+    return {
+      ...project,
+      ...(productVisualSpec ? { productVisualSpec } : {}),
+      shots,
+      prompts: promptsFromShots(shots),
+      shotPromptPackages: [...packageByShot.values()]
+    };
+  });
+}
+
 export async function saveOwnedStoryboardChunk(
   sessionId: string,
   projectId: string,
@@ -961,6 +990,30 @@ function promptsFromShots(shots: StoryboardShot[]) {
     imagePromptEn: shot.imagePromptEn,
     videoPromptCn: shot.videoPromptCn
   }));
+}
+
+function applyDetailedPromptPackage(shot: StoryboardShot, promptPackage: DetailedShotPromptPackage): StoryboardShot {
+  const firstFrame = promptPackage.framePrompts[0];
+  return {
+    ...shot,
+    imagePromptCn: firstFrame?.imagePromptCn ?? shot.imagePromptCn,
+    imagePromptEn: firstFrame?.imagePromptEn ?? shot.imagePromptEn,
+    videoPromptCn: promptPackage.videoPromptCn,
+    videoPromptEn: promptPackage.videoPromptEn,
+    negativePromptCn: promptPackage.negativePromptCn,
+    negativePromptEn: promptPackage.negativePromptEn,
+    continuityConstraints: promptPackage.continuityContext.immutableElements,
+    frames: shot.frames?.map((frame, index) => {
+      const expanded = promptPackage.framePrompts.find((item) => item.frameId === frame.id) ?? promptPackage.framePrompts[index];
+      return expanded ? {
+        ...frame,
+        imagePromptCn: expanded.imagePromptCn,
+        imagePromptEn: expanded.imagePromptEn,
+        negativePromptCn: expanded.negativePromptCn,
+        negativePromptEn: expanded.negativePromptEn
+      } : frame;
+    })
+  };
 }
 
 function initialWorkflow(): WorkflowSteps {

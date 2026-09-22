@@ -521,6 +521,8 @@ export const detailedShotPromptFoundationSchema = z.object({
 }).strict();
 
 export const detailedShotPromptPackageSchema = detailedShotPromptFoundationSchema.extend({
+  schemaVersion: z.literal(2).optional(),
+  inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   framePrompts: z.array(detailedFramePromptSchema).min(1).max(5)
 }).strict().superRefine((value, context) => {
   const scores = value.qualityScores;

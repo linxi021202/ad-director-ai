@@ -28,13 +28,17 @@ describe("DeepSeek staged director quality", () => {
   it("uses per-shot expansion and persists full packages", () => {
     const route = readFileSync("app/api/generate-assets/route.ts", "utf8");
     const store = readFileSync("lib/projects/anonymousProjectStore.ts", "utf8");
-    expect(route).toContain("for (const [shotOffset, shot] of sourceShots.entries())");
+    expect(route).toContain("pendingInputs.slice(0, parsed.data.batchSize)");
+    expect(route).toContain("for (const [shotOffset, input] of sourceInputs.entries())");
     expect(route).toContain("expandShotPrompts");
-    expect(route).toContain("persistPromptPackage");
+    expect(route).toContain("saveOwnedShotPromptPackage");
     expect(route).toContain("updateGenerationEventProgress");
-    expect(route).toContain("completedShotIds.has(shot.id)");
+    expect(route).toContain("validPromptPackageIds");
+    expect(route).toContain("inputFingerprint");
+    expect(route).toContain("continuationRequired");
     expect(route).toContain("shotPromptPackages");
-    expect(store).toContain("shotPromptPackages: project.shotPromptPackages");
+    expect(store).toContain("export async function saveOwnedShotPromptPackage");
+    expect(store).toContain("shotPromptPackages: [...packageByShot.values()]");
   });
 
   it("does not let optional product analysis block confirmation", () => {

@@ -89,6 +89,15 @@ type ProviderDiagnostic = {
 };
 
 type ApiResponse<T> = ClientApiResponse<T>;
+type PromptExpansionData = {
+  shots: StoryboardShot[];
+  processedShotIds: string[];
+  remainingShotIds: string[];
+  completedCount: number;
+  totalCount: number;
+  continuationRequired: boolean;
+  failures: string[];
+};
 
 type WanVideoAsset = { publicUrl: string; shotId: string; source: "wan-api" };
 type WanVideoData = {
@@ -823,20 +832,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     try {
       let refreshed = await postWorkflowAction({ action: "lock-stage", stageId: activeStage });
       if (activeStage === "storyboard") {
-        setTraceLabel("正在逐镜头扩写图片与视频提示词");
-        const expanded = await postApi<{ shots: StoryboardShot[]; failures: string[] }>("/api/generate-assets", {
-          projectId: refreshed.id,
-          brief: refreshed.brief,
-          strategy: refreshed.strategy,
-          shots: refreshed.shots
-        });
-        const snapshot = await fetchServerProject(refreshed.id);
-        trackServerVersion(snapshot.version);
-        refreshed = ensureStageWorkflow(normalizeProjectDuration(snapshot.project));
-        setActiveProject(refreshed);
-        if (!expanded.success) {
-          throw new Error(expanded.error || "部分镜头的详细提示词未通过质量检查，请重试当前步骤。");
-        }
+        refreshed = await expandStoryboardPrompts(refreshed);
       }
       const nextStage = STAGE_ORDER[STAGE_ORDER.indexOf(activeStage) + 1];
       setTraceLabel(`${STAGE_LABELS[activeStage]}已确认`);
@@ -846,6 +842,47 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       setError(lockError instanceof Error ? lockError.message : "阶段锁定失败。");
     } finally {
       setStageLocking(false);
+    }
+  }
+
+  async function expandStoryboardPrompts(source: GenerationProject) {
+    let refreshed = source;
+    for (let attempt = 0; attempt <= source.shots.length; attempt += 1) {
+      setTraceLabel(attempt === 0 ? "正在逐镜头扩写图片与视频提示词" : "正在继续生成剩余镜头提示词");
+      const expanded = await postApi<PromptExpansionData>("/api/generate-assets", {
+        projectId: refreshed.id,
+        brief: refreshed.brief,
+        strategy: refreshed.strategy,
+        shots: refreshed.shots,
+        batchSize: 1
+      });
+      const snapshot = await fetchServerProject(refreshed.id);
+      refreshed = applyProjectUpdate(snapshot);
+      if (!expanded.success) {
+        throw new Error(expanded.error || "部分镜头的详细提示词未通过质量检查，成功结果已经保留，请继续生成。");
+      }
+      if (!expanded.data?.continuationRequired) return refreshed;
+      if (!expanded.data.processedShotIds.length) {
+        throw new Error("提示词生成未取得新进度，请稍后继续生成。");
+      }
+      setTraceLabel(`详细提示词已完成 ${expanded.data.completedCount} / ${expanded.data.totalCount} 个镜头`);
+    }
+    throw new Error("提示词仍有未完成镜头，请点击继续生成。");
+  }
+
+  async function retryStoryboardPromptExpansion() {
+    if (stageLocking) return;
+    setStageLocking(true);
+    setError(null);
+    try {
+      await expandStoryboardPrompts(activeProject);
+      setTraceLabel("全部镜头提示词已生成");
+      selectStage("keyframes");
+    } catch (expansionError) {
+      setError(expansionError instanceof Error ? expansionError.message : "提示词续跑失败，请稍后重试。");
+    } finally {
+      setStageLocking(false);
+      await refreshServerEvents(activeProject.id);
     }
   }
 
@@ -1167,6 +1204,14 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       ? { ...persistedStageStates, brief: { status: "running", updatedAt: Date.now() } }
       : persistedStageStates;
   const activeStageState = stageStates[activeStage];
+  const currentPromptPackageIds = new Set((activeProject.shotPromptPackages ?? [])
+    .filter((item) => item.schemaVersion === 2 && Boolean(item.inputFingerprint))
+    .map((item) => item.shotId));
+  const completedPromptPackageCount = activeProject.shots.filter((shot) => currentPromptPackageIds.has(shot.id)).length;
+  const storyboardPromptsIncomplete = activeStage === "storyboard"
+    && aiStatus.mode === "real"
+    && activeStageState.status === "locked"
+    && completedPromptPackageCount < activeProject.shots.length;
   const latestStoryboardEvent = [...(activeProject.generationEvents ?? [])].reverse().find((event) => event.stage === "storyboard");
   const visualSetupState = deriveVisualSetupStageState({ ...activeProject, stageStates });
   const stageStatus = activeStage === "anchors" ? visualSetupStatusLabel(visualSetupState.status) : stageStatusLabel(activeStageState.status);
@@ -1244,6 +1289,12 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             /> : null}
 
             {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : activeStageState.status === "repairing" ? <div className="storyboard-loading"><strong>正在校正文字分镜结构…</strong><span>系统只整理数据结构，不会缩短或重写已经生成的创意内容。</span></div> : activeStageState.status === "failed" ? <div className="creative-empty-state"><strong>文字分镜生成失败</strong><p>{latestStoryboardEvent?.progressCurrent ? `已完成 ${latestStoryboardEvent.progressCurrent} / ${latestStoryboardEvent.progressTotal ?? activeProject.shots.length} 镜头，成功内容已经保留。` : "文字分镜的数据结构不完整，系统未保存错误结果。"}</p><button type="button" className="button-secondary-v3" disabled={isGenerating} onClick={() => void runStoryboardStage()}>{latestStoryboardEvent?.progressCurrent ? "继续生成剩余镜头" : "重新生成文字分镜"}</button></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}
+
+            {storyboardPromptsIncomplete ? <div className="creative-empty-state">
+              <strong>详细提示词尚未全部完成</strong>
+              <p>已完成 {completedPromptPackageCount} / {activeProject.shots.length} 个镜头。成功结果已经保留，可从未完成镜头继续。</p>
+              <button type="button" className="button-secondary-v3" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion()}>{stageLocking ? "正在继续生成…" : "继续生成剩余提示词"}</button>
+            </div> : null}
 
             {activeStage === "keyframes" ? <ResultBoard project={previewProject} keyframes={liveKeyframes} callTrace={[]} projectId={activeProject.id} generated={generated} isGenerating={isGenerating} /> : null}
             {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已确认关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
