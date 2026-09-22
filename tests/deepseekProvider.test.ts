@@ -265,6 +265,42 @@ describe("deepseekProvider", () => {
     expect(requestBodies.some((body) => body.messages.some((message) => message.content.includes("长度保护重试")))).toBe(true);
   });
 
+  it("resumes a detailed prompt package from its saved foundation and completed frames", async () => {
+    const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const frames = shot.frames ?? [];
+    const savedFrames = [expandedFrame(frames[0]!)];
+    const persistedFrameIds: string[] = [];
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      const prompt = body.messages.findLast((message) => message.role !== "system")?.content ?? "";
+      expect(prompt).not.toContain("只生成镜头 1 的导演基础包");
+      expect(prompt).not.toContain(frames[0]!.id);
+      const frame = frames.slice(1).find((item) => prompt.includes(item.id));
+      if (!frame) throw new Error("未找到待续写帧");
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame))));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await expandShotPrompts(
+      { brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot },
+      {
+        resumeShotPromptDraft: {
+          shotId: shot.id,
+          schemaVersion: 2,
+          inputFingerprint: "a".repeat(64),
+          foundation: promptFoundation(shot.id, shot.durationSec),
+          framePrompts: savedFrames
+        },
+        onShotPromptFrame: async (frame) => { persistedFrameIds.push(frame.frameId); }
+      }
+    );
+
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(result.data?.framePrompts).toHaveLength(frames.length);
+    expect(fetchMock).toHaveBeenCalledTimes(Math.max(0, frames.length - 1));
+    expect(persistedFrameIds).toEqual(frames.slice(1).map((frame) => frame.id));
+  });
+
   it("honors a custom storyboard count and duration plan", async () => {
     const durations = [3, 5, 8];
     const shots = coldBrewDemo.shots.slice(0, 3).map((shot, index) => ({

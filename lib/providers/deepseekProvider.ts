@@ -641,24 +641,32 @@ export async function expandShotPrompts(
       refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["videoPromptCn"], message: "VIDEO_TIMELINE_REQUIRED" });
     }
   });
-  const foundation = await callPromptSegment(
-    buildShotPromptFoundationPrompt(input),
-    buildShotPromptFoundationPrompt(input, true),
-    foundationSchema,
-    TEXT_OUTPUT_BUDGETS.shotPromptFoundation,
-    context
-  );
-  tokenUsage = addTokenUsage(tokenUsage, foundation.tokenUsage);
-  if (!foundation.success || !foundation.data) {
-    return failureResponse(model, Date.now() - startedAt, foundation.error ?? "镜头导演基础信息生成失败。", tokenUsage);
+  let foundationData = context?.resumeShotPromptDraft?.foundation;
+  if (!foundationData) {
+    const foundation = await callPromptSegment(
+      buildShotPromptFoundationPrompt(input),
+      buildShotPromptFoundationPrompt(input, true),
+      foundationSchema,
+      TEXT_OUTPUT_BUDGETS.shotPromptFoundation,
+      context
+    );
+    tokenUsage = addTokenUsage(tokenUsage, foundation.tokenUsage);
+    if (!foundation.success || !foundation.data) {
+      return failureResponse(model, Date.now() - startedAt, foundation.error ?? "镜头导演基础信息生成失败。", tokenUsage);
+    }
+    foundationData = foundation.data;
+    await context?.onShotPromptFoundation?.(foundationData);
   }
-  const foundationData = foundation.data;
 
-  const framePrompts: DetailedShotPromptPackage["framePrompts"] = [];
   const shot = ensureShotArchitecture(input.shot);
   const frames = shot.frames ?? [];
-  for (let frameOffset = 0; frameOffset < frames.length; frameOffset += 2) {
-    const frameBatch = frames.slice(frameOffset, frameOffset + 2);
+  const validFrameIds = new Set(frames.map((frame) => frame.id));
+  const framePrompts: DetailedShotPromptPackage["framePrompts"] = (context?.resumeShotPromptDraft?.framePrompts ?? [])
+    .filter((frame) => validFrameIds.has(frame.frameId));
+  const completedFrameIds = new Set(framePrompts.map((frame) => frame.frameId));
+  const pendingFrames = frames.filter((frame) => !completedFrameIds.has(frame.id));
+  for (let frameOffset = 0; frameOffset < pendingFrames.length; frameOffset += 2) {
+    const frameBatch = pendingFrames.slice(frameOffset, frameOffset + 2);
     const results = await Promise.all(frameBatch.map(async (frame) => {
       const frameSchema = detailedFramePromptSchema.superRefine((value, refinement) => {
         if (value.frameId !== frame.id || value.timestampSec !== frame.timestampSec || value.role !== frame.role) {
@@ -685,10 +693,12 @@ export async function expandShotPrompts(
         return failureResponse(model, Date.now() - startedAt, result.error ?? `第 ${frame.index + 1} 帧提示词生成失败。`, tokenUsage);
       }
       framePrompts.push(result.data);
+      await context?.onShotPromptFrame?.(result.data);
     }
   }
 
-  const assembled = detailedShotPromptPackageSchema.safeParse({ ...foundationData, framePrompts });
+  const orderedFramePrompts = frames.map((frame) => framePrompts.find((item) => item.frameId === frame.id)).filter((frame): frame is DetailedShotPromptPackage["framePrompts"][number] => Boolean(frame));
+  const assembled = detailedShotPromptPackageSchema.safeParse({ ...foundationData, framePrompts: orderedFramePrompts });
   if (!assembled.success) {
     return failureResponse(model, Date.now() - startedAt, `MODEL_SCHEMA_DRIFT：${assembled.error.message}`, tokenUsage);
   }

@@ -2,6 +2,9 @@ import type { LLMTokenUsage } from "../llm/types";
 import type { QwenImageCacheStatus } from "../image/types";
 import type {
   AdStrategy,
+  DetailedFramePrompt,
+  DetailedShotPromptDraft,
+  DetailedShotPromptFoundation,
   GenerationProject,
   ProductBrief,
   ProductImage,
@@ -171,6 +174,9 @@ export type ProviderRequestContext = {
   resumeStoryboardShots?: StoryboardShot[];
   onStoryboardChunk?: (shots: StoryboardShot[], progress: { completed: number; total: number; splitRetry: boolean; normalizationWarnings: string[] }) => Promise<void>;
   onStoryboardRepair?: (details: { shotIndex: number; location: string; unknownFields: string[] }) => Promise<void>;
+  resumeShotPromptDraft?: DetailedShotPromptDraft;
+  onShotPromptFoundation?: (foundation: DetailedShotPromptFoundation) => Promise<void>;
+  onShotPromptFrame?: (frame: DetailedFramePrompt) => Promise<void>;
 };
 
 export type TextProvider = {

@@ -32,6 +32,8 @@ describe("DeepSeek staged director quality", () => {
     expect(route).toContain("for (const [shotOffset, input] of sourceInputs.entries())");
     expect(route).toContain("expandShotPrompts");
     expect(route).toContain("saveOwnedShotPromptPackage");
+    expect(route).toContain("saveOwnedShotPromptDraft");
+    expect(route).toContain("resumeShotPromptDraft: checkpoint");
     expect(route).toContain("updateGenerationEventProgress");
     expect(route).toContain("validPromptPackageIds");
     expect(route).toContain("inputFingerprint");

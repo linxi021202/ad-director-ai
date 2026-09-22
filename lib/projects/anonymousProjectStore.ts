@@ -37,12 +37,14 @@ import {
   storyboardContractMetadataSchema,
   dependencyNodeSchema,
   detailedShotPromptPackageSchema,
+  detailedShotPromptDraftSchema,
   versionedResourceSchema,
   videoQAResultSchema,
   visualContinuityBibleSchema,
   workflowStepsSchema,
   type GenerationProject,
   type DetailedShotPromptPackage,
+  type DetailedShotPromptDraft,
   type ProductVisualSpec,
   type StageId,
   type StoryboardShot,
@@ -111,6 +113,7 @@ export const anonymousProjectPatchSchema = z.object({
   videoQAResults: z.array(videoQAResultSchema).max(4).optional(),
   narrationPlan: narrationPlanSchema.optional(),
   shotPromptPackages: z.array(detailedShotPromptPackageSchema).max(12).optional(),
+  shotPromptDrafts: z.array(detailedShotPromptDraftSchema).max(12).optional(),
   shots: z.array(storyboardShotSchema).min(1).max(12).optional(),
   storyboardContract: storyboardContractMetadataSchema.optional(),
   prompts: z.array(projectPromptSchema).max(12).optional(),
@@ -601,16 +604,40 @@ export async function saveOwnedShotPromptPackage(
     const shots = project.shots.map((shot) => shot.id === parsedPackage.shotId
       ? applyDetailedPromptPackage(shot, parsedPackage)
       : shot);
+    const currentShotIds = new Set(shots.map((shot) => shot.id));
     const packageByShot = new Map(
-      [...(project.shotPromptPackages ?? []), parsedPackage].map((item) => [item.shotId, item])
+      [...(project.shotPromptPackages ?? []).filter((item) => currentShotIds.has(item.shotId)), parsedPackage]
+        .map((item) => [item.shotId, item])
     );
     return {
       ...project,
       ...(productVisualSpec ? { productVisualSpec } : {}),
       shots,
       prompts: promptsFromShots(shots),
-      shotPromptPackages: [...packageByShot.values()]
+      shotPromptPackages: [...packageByShot.values()],
+      shotPromptDrafts: (project.shotPromptDrafts ?? []).filter((item) =>
+        item.shotId !== parsedPackage.shotId && currentShotIds.has(item.shotId)
+      )
     };
+  });
+}
+
+export async function saveOwnedShotPromptDraft(
+  sessionId: string,
+  projectId: string,
+  draft: DetailedShotPromptDraft
+): Promise<AnonymousProjectRecord> {
+  const parsedDraft = detailedShotPromptDraftSchema.parse(draft);
+  return mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
+    if (!project.shots.some((shot) => shot.id === parsedDraft.shotId)) {
+      throw new Error("PROMPT_DRAFT_SHOT_NOT_FOUND");
+    }
+    const currentShotIds = new Set(project.shots.map((shot) => shot.id));
+    const draftsByShot = new Map(
+      [...(project.shotPromptDrafts ?? []).filter((item) => currentShotIds.has(item.shotId)), parsedDraft]
+        .map((item) => [item.shotId, item])
+    );
+    return { ...project, shotPromptDrafts: [...draftsByShot.values()] };
   });
 }
 

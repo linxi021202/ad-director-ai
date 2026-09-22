@@ -5,6 +5,7 @@ import { projectStoreErrorResponse } from "../../../lib/projects/api";
 import {
   anonymousProjectIdSchema,
   requireOwnedAnonymousProject,
+  saveOwnedShotPromptDraft,
   saveOwnedShotPromptPackage,
   updateOwnedAnonymousProject
 } from "../../../lib/projects/anonymousProjectStore";
@@ -14,7 +15,7 @@ import { expandShotPrompts } from "../../../lib/providers/deepseekProvider";
 import { buildShotPromptInputFingerprint, SHOT_PROMPT_PACKAGE_SCHEMA_VERSION } from "../../../lib/prompts/shotPromptFingerprint";
 import type { ShotPromptExpansionInput } from "../../../lib/prompts/detailedDirectorPrompts";
 import { reviewDetailedPromptPackage } from "../../../lib/director/promptQualityReview";
-import { adStrategySchema, productBriefSchema, storyboardShotSchema, type DetailedShotPromptPackage, type StoryboardShot } from "../../../lib/schemas/project";
+import { adStrategySchema, productBriefSchema, storyboardShotSchema, type DetailedShotPromptDraft, type DetailedShotPromptPackage, type StoryboardShot } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
 
@@ -95,13 +96,36 @@ export async function POST(request: Request) {
     let totalLatencyMs = 0;
     for (const [shotOffset, input] of sourceInputs.entries()) {
       const shot = input.shot;
-      const result = await expandShotPrompts(input, { sessionId: session.id });
+      const inputFingerprint = buildShotPromptInputFingerprint(input);
+      let checkpoint: DetailedShotPromptDraft = owned.project.shotPromptDrafts?.find((item) =>
+        item.shotId === shot.id
+        && item.schemaVersion === SHOT_PROMPT_PACKAGE_SCHEMA_VERSION
+        && item.inputFingerprint === inputFingerprint
+      ) ?? {
+        shotId: shot.id,
+        schemaVersion: SHOT_PROMPT_PACKAGE_SCHEMA_VERSION,
+        inputFingerprint,
+        framePrompts: []
+      };
+      const result = await expandShotPrompts(input, {
+        sessionId: session.id,
+        resumeShotPromptDraft: checkpoint,
+        onShotPromptFoundation: async (foundation) => {
+          checkpoint = { ...checkpoint, foundation };
+          await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
+        },
+        onShotPromptFrame: async (frame) => {
+          const framesById = new Map([...checkpoint.framePrompts, frame].map((item) => [item.frameId, item]));
+          checkpoint = { ...checkpoint, framePrompts: [...framesById.values()] };
+          await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
+        }
+      });
       totalLatencyMs += result.latencyMs;
       if (result.success && result.data) {
         const promptPackage: DetailedShotPromptPackage = {
           ...result.data,
           schemaVersion: SHOT_PROMPT_PACKAGE_SCHEMA_VERSION,
-          inputFingerprint: buildShotPromptInputFingerprint(input)
+          inputFingerprint
         };
         const review = reviewDetailedPromptPackage(promptPackage);
         if (review.passed) {

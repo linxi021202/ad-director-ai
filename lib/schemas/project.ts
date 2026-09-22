@@ -531,6 +531,14 @@ export const detailedShotPromptPackageSchema = detailedShotPromptFoundationSchem
   }
 });
 
+export const detailedShotPromptDraftSchema = z.object({
+  shotId: z.string().min(1),
+  schemaVersion: z.literal(2),
+  inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  foundation: detailedShotPromptFoundationSchema.optional(),
+  framePrompts: z.array(detailedFramePromptSchema).max(5).default([])
+}).strict();
+
 export const taskTypeSchema = z.enum([
   "strategy",
   "storyboard",
@@ -840,6 +848,7 @@ export const generationProjectSchema = z.object({
   videoQAResults: z.array(videoQAResultSchema).max(4).optional(),
   narrationPlan: narrationPlanSchema.optional(),
   shotPromptPackages: z.array(detailedShotPromptPackageSchema).max(MAX_SHOT_COUNT).optional(),
+  shotPromptDrafts: z.array(detailedShotPromptDraftSchema).max(MAX_SHOT_COUNT).optional(),
   shots: z.array(storyboardShotSchema).min(1),
   storyboardContract: storyboardContractMetadataSchema.optional(),
   modelRoutes: z.array(modelRouteSchema).min(1),
@@ -889,6 +898,9 @@ export type CreativeCandidateSet = z.infer<typeof creativeCandidateSetSchema>;
 export type CreativeWorkspace = z.infer<typeof creativeWorkspaceSchema>;
 export type DetailedStoryboardShot = z.infer<typeof detailedStoryboardShotSchema>;
 export type DetailedShotPromptPackage = z.infer<typeof detailedShotPromptPackageSchema>;
+export type DetailedShotPromptFoundation = z.infer<typeof detailedShotPromptFoundationSchema>;
+export type DetailedFramePrompt = z.infer<typeof detailedFramePromptSchema>;
+export type DetailedShotPromptDraft = z.infer<typeof detailedShotPromptDraftSchema>;
 export type PromptQualityScores = z.infer<typeof promptQualityScoresSchema>;
 export type CharacterIdentity = z.infer<typeof characterIdentitySchema>;
 export type ProductIdentity = z.infer<typeof productIdentitySchema>;
