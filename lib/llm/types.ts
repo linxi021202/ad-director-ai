@@ -31,6 +31,8 @@ export type LLMResult = {
   tokenUsage?: LLMTokenUsage;
   costEstimate?: string;
   error?: string;
+  errorCode?: string;
+  providerErrorCode?: string;
   finishReason?: string | null;
   httpStatus?: number;
   providerRequestId?: string;
@@ -50,6 +52,7 @@ export type OpenAICompatibleChatCompletion = {
     total_tokens?: number;
   };
   error?: {
+    code?: string;
     message?: string;
   };
 };

@@ -181,6 +181,8 @@ export type ProviderRequestContext = {
     latencyMs: number;
     success: boolean;
     error?: string;
+    errorCode?: string;
+    providerErrorCode?: string;
     httpStatus?: number;
     providerRequestId?: string;
     inputTokens?: number;
@@ -192,6 +194,8 @@ export type ProviderRequestContext = {
     normalized?: boolean;
     repaired?: boolean;
     validationPath?: string;
+    validationIssues?: Array<{ path: string; code: string; message: string }>;
+    requestOptions?: { temperature?: number; maxTokens?: number; responseFormat?: "json" | "text"; thinking?: string };
   }) => Promise<void>;
   requestedShotCount?: number;
   targetDurationSec?: number;

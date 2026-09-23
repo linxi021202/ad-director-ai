@@ -749,6 +749,8 @@ export const generationEventSchema = z.object({
   progressCurrent: z.number().int().nonnegative().optional(),
   progressTotal: z.number().int().positive().optional(),
   startedAt: z.number().int().nonnegative(),
+  lastHeartbeatAt: z.number().int().nonnegative().optional(),
+  interruptedAt: z.number().int().nonnegative().optional(),
   completedAt: z.number().int().nonnegative().optional(),
   latencyMs: z.number().int().nonnegative().optional(),
   errorCode: z.string().min(1).max(80).optional(),

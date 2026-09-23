@@ -147,7 +147,7 @@ describe("deepseekProvider", () => {
 
     expect(result.success).toBe(false);
     expect(result.data).toBeNull();
-    expect(result.error).toBe("DeepSeek返回的JSON格式无效。");
+    expect(result.error).toBe("JSON_PARSE_FAILED：DeepSeek 返回的 JSON 无法解析。");
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -307,6 +307,55 @@ describe("deepseekProvider", () => {
     const requestBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)) as { max_tokens: number; messages: Array<{ content: string }> });
     expect(requestBodies.every((body) => body.max_tokens <= 3200)).toBe(true);
     expect(requestBodies.some((body) => body.messages.some((message) => message.content.includes("长度保护重试")))).toBe(true);
+  });
+
+  it("repairs foundation schema drift with the exact field issues and preserves the original response", async () => {
+    const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const frames = shot.frames ?? [];
+    const valid = promptFoundation(shot.id, shot.durationSec);
+    const invalid = { ...valid, continuityContext: { ...valid.continuityContext, wardrobe: "短" } };
+    const calls: Array<{ mode?: string; schemaValid?: boolean; validationPath?: string }> = [];
+    const prompts: string[] = [];
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      const prompt = body.messages.findLast((message) => message.role === "user")?.content ?? "";
+      prompts.push(prompt.slice(0, 120));
+      if (prompt.includes("只修复以下 JSON")) {
+        expect(prompt).toContain("continuityContext.wardrobe");
+        expect(prompt).toContain("短");
+        return Promise.resolve(mockDeepSeekResponse(JSON.stringify(valid)));
+      }
+      if (prompt.includes("导演基础包") && !prompt.includes("关键帧提示词工程师")) return Promise.resolve(mockDeepSeekResponse(JSON.stringify(invalid)));
+      const frame = frames.find((item) => prompt.includes(item.id));
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame!))));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      onModelCall: async (detail) => { calls.push(detail); }
+    });
+    expect(result.success, `${result.error}; prompts=${JSON.stringify(prompts)}`).toBe(true);
+    expect(calls[0]).toMatchObject({ mode: "foundation", schemaValid: false, validationPath: "continuityContext.wardrobe" });
+    expect(calls[1]).toMatchObject({ mode: "foundation-schema-repair", schemaValid: true });
+  });
+
+  it("keeps separate diagnostics when foundation and schema repair both fail", async () => {
+    const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const valid = promptFoundation(shot.id, shot.durationSec);
+    const issues: Array<{ mode?: string; validationPath?: string; errorCode?: string }> = [];
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      const repairing = body.messages.some((message) => message.content.includes("只修复以下 JSON"));
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(repairing
+        ? { ...valid, videoPromptCn: "太短" }
+        : { ...valid, continuityContext: { ...valid.continuityContext, wardrobe: "短" } })));
+    }));
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      onModelCall: async (detail) => { issues.push(detail); }
+    });
+    expect(result.success).toBe(false);
+    expect(issues).toHaveLength(2);
+    expect(issues[0]).toMatchObject({ mode: "foundation", errorCode: "SCHEMA_VALIDATION_FAILED", validationPath: "continuityContext.wardrobe" });
+    expect(issues[1]).toMatchObject({ mode: "foundation-schema-repair", errorCode: "SCHEMA_VALIDATION_FAILED", validationPath: "videoPromptCn" });
   });
 
   it("resumes a detailed prompt package from its saved foundation and completed frames", async () => {

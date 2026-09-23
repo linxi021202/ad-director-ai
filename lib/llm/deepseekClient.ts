@@ -16,7 +16,8 @@ function tokenUsage(usage: OpenAICompatibleChatCompletion["usage"]): LLMTokenUsa
 }
 
 function failure(model: string, startedAt: number, error: string, details: Partial<LLMResult> = {}): LLMResult {
-  return { success: false, provider: "deepseek", model, latencyMs: Date.now() - startedAt, error, ...details };
+  return { success: false, provider: "deepseek", model, latencyMs: Date.now() - startedAt, error,
+    errorCode: error.match(/^[A-Z][A-Z0-9_]+(?=：)/)?.[0] ?? "MODEL_REQUEST_FAILED", ...details };
 }
 
 function parseResponse(raw: string): OpenAICompatibleChatCompletion | null {
@@ -72,7 +73,7 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
         const responseText = await response.text();
         const raw = parseResponse(responseText);
         const providerRequestId = response.headers.get("x-request-id") ?? undefined;
-        if (!response.ok) return failure(model, startedAt, httpFailure(response.status), { httpStatus: response.status, providerRequestId });
+        if (!response.ok) return failure(model, startedAt, httpFailure(response.status), { httpStatus: response.status, providerRequestId, providerErrorCode: raw?.error?.code });
         if (!raw) return failure(model, startedAt, "DEEPSEEK_INVALID_RESPONSE：DeepSeek 返回了无法解析的响应。", { httpStatus: response.status, providerRequestId });
         const content = raw.choices?.[0]?.message?.content?.trim();
         const finishReason = raw.choices?.[0]?.finish_reason ?? null;
@@ -87,7 +88,7 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
           const parsed = parseJsonResponse(content);
           return parsed.success
             ? { success: true, content, json: parsed.json, finishReason, ...base }
-            : { success: false, content, finishReason, ...base, error: "DeepSeek返回的JSON格式无效。" };
+            : { success: false, content, finishReason, ...base, error: "JSON_PARSE_FAILED：DeepSeek 返回的 JSON 无法解析。", errorCode: "JSON_PARSE_FAILED" };
         }
         return { success: true, content, finishReason, ...base };
       } catch (error) {

@@ -6,10 +6,11 @@ type WorkspaceHeaderProps = {
   active: "工作台" | "项目" | "设置";
   projectHref: string;
   workbenchHref?: string;
+  projectName?: string;
   trailing?: ReactNode;
 };
 
-export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generate", trailing }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generate", projectName, trailing }: WorkspaceHeaderProps) {
   const navItems = [
     { label: "首页", href: "/" },
     { label: "工作台", href: workbenchHref },
@@ -34,7 +35,7 @@ export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generat
           </Link>
         ))}
       </nav>
-      <div className="workspace-header__tools"><CallLogDrawer projectId={new URL(workbenchHref, "http://local").searchParams.get("projectId") ?? projectHref.match(/^\/projects\/([^/?#]+)/)?.[1]} />{trailing}</div>
+      <div className="workspace-header__tools"><CallLogDrawer projectId={new URL(workbenchHref, "http://local").searchParams.get("projectId") ?? projectHref.match(/^\/projects\/([^/?#]+)/)?.[1]} projectName={projectName} />{trailing}</div>
     </header>
   );
 }

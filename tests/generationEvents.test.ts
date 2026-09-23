@@ -162,7 +162,7 @@ describe("server generation event persistence", () => {
     await mutateOwnedAnonymousProject(SESSION_A, projectId, (project) => ({
       ...project,
       generationEvents: project.generationEvents.map((item) =>
-        item.id === event.id ? { ...item, startedAt: Date.now() - 6 * 60_000 } : item
+        item.id === event.id ? { ...item, startedAt: Date.now() - 6 * 60_000, lastHeartbeatAt: Date.now() - 6 * 60_000 } : item
       )
     }));
 
@@ -170,6 +170,8 @@ describe("server generation event persistence", () => {
     const [restored] = await listGenerationEvents(SESSION_A, projectId);
     expect(restored?.status).toBe("interrupted");
     expect(restored?.errorCode).toBe("TASK_INTERRUPTED");
+    expect(restored?.interruptedAt).toEqual(expect.any(Number));
+    expect(restored?.latencyMs).toBeUndefined();
   });
 
   it("restores and replaces the last active project explicitly", async () => {

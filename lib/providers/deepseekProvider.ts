@@ -205,18 +205,22 @@ function failureResponse<TData>(
 
 async function reportModelCall(context: ProviderRequestContext | undefined, result: LLMResult, attempt: number, validation: {
   success?: boolean; error?: string; schemaValid?: boolean; validationPath?: string; normalized?: boolean; repaired?: boolean;
-} = {}) {
+  validationIssues?: Array<{ path: string; code: string; message: string }>;
+} = {}, requestOptions?: { temperature?: number; maxTokens?: number; responseFormat?: "json" | "text"; thinking?: string }) {
   try {
     await context?.onModelCall?.({
     pass: context.modelCallPass, shotId: context.modelCallShotId, frameId: context.modelCallFrameId,
     chunkIndex: context.modelCallChunkIndex, mode: context.modelCallMode, attempt, model: result.model, latencyMs: result.latencyMs,
     success: validation.success ?? result.success,
     error: validation.error ?? result.error ?? undefined,
+    errorCode: validation.schemaValid === false ? "SCHEMA_VALIDATION_FAILED" : result.errorCode,
+    providerErrorCode: result.providerErrorCode,
     httpStatus: result.httpStatus, providerRequestId: result.providerRequestId,
     inputTokens: result.tokenUsage?.promptTokens, outputTokens: result.tokenUsage?.completionTokens,
     outputLength: result.outputLength, finishReason: result.finishReason ?? undefined,
     jsonParsed: result.json !== undefined, schemaValid: validation.schemaValid,
-    validationPath: validation.validationPath, normalized: validation.normalized, repaired: validation.repaired
+    validationPath: validation.validationPath, validationIssues: validation.validationIssues,
+    requestOptions, normalized: validation.normalized, repaired: validation.repaired
     });
   } catch {
     // A diagnostics write must never turn a valid model result into a failed generation.
@@ -235,12 +239,15 @@ async function callAndValidate<TData>(
   schema: z.ZodType<TData>,
   options?: { temperature?: number; maxTokens?: number },
   context?: ProviderRequestContext
-): Promise<RealTextProviderResponse<TData>> {
+): Promise<RealTextProviderResponse<TData> & { invalidJson?: unknown; invalidContent?: string; validationIssues?: Array<{ path: string; code: string; message: string }> }> {
   const startedAt = Date.now();
   const runtime = getDeepSeekRuntimeConfig();
   const model = runtime.model;
   let tokenUsage: LLMTokenUsage | undefined;
   let lastError = "DeepSeek调用失败，请检查密钥、额度或服务状态。";
+  let invalidJson: unknown;
+  let invalidContent: string | undefined;
+  let validationIssues: Array<{ path: string; code: string; message: string }> | undefined;
   const messages: LLMMessage[] = [
     {
       role: "system",
@@ -255,38 +262,43 @@ async function callAndValidate<TData>(
   const client = createDeepSeekClient({ apiKey: secret.value, baseUrl: runtime.baseUrl, model, timeoutMs });
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const requestOptions = { temperature: options?.temperature ?? 0.4, maxTokens: Math.min(options?.maxTokens ?? 2600, runtime.maxOutputTokens), responseFormat: "json" as const, thinking: "disabled" };
     const result = await client.call({
       model,
       messages,
-      responseFormat: "json",
-      temperature: options?.temperature ?? 0.4,
-      maxTokens: Math.min(options?.maxTokens ?? 2600, runtime.maxOutputTokens)
+      responseFormat: requestOptions.responseFormat,
+      temperature: requestOptions.temperature,
+      maxTokens: requestOptions.maxTokens
     });
 
     tokenUsage = addTokenUsage(tokenUsage, result.tokenUsage);
 
     if (!result.success) {
-      await reportModelCall(context, result, attempt + 1);
+      await reportModelCall(context, result, attempt + 1, {}, requestOptions);
       lastError = result.error ?? "DeepSeek LLM call failed.";
+      invalidContent = result.errorCode === "JSON_PARSE_FAILED" ? result.content : undefined;
       if (isOutputTruncated(lastError)) break;
       messages.push(retryMessage(lastError));
       continue;
     }
 
     const parsed = schema.safeParse(result.json);
+    const issues = parsed.success ? undefined : parsed.error.issues.slice(0, 20).map((issue) => ({ path: issue.path.join("."), code: issue.code, message: issue.message }));
     await reportModelCall(context, result, attempt + 1, parsed.success
       ? { schemaValid: true }
-      : { success: false, error: parsed.error.message, schemaValid: false, validationPath: parsed.error.issues[0]?.path.join(".") });
+      : { success: false, error: parsed.error.message, schemaValid: false, validationPath: parsed.error.issues[0]?.path.join("."), validationIssues: issues }, requestOptions);
 
     if (parsed.success) {
       return successResponse(parsed.data, model, Date.now() - startedAt, tokenUsage);
     }
 
     lastError = parsed.error.message;
+    invalidJson = result.json;
+    validationIssues = issues;
     messages.push(retryMessage(lastError));
   }
 
-  return failureResponse(model, Date.now() - startedAt, lastError, tokenUsage);
+  return { ...failureResponse<TData>(model, Date.now() - startedAt, lastError, tokenUsage), invalidJson, invalidContent, validationIssues };
 }
 
 type StoryboardChunkResponse = RealTextProviderResponse<StoryboardShot[]> & { normalizationWarnings?: string[] };
@@ -778,15 +790,24 @@ async function callPromptSegment<TData>(
   context?: ProviderRequestContext
 ) {
   const first = await callAndValidate(prompt, schema, { temperature: 0.3, maxTokens }, { ...context, maxProviderAttempts: 1 });
-  if (first.success || !shouldCompactRetry(first.error)) return first;
-  const retry = await callAndValidate(compactPrompt, schema, { temperature: 0.2, maxTokens }, { ...context, maxProviderAttempts: 1, modelCallMode: `${context?.modelCallMode ?? "prompt"}-compact-retry` });
+  if (first.success) return first;
+  let retryPrompt: string;
+  let retryMode: string;
+  if (isOutputTruncated(first.error ?? "")) {
+    retryPrompt = compactPrompt;
+    retryMode = "compact-retry";
+  } else if (first.validationIssues?.length && first.invalidJson !== undefined) {
+    retryPrompt = `只修复以下 JSON 的结构与缺失字段，不删减已有导演细节。必须保留原有语义，并严格满足字段类型和长度约束。校验错误：${JSON.stringify(first.validationIssues)}。原始 JSON：${JSON.stringify(first.invalidJson)}`;
+    retryMode = "schema-repair";
+  } else if (first.error?.startsWith("JSON_PARSE_FAILED") && first.invalidContent) {
+    retryPrompt = `只修复下面内容的 JSON 语法，保留全部已有导演细节与字段，不概括、不删减。原始响应：${first.invalidContent}`;
+    retryMode = "json-repair";
+  } else if (first.error?.startsWith("DEEPSEEK_EMPTY_RESPONSE")) {
+    retryPrompt = prompt;
+    retryMode = "empty-response-retry";
+  } else return first;
+  const retry = await callAndValidate(retryPrompt, schema, { temperature: 0.15, maxTokens }, { ...context, maxProviderAttempts: 1, modelCallMode: `${context?.modelCallMode ?? "prompt"}-${retryMode}` });
   return { ...retry, tokenUsage: addTokenUsage(first.tokenUsage, retry.tokenUsage) };
-}
-
-function shouldCompactRetry(error?: string | null) {
-  if (!error) return false;
-  if (isOutputTruncated(error)) return true;
-  return !/DEEPSEEK_(?:AUTH_FAILED|QUOTA_EXHAUSTED|RATE_LIMITED|NETWORK_ERROR|TIMEOUT|UPSTREAM_ERROR)/.test(error);
 }
 
 export async function shortenNarration(

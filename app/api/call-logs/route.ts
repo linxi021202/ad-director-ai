@@ -15,9 +15,12 @@ export async function GET(request: Request) {
   if (rawProjectId && !projectId) return projectNotFoundResponse();
   const limit = Number.parseInt(query.get("limit") ?? "50", 10);
   const before = Number.parseInt(query.get("before") ?? "0", 10);
+  const shotId = query.get("shotId");
+  if (shotId && (!projectId || shotId.length > 140)) return NextResponse.json({ error: "镜头日志参数无效。" }, { status: 400 });
   try {
     const entries = await listModelCallLogs(sessionResult.session.id, {
       ...(projectId ? { projectId } : {}),
+      ...(shotId ? { shotId } : {}),
       limit: Number.isFinite(limit) ? limit : 50,
       ...(Number.isFinite(before) && before > 0 ? { before } : {})
     });

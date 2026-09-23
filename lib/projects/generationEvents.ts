@@ -108,6 +108,7 @@ export async function appendGenerationEvent(
     ...(input.progressCurrent !== undefined ? { progressCurrent: input.progressCurrent } : {}),
     ...(input.progressTotal !== undefined ? { progressTotal: input.progressTotal } : {}),
     startedAt: now,
+    lastHeartbeatAt: now,
     ...(isTerminal(input.status) ? { completedAt: now } : {}),
     ...(input.errorCode ? { errorCode: input.errorCode } : {}),
     ...(input.schemaVersion ? { schemaVersion: input.schemaVersion } : {})
@@ -231,19 +232,20 @@ export async function normalizeInterruptedEvents(sessionId: string, projectId: s
   const record = await requireOwnedAnonymousProject(sessionId, projectId);
   const now = Date.now();
   const hasStale = (record.project.generationEvents ?? []).some(
-    (event) => event.status === "running" && now - event.startedAt > STAGE_TIMEOUT_MS[event.stage]
+    (event) => event.status === "running" && now - (event.lastHeartbeatAt ?? event.startedAt) > STAGE_TIMEOUT_MS[event.stage]
   );
   if (!hasStale) return;
 
   const updated = await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
     ...project,
     generationEvents: (project.generationEvents ?? []).map((event) => {
-      if (event.status !== "running" || now - event.startedAt <= STAGE_TIMEOUT_MS[event.stage]) return event;
+      if (event.status !== "running" || now - (event.lastHeartbeatAt ?? event.startedAt) <= STAGE_TIMEOUT_MS[event.stage]) return event;
       return sanitizeGenerationEvent({
         ...event,
         status: "interrupted",
-        message: "任务因服务中断未能继续，请重新执行。",
+        message: "任务超过阶段静默期限；可能因服务重启、请求中断或进程失联，无法仅凭此记录判断模型是否失败。已保存的内容仍可继续使用。",
         completedAt: now,
+        interruptedAt: now,
         errorCode: "TASK_INTERRUPTED"
       });
     })
@@ -264,7 +266,7 @@ async function updateEvent(
     ...project,
     generationEvents: (project.generationEvents ?? []).map((event) => {
       if (event.id !== eventId) return event;
-      updated = sanitizeGenerationEvent({ ...event, ...patch });
+      updated = sanitizeGenerationEvent({ ...event, ...patch, lastHeartbeatAt: Date.now() });
       return updated;
     })
   }));

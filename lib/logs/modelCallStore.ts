@@ -26,11 +26,16 @@ const modelCallLogSchema = z.object({
   startedAt: z.number().int().nonnegative(),
   completedAt: z.number().int().nonnegative().optional(),
   durationMs: z.number().int().nonnegative().optional(),
+  jobElapsedMs: z.number().int().nonnegative().optional(),
+  lastHeartbeatAt: z.number().int().nonnegative().optional(),
+  interruptedAt: z.number().int().nonnegative().optional(),
   progressCurrent: z.number().int().nonnegative().optional(),
   progressTotal: z.number().int().positive().optional(),
   errorCode: z.string().max(80).optional(),
   errorSummary: z.string().max(500).optional(),
+  providerErrorCode: z.string().max(100).optional(),
   validationPath: z.string().max(200).optional(),
+  validationIssues: z.array(z.object({ path: z.string().max(200), code: z.string().max(80), message: z.string().max(300) }).strict()).max(20).optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   providerRequestId: z.string().max(200).optional(),
   providerTaskId: z.string().max(200).optional(),
@@ -38,6 +43,7 @@ const modelCallLogSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional(),
   outputLength: z.number().int().nonnegative().optional(),
   finishReason: z.string().max(80).optional(),
+  requestOptions: z.object({ temperature: z.number().optional(), maxTokens: z.number().int().positive().optional(), responseFormat: z.enum(["json", "text"]).optional(), thinking: z.string().max(30).optional() }).strict().optional(),
   jsonParsed: z.boolean().optional(),
   schemaValid: z.boolean().optional(),
   normalized: z.boolean().optional(),
@@ -56,6 +62,7 @@ type ModelCallLogInput = Omit<ModelCallLog, "id"> & { id?: string };
 const logFileSchema = z.object({ version: z.literal(1), entries: z.array(modelCallLogSchema).max(500) }).strict();
 const queues = new Map<string, Promise<void>>();
 const RETENTION_MS = 30 * 24 * 60 * 60_000;
+export const MODEL_CALL_LOG_LIMIT = 500;
 
 export async function upsertModelCallLog(sessionId: string, input: ModelCallLogInput): Promise<ModelCallLog> {
   await requireOwnedAnonymousProject(sessionId, input.projectId);
@@ -71,18 +78,29 @@ export async function upsertModelCallLog(sessionId: string, input: ModelCallLogI
   return entry;
 }
 
-export async function listModelCallLogs(sessionId: string, options: { projectId?: string; before?: number; limit?: number } = {}): Promise<ModelCallLog[]> {
+export async function listModelCallLogs(sessionId: string, options: { projectId?: string; shotId?: string; before?: number; limit?: number } = {}): Promise<ModelCallLog[]> {
   if (options.projectId) await requireOwnedAnonymousProject(sessionId, options.projectId);
   const file = logPath(sessionId);
   let result: ModelCallLog[] = [];
   await serialize(file, async () => {
     const stored = await readLogFile(file);
     result = stored.entries
-      .filter((entry) => (!options.projectId || entry.projectId === options.projectId) && (!options.before || entry.startedAt < options.before))
+      .filter((entry) => (!options.projectId || entry.projectId === options.projectId) && (!options.shotId || entry.shotId === options.shotId) && (!options.before || entry.startedAt < options.before))
       .sort((left, right) => right.startedAt - left.startedAt || right.id.localeCompare(left.id))
       .slice(0, Math.min(100, Math.max(1, options.limit ?? 50)));
   });
   return result;
+}
+
+export async function readModelCallLogArchive(sessionId: string, projectId: string, taskId?: string) {
+  await requireOwnedAnonymousProject(sessionId, projectId);
+  const file = logPath(sessionId);
+  let archive: Awaited<ReturnType<typeof readLogFile>> = { version: 1, entries: [] };
+  await serialize(file, async () => { archive = await readLogFile(file); });
+  const entries = archive.entries.filter((entry) => entry.projectId === projectId && (!taskId || entry.taskId === taskId))
+    .map(sanitizeLog)
+    .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
+  return { entries, retentionLimitReached: archive.entries.length >= MODEL_CALL_LOG_LIMIT, retentionDays: 30, firstAvailableAt: archive.entries[0]?.startedAt ?? null };
 }
 
 export async function mirrorGenerationEvent(sessionId: string, raw: z.infer<typeof generationEventSchema>): Promise<void> {
@@ -91,7 +109,10 @@ export async function mirrorGenerationEvent(sessionId: string, raw: z.infer<type
     id: event.id, kind: "task", taskId: event.id, projectId: event.projectId,
     stage: event.stage, provider: event.provider, shotId: event.shotId, frameId: event.frameId,
     status: event.status, startedAt: event.startedAt, completedAt: event.completedAt,
-    durationMs: event.latencyMs ?? (event.completedAt ? event.completedAt - event.startedAt : undefined),
+    durationMs: event.latencyMs,
+    jobElapsedMs: (event.completedAt ?? Date.now()) - event.startedAt,
+    lastHeartbeatAt: event.lastHeartbeatAt ?? event.startedAt,
+    interruptedAt: event.interruptedAt,
     progressCurrent: event.progressCurrent, progressTotal: event.progressTotal,
     errorCode: event.errorCode, errorSummary: event.status === "failed" ? event.message : undefined,
     providerRequestId: event.providerRequestId, providerTaskId: event.providerTaskId,
@@ -104,7 +125,7 @@ function sanitizeLog(entry: ModelCallLog): ModelCallLog {
     .replace(/Cookie\s*[:=]\s*[^\r\n]+/gi, "Cookie=[已隐藏]")
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [已隐藏]")
     .replace(/(?:sk|dashscope)[-_][A-Za-z0-9_-]{8,}/gi, "[密钥已隐藏]")
-    .replace(/(?:token|api[_-]?key|secret)\s*[:=]\s*[^\s,;&]+/gi, "[凭据已隐藏]")
+    .replace(/(?:session[-_ ]?token|access[-_ ]?token|token|api[_-]?key|secret)\s*[:=]\s*[^\s,;&]+/gi, "[凭据已隐藏]")
     .replace(/https?:\/\/[^\s]+/gi, "[链接已隐藏]")
     .replace(/[A-Za-z]:\\[^\r\n]+/g, "[本地路径已隐藏]")
     .slice(0, max);
@@ -113,6 +134,8 @@ function sanitizeLog(entry: ModelCallLog): ModelCallLog {
     ...(entry.errorSummary ? { errorSummary: clean(entry.errorSummary, 500) } : {}),
     ...(entry.message ? { message: clean(entry.message, 500) } : {}),
     ...(entry.validationPath ? { validationPath: clean(entry.validationPath, 200) } : {}),
+    ...(entry.providerErrorCode ? { providerErrorCode: clean(entry.providerErrorCode, 100) } : {}),
+    ...(entry.validationIssues ? { validationIssues: entry.validationIssues.slice(0, 20).map((issue) => ({ path: clean(issue.path, 200) ?? "", code: clean(issue.code, 80) ?? "", message: clean(issue.message, 300) ?? "" })) } : {}),
     ...(entry.providerRequestId ? { providerRequestId: clean(entry.providerRequestId, 200) } : {}),
     ...(entry.providerTaskId ? { providerTaskId: clean(entry.providerTaskId, 200) } : {})
   });
@@ -120,7 +143,10 @@ function sanitizeLog(entry: ModelCallLog): ModelCallLog {
 
 async function readLogFile(file: string): Promise<z.infer<typeof logFileSchema>> {
   try {
-    return logFileSchema.parse(JSON.parse(await readFile(file, "utf8")));
+    const parsed = logFileSchema.parse(JSON.parse(await readFile(file, "utf8")));
+    return { ...parsed, entries: parsed.entries.map((entry) => entry.kind === "task" && entry.errorCode === "TASK_INTERRUPTED" && entry.durationMs !== undefined && entry.jobElapsedMs === undefined
+      ? { ...entry, durationMs: undefined, jobElapsedMs: entry.durationMs }
+      : entry) };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { version: 1, entries: [] };
     throw error;
