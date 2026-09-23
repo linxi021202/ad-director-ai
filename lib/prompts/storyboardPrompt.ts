@@ -48,7 +48,7 @@ continuityGroupId、sceneStateBefore、sceneStateAfter、continuityConstraints�
 真实产品身份不可改变；不得发明 verifiedClaims 之外的数字或功效：${JSON.stringify(brief.verifiedClaims ?? [])}。
 ${NO_READABLE_TEXT_CN}
 ${NO_READABLE_TEXT_EN}
-详细 Qwen 图片提示词、Wan 视频提示词和 frames 将在后续逐镜扩写；microBeats 只保留文字分镜所需的简短动作节拍。
+详细 Qwen 图片提示词、Wan 视频提示词和 frames 将在后续逐镜扩写；但本阶段仍须填写简短的 imagePromptCn、imagePromptEn、videoPromptCn 摘要，不可省略。microBeats 只保留文字分镜所需的简短动作节拍。
 
 返回 {"shots":[...]}，单镜字段结构参考：${JSON.stringify(exampleShot)}`;
 }

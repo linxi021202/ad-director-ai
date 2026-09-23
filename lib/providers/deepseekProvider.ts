@@ -294,7 +294,7 @@ async function callStoryboardChunk(
   if (!first.success) return failureResponse(model, Date.now() - startedAt, first.error ?? "DeepSeek 文字分镜调用失败。", tokenUsage);
 
   const normalized = normalizeStoryboardOutput(first.json);
-  const rawShots = storyboardEnvelopeShots(normalized.value);
+  const rawShots = storyboardEnvelopeShots(normalized.value, shotDurationPlan.length);
   if (!rawShots || rawShots.length !== shotDurationPlan.length) {
     return failureResponse(model, Date.now() - startedAt, "MODEL_SCHEMA_DRIFT：模型返回的分镜段数量与正式契约不一致。", tokenUsage);
   }
@@ -331,10 +331,11 @@ async function callStoryboardChunk(
       : repaired.json;
     const repairNormalized = normalizeStoryboardOutput({ shots: [repairValue] });
     warnings.push(...repairNormalized.warnings.map((warning) => `第 ${globalIndex} 镜 ${warning.path}：${warning.alias} 已归一化为 ${warning.canonical}`));
-    const repairedShot = storyboardEnvelopeShots(repairNormalized.value)?.[0];
+    const repairedShot = storyboardEnvelopeShots(repairNormalized.value, 1)?.[0];
     const final = parseStoryboardShot(repairedShot, globalIndex, durationSec);
     if (!final.success) {
-      return failureResponse(model, Date.now() - startedAt, "MODEL_SCHEMA_DRIFT：文字分镜的数据结构不完整，单镜头自动修复后仍未通过。", tokenUsage);
+      const reason = storyboardValidationDiagnostic(final.error, globalIndex).technicalSummary;
+      return failureResponse(model, Date.now() - startedAt, `MODEL_SCHEMA_DRIFT：第 ${globalIndex} 镜自动修复后仍未通过：${reason.slice(0, 500)}`, tokenUsage);
     }
     shots.push(final.data);
   }
@@ -342,15 +343,22 @@ async function callStoryboardChunk(
   return { ...successResponse(shots, model, Date.now() - startedAt, tokenUsage), normalizationWarnings: warnings };
 }
 
-function storyboardEnvelopeShots(value: unknown): unknown[] | null {
+function storyboardEnvelopeShots(value: unknown, expectedShotCount: number): unknown[] | null {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const shots = (value as { shots?: unknown }).shots;
-  return Array.isArray(shots) ? shots : null;
+  if (Array.isArray(shots)) return shots;
+  if (expectedShotCount !== 1) return null;
+  const shot = (value as { shot?: unknown }).shot;
+  if (shot && typeof shot === "object" && !Array.isArray(shot)) return [shot];
+  return "goal" in value && "visualDescription" in value ? [value] : null;
 }
 
 function parseStoryboardShot(value: unknown, index: number, durationSec: number) {
-  const parsed = storyboardStructureShotSchema.safeParse(value);
+  const plannedValue = value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value, index, durationSec }
+    : value;
+  const parsed = storyboardStructureShotSchema.safeParse(plannedValue);
   return parsed.success
     ? { success: true as const, data: { ...parsed.data, index, durationSec } as StoryboardShot }
     : { success: false as const, error: parsed.error };
@@ -398,16 +406,17 @@ export const deepseekProvider = {
     let tokenUsage: LLMTokenUsage | undefined;
     let lastError = "分镜生成失败，请稍后重试。";
 
-    const generateChunk = async (shotIndexOffset: number, shotDurationPlan: number[], splitRetry = false): Promise<boolean> => {
+    const generateChunk = async (shotIndexOffset: number, shotDurationPlan: number[], splitRetry = false, singleRetry = false): Promise<boolean> => {
+      const prompt = buildStoryboardChunkPrompt(brief, strategy, {
+        shotDurationPlan,
+        shotIndexOffset,
+        totalShotCount: timeline.shotCount,
+        totalDurationSec: timeline.totalDurationSec,
+        productVisualSpec: context?.productVisualSpec,
+        previousShot: generated.find((shot) => shot.index === shotIndexOffset)
+      });
       const response = await callStoryboardChunk(
-        buildStoryboardChunkPrompt(brief, strategy, {
-          shotDurationPlan,
-          shotIndexOffset,
-          totalShotCount: timeline.shotCount,
-          totalDurationSec: timeline.totalDurationSec,
-          productVisualSpec: context?.productVisualSpec,
-          previousShot: generated.find((shot) => shot.index === shotIndexOffset)
-        }),
+        singleRetry ? `${prompt}\n上次单镜头结构校验未通过，请重新输出完整的单镜头 JSON，不省略必填字段。校验位置：${lastError.slice(0, 500)}` : prompt,
         shotDurationPlan,
         shotIndexOffset,
         context
@@ -426,10 +435,13 @@ export const deepseekProvider = {
       }
 
       lastError = response.error ?? lastError;
-      if (isOutputTruncated(lastError) && shotDurationPlan.length > 1) {
+      if ((isOutputTruncated(lastError) || isStoryboardSchemaDrift(lastError)) && shotDurationPlan.length > 1) {
         const midpoint = Math.ceil(shotDurationPlan.length / 2);
         return await generateChunk(shotIndexOffset, shotDurationPlan.slice(0, midpoint), true)
           && await generateChunk(shotIndexOffset + midpoint, shotDurationPlan.slice(midpoint), true);
+      }
+      if (isStoryboardSchemaDrift(lastError) && shotDurationPlan.length === 1 && !singleRetry) {
+        return generateChunk(shotIndexOffset, shotDurationPlan, true, true);
       }
       return false;
     };
@@ -441,7 +453,7 @@ export const deepseekProvider = {
       }
       const start = offset;
       const durations: number[] = [];
-      while (offset < timeline.shotCount && durations.length < 4 && !generated.some((shot) => shot.index === offset + 1)) {
+      while (offset < timeline.shotCount && durations.length < 2 && !generated.some((shot) => shot.index === offset + 1)) {
         durations.push(timeline.shotDurationPlan[offset]!);
         offset += 1;
       }
@@ -538,6 +550,10 @@ Ending brand-payoff 必须动态使用产品名“${brief.productName}”，不�
 
 function isOutputTruncated(error: string) {
   return error.includes("DEEPSEEK_OUTPUT_TRUNCATED");
+}
+
+function isStoryboardSchemaDrift(error: string) {
+  return error.includes("MODEL_SCHEMA_DRIFT");
 }
 
 export async function generateCharacterAnchorBriefs(

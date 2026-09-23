@@ -154,7 +154,7 @@ describe("deepseekProvider", () => {
 
   it("repairs only the drifting shot when an unknown character state field is returned", async () => {
     const validShots = { shots: coldBrewDemo.shots.map((shot) => ({ ...detailedShot(shot), recommendedModel: "qwen-image" })) };
-    const driftingFirstChunk = structuredClone(validShots.shots.slice(0, 4));
+    const driftingFirstChunk = structuredClone(validShots.shots.slice(0, 2));
     driftingFirstChunk[0]!.sceneStateAfter = {
       shotId: driftingFirstChunk[0]!.id,
       characterStates: [{
@@ -186,7 +186,7 @@ describe("deepseekProvider", () => {
     expect(result.data?.every((shot) => shot.recommendedModel === "qwen-image")).toBe(true);
     expect(repairs).toEqual([{ shotIndex: 1, unknownFields: ["completelyInventedField"] }]);
     expect(result.fallbackUsed).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("splits a truncated storyboard chunk, preserves successful parts, and continues", async () => {
@@ -207,8 +207,8 @@ describe("deepseekProvider", () => {
 
     expect(result.success, result.error ?? undefined).toBe(true);
     expect(result.data).toHaveLength(8);
-    expect(saved).toEqual([[1, 2], [3, 4], [5, 6, 7, 8]]);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(saved).toEqual([[1], [2], [3, 4], [5, 6], [7, 8]]);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     for (const call of fetchMock.mock.calls) {
       expect(JSON.parse(String(call[1]?.body)).max_tokens).toBeLessThanOrEqual(3600);
     }
@@ -229,10 +229,54 @@ describe("deepseekProvider", () => {
 
     expect(result.success, result.error ?? undefined).toBe(true);
     expect(result.data).toHaveLength(8);
-    expect(saved).toEqual([[5, 6, 7, 8]]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(saved).toEqual([[5, 6], [7, 8]]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { messages: Array<{ content: string }> };
-    expect(requestBody.messages.some((message) => message.content.includes("本次只生成第 5-8 镜"))).toBe(true);
+    expect(requestBody.messages.some((message) => message.content.includes("本次只生成第 5-6 镜"))).toBe(true);
+  });
+
+  it("splits a schema-drifting chunk and saves valid single shots for resume", async () => {
+    const shots = coldBrewDemo.shots.map((shot) => ({ ...detailedShot(shot), recommendedModel: "qwen-image" }));
+    const saved: number[][] = [];
+    let calls = 0;
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      calls += 1;
+      const chunk = requestedChunk(init, shots);
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ shots: calls === 1 ? chunk.slice(0, 1) : calls === 2 ? [] : chunk })));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy, {
+      onStoryboardChunk: async (chunk) => { saved.push(chunk.map((shot) => shot.index)); }
+    });
+
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(saved).toEqual([[1], [2], [3, 4], [5, 6], [7, 8]]);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    const retryBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { messages: Array<{ content: string }> };
+    expect(retryBody.messages.some((message) => message.content.includes("上次单镜头结构校验未通过"))).toBe(true);
+  });
+
+  it("accepts a single-shot envelope and uses planned indices and durations", async () => {
+    const shots = coldBrewDemo.shots.map((shot) => ({ ...detailedShot(shot), recommendedModel: "qwen-image" }));
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => {
+      calls += 1;
+      const chunk = requestedChunk(init, shots);
+      if (calls === 1) return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ shots: chunk.slice(0, 1) })));
+      if (calls === 2) {
+        const { index: _index, durationSec: _duration, ...shot } = chunk[0]!;
+        return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ shot })));
+      }
+      if (calls === 3) return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ ...chunk[0], index: 99, durationSec: 8 })));
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ shots: chunk })));
+    }));
+
+    const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy);
+
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(result.data?.map((shot) => shot.index)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(result.data?.map((shot) => shot.durationSec)).toEqual(Array(8).fill(5));
   });
 
   it("splits a detailed prompt package into a foundation and per-frame requests with compact truncation recovery", async () => {
@@ -310,7 +354,7 @@ describe("deepseekProvider", () => {
       durationSec: durations[index],
       recommendedModel: "qwen-image"
     }));
-    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(mockDeepSeekResponse(JSON.stringify({ shots })))));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => Promise.resolve(mockDeepSeekResponse(JSON.stringify({ shots: requestedChunk(init, shots) })))));
 
     const result = await deepseekProvider.generateStoryboard(coldBrewDemo.brief, coldBrewDemo.strategy, {
       requestedShotCount: 3,
