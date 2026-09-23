@@ -9,6 +9,7 @@ import { ModelSettingsSheet } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
 import { ParticleTransitionOverlay } from "@/components/ParticleTransitionOverlay";
+import { CallLogDrawer } from "@/components/workspace/CallLogDrawer";
 import "./home-final.css";
 import "./home-api-settings.css";
 
@@ -52,6 +53,7 @@ export default function HomePage() {
           </Link>
 
           <div className="home-header-actions">
+            <CallLogDrawer />
             <ModelSettingsTrigger
               status={modelStatus}
               onClick={() => setSettingsOpen(true)}
@@ -82,6 +84,7 @@ export default function HomePage() {
           <nav className="home-mobile-nav" aria-label="移动端导航">
             <Link href="/" onClick={() => setMenuOpen(false)}>首页</Link>
             <Link href={workspaceTarget} onClick={handleTransition(workspaceTarget)}>工作台</Link>
+            <CallLogDrawer />
             <button type="button" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>模型设置</button>
           </nav>
         ) : null}

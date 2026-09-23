@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { mirrorGenerationEvent } from "@/lib/logs/modelCallStore";
 import { mutateOwnedAnonymousProject, requireOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
 import { setLastActiveProjectId } from "@/lib/projects/anonymousWorkspace";
 import {
@@ -116,6 +117,7 @@ export async function appendGenerationEvent(
     ...project,
     generationEvents: pruneEvents([...(project.generationEvents ?? []), event])
   }));
+  await mirrorGenerationEvent(sessionId, event).catch(() => undefined);
   await setLastActiveProjectId(sessionId, projectId);
   return event;
 }
@@ -233,7 +235,7 @@ export async function normalizeInterruptedEvents(sessionId: string, projectId: s
   );
   if (!hasStale) return;
 
-  await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
+  const updated = await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
     ...project,
     generationEvents: (project.generationEvents ?? []).map((event) => {
       if (event.status !== "running" || now - event.startedAt <= STAGE_TIMEOUT_MS[event.stage]) return event;
@@ -246,6 +248,9 @@ export async function normalizeInterruptedEvents(sessionId: string, projectId: s
       });
     })
   }));
+  await Promise.all((updated.project.generationEvents ?? [])
+    .filter((event) => event.status === "interrupted" && event.completedAt === now)
+    .map((event) => mirrorGenerationEvent(sessionId, event).catch(() => undefined)));
 }
 
 async function updateEvent(
@@ -264,6 +269,7 @@ async function updateEvent(
     })
   }));
   if (!updated) throw new Error("GENERATION_EVENT_NOT_FOUND");
+  await mirrorGenerationEvent(sessionId, updated).catch(() => undefined);
   return updated;
 }
 

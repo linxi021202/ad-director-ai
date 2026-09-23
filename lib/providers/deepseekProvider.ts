@@ -4,7 +4,7 @@ import { getDeepSeekRuntimeConfig } from "../config/ai";
 import { createDeepSeekClient } from "../llm/deepseekClient";
 import { resolveProviderSecret } from "../secrets/resolver";
 import { estimateDeepSeekCost } from "../llm/costEstimate";
-import type { LLMMessage, LLMTokenUsage } from "../llm/types";
+import type { LLMMessage, LLMResult, LLMTokenUsage } from "../llm/types";
 import {
   buildAdScorePrompt,
   buildPromptGenerationPrompt,
@@ -203,6 +203,26 @@ function failureResponse<TData>(
   };
 }
 
+async function reportModelCall(context: ProviderRequestContext | undefined, result: LLMResult, attempt: number, validation: {
+  success?: boolean; error?: string; schemaValid?: boolean; validationPath?: string; normalized?: boolean; repaired?: boolean;
+} = {}) {
+  try {
+    await context?.onModelCall?.({
+    pass: context.modelCallPass, shotId: context.modelCallShotId, frameId: context.modelCallFrameId,
+    chunkIndex: context.modelCallChunkIndex, mode: context.modelCallMode, attempt, model: result.model, latencyMs: result.latencyMs,
+    success: validation.success ?? result.success,
+    error: validation.error ?? result.error ?? undefined,
+    httpStatus: result.httpStatus, providerRequestId: result.providerRequestId,
+    inputTokens: result.tokenUsage?.promptTokens, outputTokens: result.tokenUsage?.completionTokens,
+    outputLength: result.outputLength, finishReason: result.finishReason ?? undefined,
+    jsonParsed: result.json !== undefined, schemaValid: validation.schemaValid,
+    validationPath: validation.validationPath, normalized: validation.normalized, repaired: validation.repaired
+    });
+  } catch {
+    // A diagnostics write must never turn a valid model result into a failed generation.
+  }
+}
+
 function retryMessage(error: string): LLMMessage {
   return {
     role: "user",
@@ -246,6 +266,7 @@ async function callAndValidate<TData>(
     tokenUsage = addTokenUsage(tokenUsage, result.tokenUsage);
 
     if (!result.success) {
+      await reportModelCall(context, result, attempt + 1);
       lastError = result.error ?? "DeepSeek LLM call failed.";
       if (isOutputTruncated(lastError)) break;
       messages.push(retryMessage(lastError));
@@ -253,6 +274,9 @@ async function callAndValidate<TData>(
     }
 
     const parsed = schema.safeParse(result.json);
+    await reportModelCall(context, result, attempt + 1, parsed.success
+      ? { schemaValid: true }
+      : { success: false, error: parsed.error.message, schemaValid: false, validationPath: parsed.error.issues[0]?.path.join(".") });
 
     if (parsed.success) {
       return successResponse(parsed.data, model, Date.now() - startedAt, tokenUsage);
@@ -291,13 +315,27 @@ async function callStoryboardChunk(
     maxTokens: Math.min(TEXT_OUTPUT_BUDGETS.storyboardChunk, runtime.maxOutputTokens)
   });
   let tokenUsage = first.tokenUsage;
-  if (!first.success) return failureResponse(model, Date.now() - startedAt, first.error ?? "DeepSeek 文字分镜调用失败。", tokenUsage);
+  if (!first.success) {
+    await reportModelCall(context, first, 1);
+    return failureResponse(model, Date.now() - startedAt, first.error ?? "DeepSeek 文字分镜调用失败。", tokenUsage);
+  }
 
   const normalized = normalizeStoryboardOutput(first.json);
   const rawShots = storyboardEnvelopeShots(normalized.value, shotDurationPlan.length);
   if (!rawShots || rawShots.length !== shotDurationPlan.length) {
+    await reportModelCall(context, first, 1, { success: false, error: "分镜段数量与计划不一致", schemaValid: false, validationPath: "shots.length" });
     return failureResponse(model, Date.now() - startedAt, "MODEL_SCHEMA_DRIFT：模型返回的分镜段数量与正式契约不一致。", tokenUsage);
   }
+
+  const firstInvalid = rawShots.map((shot, index) => parseStoryboardShot(shot, shotIndexOffset + index + 1, shotDurationPlan[index]!))
+    .find((parsed) => !parsed.success);
+  await reportModelCall(context, first, 1, {
+    success: !firstInvalid,
+    ...(!firstInvalid || firstInvalid.success ? {} : { error: firstInvalid.error.message }),
+    schemaValid: !firstInvalid,
+    normalized: normalized.warnings.length > 0,
+    ...(firstInvalid && !firstInvalid.success ? { validationPath: firstInvalid.error.issues[0]?.path.join(".") } : {})
+  });
 
   const warnings = normalized.warnings.map((warning) => `${warning.path}：${warning.alias} 已归一化为 ${warning.canonical}`);
   const shots: StoryboardShot[] = [];
@@ -324,6 +362,7 @@ async function callStoryboardChunk(
     });
     tokenUsage = addTokenUsage(tokenUsage, repaired.tokenUsage);
     if (!repaired.success) {
+      await reportModelCall(context, repaired, 1, { repaired: true });
       return failureResponse(model, Date.now() - startedAt, repaired.error ?? "MODEL_SCHEMA_DRIFT：单镜头结构修复失败。", tokenUsage);
     }
     const repairValue = repaired.json && typeof repaired.json === "object" && !Array.isArray(repaired.json) && "shot" in repaired.json
@@ -333,6 +372,9 @@ async function callStoryboardChunk(
     warnings.push(...repairNormalized.warnings.map((warning) => `第 ${globalIndex} 镜 ${warning.path}：${warning.alias} 已归一化为 ${warning.canonical}`));
     const repairedShot = storyboardEnvelopeShots(repairNormalized.value, 1)?.[0];
     const final = parseStoryboardShot(repairedShot, globalIndex, durationSec);
+    await reportModelCall(context, repaired, 1, final.success
+      ? { schemaValid: true, repaired: true, normalized: repairNormalized.warnings.length > 0 }
+      : { success: false, error: final.error.message, schemaValid: false, repaired: true, validationPath: final.error.issues[0]?.path.join(".") });
     if (!final.success) {
       const reason = storyboardValidationDiagnostic(final.error, globalIndex).technicalSummary;
       return failureResponse(model, Date.now() - startedAt, `MODEL_SCHEMA_DRIFT：第 ${globalIndex} 镜自动修复后仍未通过：${reason.slice(0, 500)}`, tokenUsage);
@@ -419,7 +461,7 @@ export const deepseekProvider = {
         singleRetry ? `${prompt}\n上次单镜头结构校验未通过，请重新输出完整的单镜头 JSON，不省略必填字段。校验位置：${lastError.slice(0, 500)}` : prompt,
         shotDurationPlan,
         shotIndexOffset,
-        context
+        { ...context, modelCallPass: "B", modelCallMode: singleRetry ? "storyboard-single-retry" : splitRetry ? "storyboard-split" : "storyboard-chunk", modelCallShotId: shotDurationPlan.length === 1 ? `镜头 ${shotIndexOffset + 1}` : undefined, modelCallChunkIndex: shotIndexOffset + 1 }
       );
       tokenUsage = addTokenUsage(tokenUsage, response.tokenUsage);
       if (response.success && response.data) {
@@ -664,7 +706,7 @@ export async function expandShotPrompts(
       buildShotPromptFoundationPrompt(input, true),
       foundationSchema,
       TEXT_OUTPUT_BUDGETS.shotPromptFoundation,
-      context
+      { ...context, modelCallPass: "C", modelCallShotId: input.shot.id, modelCallMode: "foundation" }
     );
     tokenUsage = addTokenUsage(tokenUsage, foundation.tokenUsage);
     if (!foundation.success || !foundation.data) {
@@ -699,18 +741,21 @@ export async function expandShotPrompts(
           buildSingleFramePromptExpansionPrompt(input, frame, foundationData, true),
           frameSchema,
           TEXT_OUTPUT_BUDGETS.shotPromptFrame,
-          context
+          { ...context, modelCallPass: "C", modelCallShotId: input.shot.id, modelCallFrameId: frame.id, modelCallMode: "frame" }
         )
       };
     }));
+    let batchError: string | undefined;
     for (const { frame, result } of results) {
       tokenUsage = addTokenUsage(tokenUsage, result.tokenUsage);
       if (!result.success || !result.data) {
-        return failureResponse(model, Date.now() - startedAt, result.error ?? `第 ${frame.index + 1} 帧提示词生成失败。`, tokenUsage);
+        batchError ??= result.error ?? `第 ${frame.index + 1} 帧提示词生成失败。`;
+        continue;
       }
       framePrompts.push(result.data);
       await context?.onShotPromptFrame?.(result.data);
     }
+    if (batchError) return failureResponse(model, Date.now() - startedAt, batchError, tokenUsage);
   }
 
   const orderedFramePrompts = frames.map((frame) => framePrompts.find((item) => item.frameId === frame.id)).filter((frame): frame is DetailedShotPromptPackage["framePrompts"][number] => Boolean(frame));
@@ -734,7 +779,7 @@ async function callPromptSegment<TData>(
 ) {
   const first = await callAndValidate(prompt, schema, { temperature: 0.3, maxTokens }, { ...context, maxProviderAttempts: 1 });
   if (first.success || !shouldCompactRetry(first.error)) return first;
-  const retry = await callAndValidate(compactPrompt, schema, { temperature: 0.2, maxTokens }, { ...context, maxProviderAttempts: 1 });
+  const retry = await callAndValidate(compactPrompt, schema, { temperature: 0.2, maxTokens }, { ...context, maxProviderAttempts: 1, modelCallMode: `${context?.modelCallMode ?? "prompt"}-compact-retry` });
   return { ...retry, tokenUsage: addTokenUsage(first.tokenUsage, retry.tokenUsage) };
 }
 

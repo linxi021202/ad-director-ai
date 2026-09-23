@@ -32,6 +32,9 @@ export type LLMResult = {
   costEstimate?: string;
   error?: string;
   finishReason?: string | null;
+  httpStatus?: number;
+  providerRequestId?: string;
+  outputLength?: number;
 };
 
 export type OpenAICompatibleChatCompletion = {

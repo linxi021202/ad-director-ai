@@ -29,7 +29,8 @@ describe("DeepSeek staged director quality", () => {
     const route = readFileSync("app/api/generate-assets/route.ts", "utf8");
     const store = readFileSync("lib/projects/anonymousProjectStore.ts", "utf8");
     expect(route).toContain("pendingInputs.slice(0, parsed.data.batchSize)");
-    expect(route).toContain("for (const [shotOffset, input] of sourceInputs.entries())");
+    expect(route).toContain("for (const input of sourceInputs)");
+    expect(route).toContain("completedAtStart.size + packages.length");
     expect(route).toContain("expandShotPrompts");
     expect(route).toContain("saveOwnedShotPromptPackage");
     expect(route).toContain("saveOwnedShotPromptDraft");

@@ -18,6 +18,7 @@ import { reviewDetailedPromptPackage } from "../../../lib/director/promptQuality
 import { adStrategySchema, productBriefSchema, storyboardShotSchema, type DetailedShotPromptDraft, type DetailedShotPromptPackage, type StoryboardShot } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
+import { upsertModelCallLog } from "../../../lib/logs/modelCallStore";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -55,6 +56,7 @@ export async function POST(request: Request) {
       stage: "prompts",
       provider: "deepseek",
       action: "生成镜头提示词",
+      shotId: sourceInputs.length === 1 ? sourceInputs[0]?.shot.id : undefined,
       message: pendingInputs.length
         ? `DeepSeek 正在继续完善镜头提示词，已完成 ${completedAtStart.size} / ${promptInputs.length} 个镜头。`
         : "所有镜头提示词均为最新版本，无需重复生成。",
@@ -94,7 +96,7 @@ export async function POST(request: Request) {
     const packages: DetailedShotPromptPackage[] = [];
     const failures: string[] = [];
     let totalLatencyMs = 0;
-    for (const [shotOffset, input] of sourceInputs.entries()) {
+    for (const input of sourceInputs) {
       const shot = input.shot;
       const inputFingerprint = buildShotPromptInputFingerprint(input);
       let checkpoint: DetailedShotPromptDraft = owned.project.shotPromptDrafts?.find((item) =>
@@ -110,6 +112,23 @@ export async function POST(request: Request) {
       const result = await expandShotPrompts(input, {
         sessionId: session.id,
         resumeShotPromptDraft: checkpoint,
+        onModelCall: async (details) => {
+          const endedAt = Date.now();
+          await upsertModelCallLog(session.id, {
+            kind: "call", taskId: event.id, projectId: projectId!, stage: "prompts", provider: "deepseek",
+            model: details.model, pass: details.pass, shotId: details.shotId, frameId: details.frameId,
+            mode: details.mode, attempt: details.attempt,
+            status: details.success && details.schemaValid !== false ? "completed" : "failed",
+            startedAt: Math.max(0, endedAt - details.latencyMs), completedAt: endedAt,
+            durationMs: details.latencyMs, errorCode: details.error?.match(/(?:DEEPSEEK|MODEL|PROMPT|FRAME|SHOT)_[A-Z_]+/)?.[0],
+            errorSummary: details.error, validationPath: details.validationPath,
+            httpStatus: details.httpStatus, providerRequestId: details.providerRequestId,
+            inputTokens: details.inputTokens, outputTokens: details.outputTokens,
+            outputLength: details.outputLength, finishReason: details.finishReason,
+            jsonParsed: details.jsonParsed, schemaValid: details.schemaValid,
+            normalized: details.normalized, repaired: details.repaired
+          });
+        },
         onShotPromptFoundation: async (foundation) => {
           checkpoint = { ...checkpoint, foundation };
           await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
@@ -137,7 +156,7 @@ export async function POST(request: Request) {
         session.id,
         projectId,
         event.id,
-        completedAtStart.size + shotOffset + 1,
+        completedAtStart.size + packages.length,
         promptInputs.length,
         failures.length
           ? `本次有 ${failures.length} 个镜头等待重试，之前成功内容已经保留。`
@@ -152,7 +171,7 @@ export async function POST(request: Request) {
       ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
       workflowSteps: {
         ...(current.project.workflowSteps ?? defaultWorkflow()),
-        storyboard: failures.length ? "needs-review" : remainingShotIds.length ? "running" : "completed"
+        storyboard: current.project.workflowSteps?.storyboard ?? "completed"
       }
     });
     const shots = updated.project.shots;

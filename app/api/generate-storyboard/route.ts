@@ -13,12 +13,14 @@ import {
 } from "../../../lib/projects/anonymousProjectStore";
 import { generateStoryboard as generateRoutedStoryboard, selectProviderModel } from "../../../lib/providers/providerRouter";
 import { deepseekProvider, generateNarrationPlan } from "../../../lib/providers/deepseekProvider";
+import type { ProviderRequestContext } from "../../../lib/providers/types";
 import { buildPartialNarrationPlan } from "../../../lib/audio/narrationPlan";
 import { adStrategySchema, productBriefSchema, type GenerationProject } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, MAX_SHOT_DURATION_SEC, MIN_SHOT_COUNT, MIN_SHOT_DURATION_SEC, resolveShotPlan } from "../../../lib/video/shotConfig";
 import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
 import { assertStoryboardMatchesPlanning, planningDurationPlan, resolveProjectPlanningConstraints } from "../../../lib/projects/planningConstraints";
+import { upsertModelCallLog } from "../../../lib/logs/modelCallStore";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -65,8 +67,26 @@ export async function POST(request: Request) {
       : [];
     partialShotCount = resumeStoryboardShots.length;
     await updateStoryboardStageStatus(session.id, projectId, "running");
+    const onModelCall = async (details: Parameters<NonNullable<ProviderRequestContext["onModelCall"]>>[0]) => {
+      const endedAt = Date.now();
+      await upsertModelCallLog(session.id, {
+        kind: "call", taskId: event.id, projectId: projectId!, stage: "storyboard", provider: "deepseek",
+        model: details.model, pass: "B", chunkIndex: details.chunkIndex, mode: details.mode ?? "storyboard-chunk",
+        shotId: details.shotId, attempt: details.attempt,
+        status: details.success && details.schemaValid !== false ? "completed" : "failed",
+        startedAt: Math.max(0, endedAt - details.latencyMs), completedAt: endedAt, durationMs: details.latencyMs,
+        errorCode: details.error?.match(/(?:DEEPSEEK|MODEL)_[A-Z_]+/)?.[0], errorSummary: details.error,
+        validationPath: details.validationPath, httpStatus: details.httpStatus, providerRequestId: details.providerRequestId,
+        inputTokens: details.inputTokens, outputTokens: details.outputTokens,
+        outputLength: details.outputLength, finishReason: details.finishReason,
+        jsonParsed: details.jsonParsed, schemaValid: details.schemaValid,
+        normalized: details.normalized, repaired: details.repaired
+      });
+    };
     let result = await generateDetailedStoryboard(owned.project.brief, owned.project.strategy, {
       sessionId: session.id,
+      modelCallPass: "B",
+      onModelCall,
       requestedShotCount: timeline.shotCount,
       targetDurationSec: timeline.targetDurationSec,
       shotDurationPlan: timeline.shotDurationPlan,
@@ -97,6 +117,8 @@ export async function POST(request: Request) {
     if (result.data && !storyboardMatchesPlanning(owned.project, result.data)) {
       result = await generateDetailedStoryboard(owned.project.brief, owned.project.strategy, {
         sessionId: session.id,
+        modelCallPass: "B",
+        onModelCall,
         requestedShotCount: timeline.shotCount,
         targetDurationSec: timeline.targetDurationSec,
         shotDurationPlan: timeline.shotDurationPlan,

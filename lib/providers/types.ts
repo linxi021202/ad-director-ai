@@ -165,6 +165,34 @@ export type ProviderRouterInput = {
 
 export type ProviderRequestContext = {
   sessionId?: string;
+  modelCallPass?: "A" | "B" | "C" | "D";
+  modelCallShotId?: string;
+  modelCallFrameId?: string;
+  modelCallMode?: string;
+  modelCallChunkIndex?: number;
+  onModelCall?: (details: {
+    pass?: "A" | "B" | "C" | "D";
+    shotId?: string;
+    frameId?: string;
+    chunkIndex?: number;
+    attempt: number;
+    mode?: string;
+    model: string;
+    latencyMs: number;
+    success: boolean;
+    error?: string;
+    httpStatus?: number;
+    providerRequestId?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    outputLength?: number;
+    finishReason?: string;
+    jsonParsed: boolean;
+    schemaValid?: boolean;
+    normalized?: boolean;
+    repaired?: boolean;
+    validationPath?: string;
+  }) => Promise<void>;
   requestedShotCount?: number;
   targetDurationSec?: number;
   shotDurationPlan?: number[];

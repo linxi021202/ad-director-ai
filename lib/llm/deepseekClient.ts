@@ -15,8 +15,8 @@ function tokenUsage(usage: OpenAICompatibleChatCompletion["usage"]): LLMTokenUsa
   return usage ? { promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens, totalTokens: usage.total_tokens } : undefined;
 }
 
-function failure(model: string, startedAt: number, error: string, finishReason?: string | null): LLMResult {
-  return { success: false, provider: "deepseek", model, latencyMs: Date.now() - startedAt, error, finishReason };
+function failure(model: string, startedAt: number, error: string, details: Partial<LLMResult> = {}): LLMResult {
+  return { success: false, provider: "deepseek", model, latencyMs: Date.now() - startedAt, error, ...details };
 }
 
 function parseResponse(raw: string): OpenAICompatibleChatCompletion | null {
@@ -71,17 +71,18 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
 
         const responseText = await response.text();
         const raw = parseResponse(responseText);
-        if (!response.ok) return failure(model, startedAt, httpFailure(response.status));
-        if (!raw) return failure(model, startedAt, "DEEPSEEK_INVALID_RESPONSE：DeepSeek 返回了无法解析的响应。");
+        const providerRequestId = response.headers.get("x-request-id") ?? undefined;
+        if (!response.ok) return failure(model, startedAt, httpFailure(response.status), { httpStatus: response.status, providerRequestId });
+        if (!raw) return failure(model, startedAt, "DEEPSEEK_INVALID_RESPONSE：DeepSeek 返回了无法解析的响应。", { httpStatus: response.status, providerRequestId });
         const content = raw.choices?.[0]?.message?.content?.trim();
         const finishReason = raw.choices?.[0]?.finish_reason ?? null;
-        if (!content) return failure(model, startedAt, "DEEPSEEK_EMPTY_RESPONSE：DeepSeek 没有返回可用内容。");
+        const usage = tokenUsage(raw?.usage);
+        if (!content) return failure(model, startedAt, "DEEPSEEK_EMPTY_RESPONSE：DeepSeek 没有返回可用内容。", { finishReason, tokenUsage: usage, httpStatus: response.status, providerRequestId, outputLength: 0 });
         if (finishReason === "length" || finishReason === "max_tokens") {
-          return failure(model, startedAt, "DEEPSEEK_OUTPUT_TRUNCATED：DeepSeek 输出达到长度上限，未保存不完整结果。", finishReason);
+          return failure(model, startedAt, "DEEPSEEK_OUTPUT_TRUNCATED：DeepSeek 输出达到长度上限，未保存不完整结果。", { finishReason, tokenUsage: usage, httpStatus: response.status, providerRequestId, outputLength: content.length });
         }
 
-        const usage = tokenUsage(raw?.usage);
-        const base = { provider: "deepseek" as const, model, latencyMs: Date.now() - startedAt, tokenUsage: usage, costEstimate: estimateDeepSeekCost(model, usage) };
+        const base = { provider: "deepseek" as const, model, latencyMs: Date.now() - startedAt, tokenUsage: usage, costEstimate: estimateDeepSeekCost(model, usage), httpStatus: response.status, providerRequestId, outputLength: content.length };
         if (input.responseFormat === "json") {
           const parsed = parseJsonResponse(content);
           return parsed.success

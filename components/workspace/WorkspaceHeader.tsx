@@ -1,5 +1,6 @@
 import Link from "next/link";
 import React, { type ReactNode } from "react";
+import { CallLogDrawer } from "./CallLogDrawer";
 
 type WorkspaceHeaderProps = {
   active: "工作台" | "项目" | "设置";
@@ -33,7 +34,7 @@ export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generat
           </Link>
         ))}
       </nav>
-      <div className="workspace-header__tools">{trailing}</div>
+      <div className="workspace-header__tools"><CallLogDrawer projectId={new URL(workbenchHref, "http://local").searchParams.get("projectId") ?? projectHref.match(/^\/projects\/([^/?#]+)/)?.[1]} />{trailing}</div>
     </header>
   );
 }
