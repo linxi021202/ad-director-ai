@@ -951,7 +951,21 @@ function normalizeProjectTimeline(project: GenerationProject): GenerationProject
   const constraints = resolveProjectPlanningConstraints(project);
   const shotCount = constraints.shotCount;
   const targetDurationSec = constraints.targetDurationSec;
-  const continuity = ensureProjectContinuity(project);
+  const lockedSceneIds = project.stageStates?.anchors.status === "locked"
+    ? (project.sceneVisualSpecs ?? []).filter((spec) => spec.locked && (spec.masterAssetId || spec.masterAssetIds?.length)).map((spec) => spec.id)
+    : [];
+  const requiredSceneIds = project.visualAnchorWorkspace?.requiredSceneIds.filter((id) => lockedSceneIds.includes(id)) ?? [];
+  const baseSceneIds = requiredSceneIds.length ? requiredSceneIds : lockedSceneIds;
+  const continuitySource = baseSceneIds.length ? {
+    ...project,
+    shots: project.shots.map((shot) => {
+      const sceneId = shot.sceneId?.replace(/-(?:night|day|bright|fresh|recovery|fatigue)$/i, "");
+      if (!sceneId || baseSceneIds.includes(sceneId)) return shot;
+      const suffix = shot.sceneStateId?.match(/-(night|day|bright|fresh|recovery|fatigue)$/i)?.[0] ?? "";
+      return { ...shot, sceneId: baseSceneIds[0], sceneGroupId: baseSceneIds[0], sceneStateId: `${baseSceneIds[0]}${suffix}` };
+    })
+  } : project;
+  const continuity = ensureProjectContinuity(continuitySource);
   const architectureShots = ensureStoryboardArchitecture(continuity.shots);
   const firstFrameIdByShot = new Map(architectureShots.map((shot) => [shot.id, shot.frames?.[0]?.id]));
   const keyframes = project.keyframes?.map((keyframe) => ({

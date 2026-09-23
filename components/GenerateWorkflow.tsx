@@ -9,16 +9,17 @@ import { useModelSettingsStatus } from "@/components/model-settings/useModelSett
 import { AIModeBadge, type AITraceStatus } from "@/components/AIModeBadge";
 import { readClientApiResponse, type ClientApiResponse } from "@/lib/api/clientResponse";
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
-import { CreativeDirectorFlow } from "@/components/CreativeDirectorFlow";
 import { WorkflowFlowRail, idleWorkflowSteps, type WorkflowStepKey, type WorkflowStepState, type WorkflowStepStatus } from "@/components/WorkflowFlowRail";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { UsageGuideSheet } from "@/components/workspace/UsageGuideSheet";
-import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { ProductImageUploader } from "@/components/ProductImageUploader";
 import { buildProductAssetCollection, getProjectProductAssets, normalizeProductAssetState, removeProductImage, setMainProductImage } from "@/lib/productImages";
 import { StageContextPanel, StageDirectorRail, StageInspector, stageStatusLabel } from "@/components/StageDirectorRail";
 import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
+import { KeyframeStageWorkspace } from "@/components/KeyframeStageWorkspace";
+import { generateProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
+import { creativeStageStatusLabel, deriveCreativeStageState } from "@/lib/creative/creativeStageState";
 import { StoryboardTimeline } from "@/components/storyboard/StoryboardTimeline";
 import { buildOptimizedVideoPrompt, resolveHeroShot } from "@/lib/heroVideo";
 import type { AdStrategy, AspectRatio, GenerationEvent, GenerationProject, ProductBrief, StageId, StageStates, StoryboardShot, VisualAnchorCandidateKind } from "@/lib/schemas/project";
@@ -114,6 +115,7 @@ type GenerateImagesData = {
   requestedShots?: number;
   images: Array<{
     shotId: string;
+    frameId?: string;
     imageUrl?: string;
     localUrl?: string;
     requestId?: string;
@@ -210,6 +212,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [mode, setMode] = useState<GenerationMode>("template");
   const [selection, setSelection] = useState<CallSelection>({ deepseek: true, qwenImage: true, wan: true });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [creativeOperation, setCreativeOperation] = useState<"idle" | "generate" | "regenerate" | "select" | "confirm">("idle");
   const [error, setError] = useState<string | null>(null);
   const [traceLabel, setTraceLabel] = useState(() => initialTraceLabel(initialProject.generationEvents));
   const [callTrace, setCallTrace] = useState<string[]>(() => generationEventsToTrace(initialProject.generationEvents));
@@ -221,6 +224,9 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [anchorBusyTarget, setAnchorBusyTarget] = useState<string | null>(null);
   const [anchorVersionIntent, setAnchorVersionIntent] = useState<AnchorVersionIntent | null>(null);
   const [liveKeyframes, setLiveKeyframes] = useState<GenerateImagesData["images"]>(() => projectKeyframesToImages(initialProject));
+  const [keyframeBusyShotId, setKeyframeBusyShotId] = useState<string | null>(null);
+  const [keyframeError, setKeyframeError] = useState<string | null>(null);
+  const [selectedKeyframeShotId, setSelectedKeyframeShotId] = useState<string | undefined>(initialProject.shots[0]?.id);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsProvider, setSettingsProvider] = useState<ProviderId | undefined>();
   const [settingsGuidance, setSettingsGuidance] = useState<string | null>(null);
@@ -895,6 +901,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       return;
     }
     setIsGenerating(true);
+    setCreativeOperation(activeProject.creativeWorkspace ? "regenerate" : "generate");
     setError(null);
     try {
       await postCreativeAction({ action: "generate" });
@@ -905,6 +912,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       setError(stageError instanceof Error ? stageError.message : "创意方向生成失败。");
     } finally {
       setIsGenerating(false);
+      setCreativeOperation("idle");
       await refreshServerEvents(activeProject.id);
     }
   }
@@ -938,16 +946,20 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   async function selectCreativeCandidate(candidateId: string) {
+    setCreativeOperation("select");
     try {
       await postCreativeAction({ action: "select", candidateId });
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "创意选择失败。");
+    } finally {
+      setCreativeOperation("idle");
     }
   }
 
   async function confirmCreativeCandidate(candidateId: string) {
     if (isGenerating) return;
     setIsGenerating(true);
+    setCreativeOperation("confirm");
     setError(null);
     try {
       const confirmed = await postCreativeAction({ action: "confirm", candidateId });
@@ -959,6 +971,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       setError(stageError instanceof Error ? stageError.message : "创意确认失败。");
     } finally {
       setIsGenerating(false);
+      setCreativeOperation("idle");
     }
   }
 
@@ -1197,6 +1210,53 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }
 
+  async function generateCurrentShotKeyframes(shotId: string, frameId?: string) {
+    if (keyframeBusyShotId) return;
+    if (activeProject.stageStates?.anchors.status !== "locked") {
+      setKeyframeError("请先完成人物与场景确认。");
+      return;
+    }
+    if (activeProject.stageStates?.storyboard.status !== "locked") {
+      setKeyframeError("请先确认文字分镜。");
+      return;
+    }
+    const shot = activeProject.shots.find((item) => item.id === shotId);
+    if (!shot) return;
+    if (frameId && shot.frames?.find((frame) => frame.id === frameId)?.isLocked) {
+      setKeyframeError("这张关键帧已确认。请先取消确认，再生成新版本；旧图片仍保留在私有资产中。");
+      return;
+    }
+    setKeyframeBusyShotId(shotId);
+    setKeyframeError(null);
+    try {
+      await generateProjectKeyframes({
+        projectId: activeProject.id,
+        shots: [shot],
+        aspectRatio: activeProject.brief.aspectRatio,
+        ...(frameId ? { frameIds: [frameId] } : {}),
+        onProgress: async () => {
+          const snapshot = await fetchServerProject(activeProject.id);
+          applyProjectUpdate(snapshot);
+        }
+      });
+      applyProjectUpdate(await fetchServerProject(activeProject.id));
+    } catch (generationError) {
+      setKeyframeError(generationError instanceof Error ? generationError.message : "关键帧生成失败，请稍后重试。");
+      try { applyProjectUpdate(await fetchServerProject(activeProject.id)); } catch { /* Keep the last saved snapshot. */ }
+    } finally {
+      setKeyframeBusyShotId(null);
+    }
+  }
+
+  async function confirmCurrentFrame(shotId: string, frameId: string, locked: boolean) {
+    setKeyframeError(null);
+    try {
+      await postWorkflowAction({ action: "set-frame-lock", shotId, frameId, locked });
+    } catch (confirmationError) {
+      setKeyframeError(confirmationError instanceof Error ? confirmationError.message : "关键帧确认失败。");
+    }
+  }
+
   const persistedStageStates = activeProject.stageStates!;
   const stageStates: StageStates = briefSaveStatus === "dirty" || briefSaveStatus === "error"
     ? { ...persistedStageStates, brief: { status: "draft", updatedAt: Date.now() } }
@@ -1217,6 +1277,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const stageStatus = activeStage === "anchors" ? visualSetupStatusLabel(visualSetupState.status) : stageStatusLabel(activeStageState.status);
   const shotCountLocked = hasGeneratedStoryboard(activeProject);
   const creativeSet = activeProject.creativeWorkspace?.sets.find((set) => set.id === activeProject.creativeWorkspace?.currentSetId);
+  const creativeState = deriveCreativeStageState(activeProject);
 
   return (
     <main className="workbench-v3">
@@ -1231,7 +1292,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         <StageDirectorRail project={activeProject} activeStage={activeStage} states={stageStates} onSelect={selectStage} />
 
         <section className="workbench-layout stage-gated-layout">
-          <StageContextPanel project={previewProject} activeStage={activeStage} onSelect={selectStage} open={contextOpen} onClose={() => setContextOpen(false)} />
+          <StageContextPanel project={previewProject} activeStage={activeStage} onSelect={selectStage} selectedShotId={selectedKeyframeShotId} onShotSelect={setSelectedKeyframeShotId} busyShotId={keyframeBusyShotId} open={contextOpen} onClose={() => setContextOpen(false)} />
 
           <section className="generation-stage-v3 stage-canvas workspace-column workspace-column--main">
             <div className="generation-stage-v3__glow" aria-hidden="true" />
@@ -1239,7 +1300,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <div>
                 <div className="generation-title-row">
                   <h1>{activeStage === "anchors" ? "人物与场景" : STAGE_LABELS[activeStage]}</h1>
-                  <span className={activeStageState.status === "locked" || activeStageState.status === "ready" || (activeStage === "anchors" && visualSetupState.status === "ready-to-complete") ? "is-success" : activeStageState.status === "blocked" ? "is-warning" : ""}><i />{stageStatus}</span>
+                  <span className={activeStageState.status === "locked" || activeStageState.status === "ready" || (activeStage === "anchors" && visualSetupState.status === "ready-to-complete") ? "is-success" : activeStageState.status === "blocked" ? "is-warning" : ""}><i />{activeStage === "creative" ? creativeStageStatusLabel(creativeState.status) : stageStatus}</span>
                 </div>
                 <p className="stage-canvas-summary">{stageCanvasSummary(activeStage)}</p>
               </div>
@@ -1271,7 +1332,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               </footer>
             </section> : null}
 
-            {activeStage === "creative" && activeStageState.status !== "blocked" ? <section className="stage-creative-canvas"><CreativeCandidateGrid candidateSet={creativeSet} busy={isGenerating} onGenerate={() => void runCreativeStage()} onSelect={(candidateId) => void selectCreativeCandidate(candidateId)} onConfirm={(candidateId) => void confirmCreativeCandidate(candidateId)} /></section> : null}
+            {activeStage === "creative" && activeStageState.status !== "blocked" ? <section className="stage-creative-canvas"><CreativeCandidateGrid candidateSet={creativeSet} operation={creativeOperation} stageStatus={creativeState.status} onGenerate={() => void runCreativeStage()} onSelect={(candidateId) => void selectCreativeCandidate(candidateId)} onConfirm={(candidateId) => void confirmCreativeCandidate(candidateId)} /></section> : null}
 
             {activeStage === "anchors" && activeStageState.status !== "blocked" ? <VisualAnchorsCanvas
               project={activeProject}
@@ -1296,7 +1357,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               <button type="button" className="button-secondary-v3" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion()}>{stageLocking ? "正在继续生成…" : "继续生成剩余提示词"}</button>
             </div> : null}
 
-            {activeStage === "keyframes" ? <ResultBoard project={previewProject} keyframes={liveKeyframes} callTrace={[]} projectId={activeProject.id} generated={generated} isGenerating={isGenerating} /> : null}
+            {activeStage === "keyframes" && activeStageState.status !== "blocked" ? <KeyframeStageWorkspace project={previewProject} selectedShotId={selectedKeyframeShotId} keyframes={liveKeyframes} busyShotId={keyframeBusyShotId} error={keyframeError} onGenerate={(shotId, frameId) => void generateCurrentShotKeyframes(shotId, frameId)} onConfirm={(shotId, frameId, locked) => void confirmCurrentFrame(shotId, frameId, locked)} /> : null}
             {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已确认关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
             {activeStage === "final" ? <section className="stage-readiness-grid"><StageReadiness label="关键帧" value={`${liveKeyframes.filter((item) => item.status === "ready").length} 个已完成`} /><StageReadiness label="视频" value={activeProject.heroVideo ? "已完成" : "未完成"} /><StageReadiness label="旁白" value={activeProject.narrationAssetId ? "已完成" : "待生成"} /><StageReadiness label="成片时长" value={`${getProjectDurationSec(activeProject)} 秒`} /><Link href={`/projects/${activeProject.id}#final`} className="button-primary-v3">进入最终成片检查</Link></section> : null}
 
@@ -1304,7 +1365,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             {error ? <div className="inline-generation-error">{error}</div> : null}
           </section>
 
-          <StageInspector project={{ ...activeProject, stageStates }} activeStage={activeStage} state={activeStageState} busy={stageLocking} canConfirm={!(["brief", "creative", "anchors"] as StageId[]).includes(activeStage)} onLock={() => void lockCurrentStage()} onOpenModels={() => openModelSettings()} open={inspectorOpen} onClose={() => setInspectorOpen(false)} />
+          <StageInspector project={{ ...activeProject, stageStates }} activeStage={activeStage} state={activeStageState} busy={stageLocking} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} canConfirm={!(["brief", "creative", "anchors"] as StageId[]).includes(activeStage)} onLock={() => void lockCurrentStage()} onOpenModels={() => openModelSettings()} open={inspectorOpen} onClose={() => setInspectorOpen(false)} />
         </section>
       </div>
       <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} initialProvider={settingsProvider} guidance={settingsGuidance} />
@@ -1680,57 +1741,6 @@ function BriefTextarea({ label, value, disabled, rows, onChange }: { label: stri
   return <label><span>{label}</span><textarea value={value} disabled={disabled} rows={rows} onChange={(event) => onChange(event.target.value)} /></label>;
 }
 
-function ResultBoard({ project, keyframes, callTrace, projectId, generated, isGenerating }: { project: GenerationProject; keyframes: GenerateImagesData["images"]; callTrace: string[]; projectId: string; generated: boolean; isGenerating: boolean }) {
-  return (
-    <div className={"creative-result-v3" + (generated ? " is-ready" : "")}>
-      <section className="creative-summary-v3">
-        <div className="creative-summary-v3__copy">
-          <span>{generated ? "核心创意" : isGenerating ? "正在生成策略" : "创意预览"}</span>
-          <h2>{project.strategy.coreMessage}</h2>
-          <p>{project.strategy.bigIdea}</p>
-          <div className="creative-summary-v3__actions">
-            <Link href={"/projects/" + projectId} className="button-accent-v3">进入项目精修 <span>→</span></Link>
-            <Link href={"/projects/" + projectId} className="text-action-v3">查看项目</Link>
-          </div>
-        </div>
-        <CreativeDirectorFlow />
-      </section>
-
-      <section className="storyboard-overview-v3">
-        <header><div><strong>镜头概览</strong><span>共 {project.shots.length} 个镜头</span></div><Link href={"/projects/" + projectId}>查看完整分镜脚本</Link></header>
-        <div className="storyboard-overview-v3__grid">
-          {project.shots.map((shot) => (
-            <article key={shot.id} className="storyboard-preview-v3">
-              <AdaptiveMediaFrame
-                aspectRatio={project.brief.aspectRatio}
-                src={shotPreviewUrl(shot, keyframes)}
-                mediaType="image"
-                fit="contain"
-                alt={`镜头 ${shot.index} 预览`}
-                stage="overview"
-                className="storyboard-preview-v3__media"
-                overlay={<><span>镜头 {shot.index}</span><em>{shot.durationSec} 秒</em></>}
-              />
-              <div><strong>{shot.subtitle}</strong><p>{shot.goal}</p></div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      {callTrace.length > 0 ? <details className="result-log-v3"><summary>查看本次生成日志</summary>{callTrace.map((item, index) => <TraceLogLine key={`${index}-${item}`} item={item} />)}</details> : null}
-    </div>
-  );
-}
-
-function shotPreviewUrl(shot: StoryboardShot, keyframes: GenerateImagesData["images"]) {
-  const generated = keyframes.find((image) => image.shotId === shot.id);
-  if (generated?.localUrl || generated?.imageUrl) return generated.localUrl || generated.imageUrl!;
-  if (shot.index === 2) return "/demo-keyframes/shot-2.png";
-  if (shot.index === 3) return "/demo-keyframes/shot-3.png";
-  if (shot.index === 4) return "/demo-keyframes/shot-4.png";
-  return "/landing-cold-brew-hero.png";
-}
-
 function workflowFromProject(project: GenerationProject): WorkflowStepState {
   const source = project.workflowSteps;
   if (!source) return project.status === "draft" ? idleWorkflowSteps : {
@@ -1758,6 +1768,7 @@ function normalizeWorkflowStatus(status: string): WorkflowStepStatus {
 function projectKeyframesToImages(project: GenerationProject): GenerateImagesData["images"] {
   return (project.keyframes ?? []).map((frame) => ({
     shotId: frame.shotId,
+    frameId: frame.frameId,
     imageUrl: frame.imageUrl,
     localUrl: frame.localUrl,
     requestId: frame.requestId,

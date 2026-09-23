@@ -866,6 +866,7 @@ export const generationProjectSchema = z.object({
   resourceVersions: z.array(versionedResourceSchema).max(500).optional(),
   dependencyGraph: z.array(dependencyNodeSchema).max(1000).optional(),
   keyframes: z.array(keyframeMetadataSchema).max(60).optional(),
+  keyframeVersions: z.array(keyframeMetadataSchema).max(120).optional(),
   heroVideo: heroVideoMetadataSchema.optional(),
   finalVideo: finalVideoMetadataSchema.optional(),
   narrationAssetId: z.string().uuid().optional(),

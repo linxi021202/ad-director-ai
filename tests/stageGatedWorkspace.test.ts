@@ -22,7 +22,8 @@ describe("stage-gated director workspace", () => {
     expect(workflow).toContain('<ProductImageUploader');
     expect(rail).toContain('activeStage === "brief"');
     expect(rail).toContain('activeStage === "anchors"');
-    expect(rail).toContain('activeStage === "storyboard" || activeStage === "keyframes" || activeStage === "video"');
+    expect(rail).toContain('activeStage === "keyframes" ? <div className="stage-shot-navigator keyframe-shot-nav"');
+    expect(rail).toContain('activeStage === "storyboard" || activeStage === "video"');
   });
 
   it("stops after each low-cost stage and leaves the old one-click chain without a UI trigger", () => {

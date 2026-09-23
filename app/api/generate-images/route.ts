@@ -26,6 +26,7 @@ import { getAnonymousApiSession } from "../../../lib/session/api";
 import { MAX_SHOT_COUNT, getDefaultHeroShotArrayIndex } from "../../../lib/video/shotConfig";
 import { selectLockedMasterAssetIds } from "../../../lib/continuity/visualMasters";
 import { selectImageReferencesForShot } from "../../../lib/image/referenceSelector";
+import { archiveSupersededKeyframe, keepApprovedKeyframe } from "../../../lib/image/keyframeVersions";
 import type { ProductVisualSpec } from "../../../lib/schemas/project";
 import { createMockKeyframeQA, inspectKeyframe } from "../../../lib/visual/visualQA";
 import { ensureShotArchitecture } from "../../../lib/storyboard/shotArchitecture";
@@ -483,20 +484,28 @@ async function persistKeyframeState(
   result: ShotImageGenerationResult,
   status: "generated" | "text-qa" | "product-qa" | "character-qa" | "scene-qa" | "qa-review"
 ) {
-  await mutateOwnedAnonymousProject(input.sessionId, input.projectId, (project) => ({
-    ...project,
-    shots: updateShotFrame(project.shots, shot.id, frame.id, result.assetId, status === "generated" ? "generating" : "qa-review"),
-    keyframes: [...(project.keyframes ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), toKeyframeMetadata(result, status)]
-  }));
+  await mutateOwnedAnonymousProject(input.sessionId, input.projectId, (project) => {
+    const previous = project.keyframes?.find((item) => keyframeIdentity(item.shotId, item.frameId) === keyframeIdentity(shot.id, frame.id));
+    if (keepApprovedKeyframe(previous, status)) return project;
+    return {
+      ...project,
+      shots: updateShotFrame(project.shots, shot.id, frame.id, result.assetId, status === "generated" ? "generating" : "qa-review"),
+      keyframes: [...(project.keyframes ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), toKeyframeMetadata(result, status)]
+    };
+  });
 }
 
 async function persistEvaluatedKeyframe(input: ImageBatchInput, shot: TargetShot, frame: ShotFrame, image: EvaluatedImage) {
   await mutateOwnedAnonymousProject(input.sessionId, input.projectId, (project) => {
+    const previous = project.keyframes?.find((item) => keyframeIdentity(item.shotId, item.frameId) === keyframeIdentity(shot.id, frame.id));
+    if (keepApprovedKeyframe(previous, image.status)) return project;
+    const versions = archiveSupersededKeyframe(project.keyframeVersions, previous, image.assetId, image.status);
     const qaResults = image.qaResults?.length
       ? [...(project.keyframeQAResults ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), ...image.qaResults]
       : project.keyframeQAResults;
     return {
       ...project,
+      keyframeVersions: versions,
       keyframeQAResults: qaResults,
       shots: updateShotFrame(project.shots, shot.id, frame.id, image.assetId, image.status === "fallback" ? "failed" : image.status),
       keyframes: [...(project.keyframes ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), toKeyframeMetadata(image, image.status)]

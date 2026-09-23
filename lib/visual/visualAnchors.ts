@@ -22,21 +22,31 @@ export type VisualAnchorReadiness = {
 };
 
 export function ensureVisualAnchorWorkspace(project: GenerationProject, now = new Date().toISOString()): GenerationProject {
+  const stageWasLocked = project.stageStates?.anchors.status === "locked";
+  const previous = project.visualAnchorWorkspace;
+  const lockedSceneIds = stageWasLocked
+    ? (project.sceneVisualSpecs ?? []).filter((spec) => spec.locked && currentMasterAssetId(spec)).map((spec) => spec.id)
+    : [];
+  const preservedSceneIds = previous?.requiredSceneIds.filter((id) => lockedSceneIds.includes(id)) ?? [];
+  const baseSceneIds = stageWasLocked ? (preservedSceneIds.length ? preservedSceneIds : lockedSceneIds) : [];
   const canonicalShots = project.shots.map((shot) => {
     const originalSceneId = shot.sceneId;
     if (!originalSceneId) return shot;
-    const sceneId = canonicalSceneId(originalSceneId);
+    const candidateId = canonicalSceneId(originalSceneId);
+    const sceneId = baseSceneIds.length && !baseSceneIds.includes(candidateId) ? baseSceneIds[0]! : candidateId;
     return {
       ...shot,
       sceneId,
-      sceneGroupId: canonicalSceneId(shot.sceneGroupId ?? sceneId),
-      sceneStateId: shot.sceneStateId ?? inferSceneStateId(shot, originalSceneId)
+      sceneGroupId: sceneId,
+      sceneStateId: remapSceneStateId(shot.sceneStateId ?? inferSceneStateId(shot, originalSceneId), sceneId)
     };
   });
   const characterBriefs = buildCharacterBriefs({ ...project, shots: canonicalShots });
   const characterVisualSpecs = buildCharacterSpecs(project, characterBriefs);
   const sceneVisualSpecs = buildSceneSpecs({ ...project, shots: canonicalShots });
-  const requiredSceneSpecs = selectRequiredSceneSpecs({ ...project, shots: canonicalShots }, sceneVisualSpecs);
+  const requiredSceneSpecs = baseSceneIds.length
+    ? baseSceneIds.map((id) => sceneVisualSpecs.find((spec) => spec.id === id)).filter((spec): spec is SceneVisualSpec => Boolean(spec))
+    : selectRequiredSceneSpecs({ ...project, shots: canonicalShots }, sceneVisualSpecs);
   const requiredSceneIds = new Set(requiredSceneSpecs.map((spec) => spec.id));
   const mainSceneId = requiredSceneSpecs[0]?.id;
   const normalizedShots = canonicalShots.map((shot) => {
@@ -50,8 +60,6 @@ export function ensureVisualAnchorWorkspace(project: GenerationProject, now = ne
     .filter((image) => image.assetId && image.assetId !== mainProduct?.assetId)
     .map((image) => image.assetId!)
     .slice(0, 2);
-  const stageWasLocked = project.stageStates?.anchors.status === "locked";
-  const previous = project.visualAnchorWorkspace;
   const productMaster = {
     assetId: mainProduct?.assetId,
     referenceAssetIds,

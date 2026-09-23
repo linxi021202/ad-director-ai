@@ -17,7 +17,7 @@ import { buildProjectContinuity } from "../lib/continuity/projectContinuity";
 import { createAnonymousProject, getOwnedAnonymousProject, mutateOwnedAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import type { GenerationProject, ProductVisualSpec, StoryboardShot, VisualAnchorCandidate } from "../lib/schemas/project";
-import { ensureStageWorkflow, lockStageInProject } from "../lib/workflow/stageGates";
+import { ensureStageWorkflow, lockStageInProject, setStageStatusInProject } from "../lib/workflow/stageGates";
 import { buildCharacterCandidatePrompt, buildSceneCandidatePrompt } from "../lib/visual/anchorPrompts";
 import { fallbackCharacterDirections, fallbackSceneDirections } from "../lib/visual/candidateDirections";
 import {
@@ -222,6 +222,78 @@ describe("Phase 2 visual anchors", () => {
     expect(markup).toContain("制作分镜");
   });
 
+  it("keeps locked scene identity and asset when a later storyboard changes shot-level scene names", async () => {
+    const created = await createAnonymousProject("anchor-session-a");
+    const ready = lockStageInProject(persistentReadyVisualSetupProject(), "anchors");
+    const sceneId = ready.visualAnchorWorkspace!.requiredSceneIds[0]!;
+    const masterAssetId = ready.sceneVisualSpecs!.find((item) => item.id === sceneId)!.masterAssetId;
+    const characterAssetId = ready.characterVisualSpecs![0]!.masterAssetId;
+    const seeded = await mutateOwnedAnonymousProject("anchor-session-a", created.id, () => ready, created.version);
+    const updated = await mutateOwnedAnonymousProject("anchor-session-a", created.id, (project) => ({
+      ...project,
+      shots: project.shots.map((shot, index) => ({
+        ...shot,
+        sceneId: `new-shot-scene-${index + 1}`,
+        sceneGroupId: `new-shot-scene-${index + 1}`,
+        sceneStateId: `new-shot-scene-${index + 1}-day`
+      }))
+    }), seeded.version);
+    expect(updated.project.shots.every((shot) => shot.sceneId === sceneId)).toBe(true);
+    expect(updated.project.sceneVisualSpecs?.find((item) => item.id === sceneId)).toMatchObject({ masterAssetId, locked: true });
+    expect(updated.project.characterVisualSpecs?.[0]).toMatchObject({ masterAssetId: characterAssetId, locked: true });
+    expect(deriveVisualSetupStageState(updated.project).status).toBe("completed");
+    expect(updated.project.stageStates?.anchors.status).toBe("locked");
+    resetAnonymousProjectQueuesForTests();
+    const restored = await getOwnedAnonymousProject("anchor-session-a", created.id);
+    expect(restored && deriveVisualSetupStageState(restored.project).status).toBe("completed");
+    expect(restored?.project.visualAnchorWorkspace?.requiredSceneIds).toContain(sceneId);
+  });
+
+  it("confirms only a generated frame and preserves its lock after reload", async () => {
+    const created = await createAnonymousProject("anchor-session-a");
+    const ready = projectWithOneLockedStoryboardFrame();
+    const shot = ready.shots[0]!;
+    const frame = shot.frames![0]!;
+    const seeded = await mutateOwnedAnonymousProject("anchor-session-a", created.id, () => ({
+      ...ready,
+      keyframes: [{
+        shotId: shot.id,
+        frameId: frame.id,
+        assetId: "66666666-6666-4666-8666-666666666666",
+        localUrl: `/api/projects/${created.id}/assets/66666666-6666-4666-8666-666666666666`,
+        status: "ready" as const,
+        fallbackUsed: false,
+        storageTransition: "PRIVATE_ASSET_V1" as const
+      }]
+    }), created.version);
+    const response = await updateWorkflow(new Request(`http://localhost/api/projects/${created.id}/workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set-frame-lock", expectedVersion: seeded.version, shotId: shot.id, frameId: frame.id, locked: true })
+    }), { params: Promise.resolve({ projectId: created.id }) });
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { data: { project: GenerationProject } };
+    expect(payload.data.project.shots[0]?.frames?.[0]?.isLocked).toBe(true);
+    expect(payload.data.project.stageStates?.anchors.status).toBe("locked");
+    resetAnonymousProjectQueuesForTests();
+    const restored = await getOwnedAnonymousProject("anchor-session-a", created.id);
+    expect(restored?.project.shots[0]?.frames?.[0]?.isLocked).toBe(true);
+  });
+
+  it("rejects frame confirmation when no real keyframe asset exists", async () => {
+    const created = await createAnonymousProject("anchor-session-a");
+    const ready = projectWithOneLockedStoryboardFrame();
+    const seeded = await mutateOwnedAnonymousProject("anchor-session-a", created.id, () => ready, created.version);
+    const response = await updateWorkflow(new Request(`http://localhost/api/projects/${created.id}/workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set-frame-lock", expectedVersion: seeded.version, shotId: ready.shots[0]!.id, frameId: ready.shots[0]!.frames![0]!.id, locked: true })
+    }), { params: Promise.resolve({ projectId: created.id }) });
+    expect(response.status).toBe(400);
+    const payload = await response.json() as { error: { message: string } };
+    expect(payload.error.message).toBe("当前帧还没有可确认的关键帧图片。");
+  });
+
   it("rejects final visual setup confirmation when a required item is not confirmed", async () => {
     const created = await createAnonymousProject("anchor-session-a");
     const ready = persistentReadyVisualSetupProject();
@@ -356,6 +428,24 @@ function persistentReadyVisualSetupProject(): GenerationProject {
     brief: { ...project.brief, durationSec: 12 },
     shots: [...project.shots, thirdShot]
   };
+}
+
+function projectWithOneLockedStoryboardFrame(): GenerationProject {
+  const visualReady = lockStageInProject(persistentReadyVisualSetupProject(), "anchors");
+  const first = visualReady.shots[0]!;
+  const framed = {
+    ...visualReady,
+    shots: visualReady.shots.map((shot, index) => index === 0 ? {
+      ...shot,
+      frames: [{
+        id: `${shot.id}-frame-1`, shotId: shot.id, index: 0, role: "start" as const,
+        timestampSec: 0, description: shot.visualDescription,
+        imagePromptCn: shot.imagePromptCn, imagePromptEn: shot.imagePromptEn,
+        status: "pending" as const, isLocked: false
+      }]
+    } : shot)
+  };
+  return lockStageInProject(setStageStatusInProject(framed, "storyboard", "ready"), "storyboard");
 }
 
 function renderVisualSetupFixture(project: GenerationProject) {

@@ -362,5 +362,19 @@
   .home-route-transition__bloom { display: none; }
   .home-route-transition__core-field,.home-route-transition__glow { animation:none!important; opacity:.42; transform:translate(-50%,-50%) scale(.65); }
   .home-route-transition { transition: background-color 340ms ease-out, visibility 0s linear 340ms; }
-  .home-route-transition.is-active { background: rgba(0, 4, 12, .9); }
+.home-route-transition.is-active { background: rgba(0, 4, 12, .9); }
+
+/* The canvas carries the ordered flow; the DOM only provides spatial depth. */
+.home-hero h1{max-width:1100px;font-size:54px;line-height:1.16;letter-spacing:0;text-align:center}
+.home-route-transition{background:#030a11;transition:visibility 0s linear 1660ms}
+.home-route-transition.is-active{background:#030a11}
+.home-route-transition__particles{z-index:2;opacity:1!important;animation:none!important}
+.home-route-transition__space{position:absolute;inset:-20%;background:conic-gradient(from 215deg at 50% 52%,transparent 0 13%,rgba(59,115,141,.065) 20%,transparent 34%,rgba(82,143,163,.045) 48%,transparent 66%,rgba(52,112,137,.055) 78%,transparent 94%);filter:blur(42px);opacity:.75}
+.home-route-transition.is-active .home-route-transition__space{animation:transition-space-drift 1660ms ease-in forwards}
+.home-route-transition__aperture{position:absolute;z-index:3;top:52%;left:50%;width:34px;height:34px;border-radius:47% 53% 55% 45%;background:radial-gradient(circle,rgba(203,239,244,.13),rgba(56,132,161,.11) 32%,transparent 72%);opacity:0;transform:translate(-50%,-50%) scale(.1)}
+.home-route-transition.is-active .home-route-transition__aperture{animation:transition-aperture 1660ms cubic-bezier(.22,.61,.36,1) forwards}
+@keyframes transition-space-drift{0%{transform:rotate(-8deg) scale(1.08);opacity:.5}62%{opacity:.8}100%{transform:rotate(19deg) scale(.82);opacity:.18}}
+@keyframes transition-aperture{0%,67%{opacity:0;transform:translate(-50%,-50%) scale(.1)}78%{opacity:.38;transform:translate(-50%,-50%) scale(1.2)}88%{opacity:.28;transform:translate(-50%,-50%) scale(5)}100%{opacity:.08;transform:translate(-50%,-50%) scale(36)}}
+@media(max-width:768px){.home-hero h1{max-width:12em;font-size:30px;line-height:1.24}}
+@media(prefers-reduced-motion:reduce){.home-route-transition__particles,.home-route-transition__space{display:none!important}.home-route-transition__aperture{display:block;opacity:.1;animation:none!important;transform:translate(-50%,-50%) scale(3)}.home-route-transition.is-active{animation:transition-reduced 280ms ease-out forwards}@keyframes transition-reduced{from{opacity:0;transform:scale(1.01)}to{opacity:1;transform:scale(1)}}}
 }

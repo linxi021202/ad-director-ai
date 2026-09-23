@@ -16,7 +16,7 @@ describe("workspace reliability fixes", () => {
   it("updates generated media frames from the live aspect-ratio draft", () => {
     expect(generateWorkflow).toContain("const previewProject = useMemo<GenerationProject>");
     expect(generateWorkflow).toContain("aspectRatio: briefDraft.brief.aspectRatio");
-    expect(generateWorkflow).toContain("<ResultBoard project={previewProject}");
+    expect(generateWorkflow).toContain("<KeyframeStageWorkspace project={previewProject}");
   });
 
   it("keeps Wan selectable and moves the video library after final composition", () => {

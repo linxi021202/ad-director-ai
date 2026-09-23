@@ -6,10 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AIModeBadge, type AITraceStatus } from "@/components/AIModeBadge";
 import type { KeyframeResult } from "@/components/KeyframePreview";
 import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
+import { VisualAssetPlaceholder } from "@/components/VisualAssetPlaceholder";
 import { ShotDetailsSheet, type ShotDetailsTab } from "@/components/ShotDetailsSheet";
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { readClientApiResponse } from "@/lib/api/clientResponse";
+import { generateProjectKeyframes, pollProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
 import {
   buildOptimizedVideoPrompt,
   DEFAULT_HERO_SHOT_ID,
@@ -217,7 +219,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   const durationDiffersFromTarget = projectDurationSec !== targetDurationSec;
   const optimizedVideoPrompt = useMemo(() => buildOptimizedVideoPrompt(heroShot), [heroShot]);
   const heroKeyframe = primaryShotKeyframe(heroShot, keyframes);
-  const heroFrameUrl = heroKeyframe?.localUrl || heroKeyframe?.imageUrl || shotPlaceholderUrl(heroShot.index);
+  const heroFrameUrl = heroKeyframe?.localUrl || heroKeyframe?.imageUrl;
   const heroVideoStatus = getHeroVideoStatus({
     hasHeroShot: Boolean(displayProject.heroShotId && heroShot),
     promptReady: Boolean(heroShot),
@@ -318,7 +320,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     const shots = project.shots.filter((shot) => shotIds.has(shot.id));
     setActiveBatch(shots.length === 1 ? "hero-only" : "all-shots");
     markShotsLoading(shots);
-    void pollProjectQwenImages(project.id, event.id, async () => {
+    void pollProjectKeyframes(project.id, event.id, async () => {
       if (!cancelled) await fetchProjectSnapshot().catch(() => undefined);
     }).then(async (completed) => {
       if (cancelled) return;
@@ -557,26 +559,13 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
     try {
       await resetGenerationLogForNewRun();
-      const response = await fetch("/api/generate-images", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: displayProject.id,
-          shots: targetShots,
-          mode,
-          aspectRatio: displayProject.brief.aspectRatio,
-          productImages: displayProject.brief.productImages ?? []
-          ,...(frameIds?.length ? { frameIds } : {})
-        })
+      const completed = await generateProjectKeyframes({
+        projectId: displayProject.id,
+        shots: targetShots,
+        aspectRatio: displayProject.brief.aspectRatio,
+        frameIds,
+        onProgress: async () => { await fetchProjectSnapshot().catch(() => undefined); }
       });
-      const payload = await readClientApiResponse<NonNullable<GenerateImagesResponse["data"]>>(response);
-      if (!response.ok || !payload.success || !payload.data) throw new Error(payload.error || "关键帧生成失败。");
-
-      const completed = payload.data.status === "running"
-        ? await pollProjectQwenImages(displayProject.id, payload.data.eventId, async () => {
-            await fetchProjectSnapshot().catch(() => undefined);
-          })
-        : payload.data;
 
       setKeyframes((current) => {
         const next = { ...current };
@@ -611,13 +600,13 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       const next = { ...current };
       shots.forEach((shot) => {
         const ids = (shot.frames?.map((frame) => frame.id) ?? [shot.id]).filter((id) => !frameIds || frameIds.includes(id));
-        ids.forEach((frameId) => { next[frameId] = {
-          ...(next[frameId] ?? { shotId: shot.id, frameId }),
-          status: "failed",
-          fallbackUsed: true,
-          fallbackReason: reason,
-          imageUrl: shotPlaceholderUrl(shot.index)
-        }; });
+        ids.forEach((frameId) => {
+          if (next[frameId]?.imageUrl || next[frameId]?.localUrl) {
+            next[frameId] = { ...next[frameId]!, status: "ready" };
+          } else {
+            next[frameId] = { shotId: shot.id, frameId, status: "failed", fallbackUsed: true, fallbackReason: reason };
+          }
+        });
       });
       return next;
     });
@@ -927,7 +916,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           <h2 id="project-overview-title" className="sr-only">项目概览</h2>
           <article className="project-media-card-v4">
             <header><span>项目媒体</span><strong>{displayProject.brief.aspectRatio}</strong></header>
-            <AdaptiveMediaFrame
+            {heroVideo?.url || productMediaUrl || heroFrameUrl ? <AdaptiveMediaFrame
               aspectRatio={displayProject.brief.aspectRatio}
               stage="overview"
               mediaType={heroVideo ? "video" : "image"}
@@ -936,8 +925,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
               fit="contain"
               showBlurredBackdrop={false}
               alt={heroVideo ? `${displayProject.brief.productName} 导入广告视频` : `${displayProject.brief.productName} 产品或主镜头预览`}
-            />
-            <footer><span>{heroVideo ? "导入广告视频" : productMediaUrl ? "真实产品素材" : "主镜头关键帧"}</span><strong>{heroVideo ? "视频已就绪" : "媒体已就绪"}</strong></footer>
+            /> : <VisualAssetPlaceholder title="预览待生成" description="完成对应生成步骤后，这里将显示预览。" aspectRatio={displayProject.brief.aspectRatio} />}
+            <footer><span>{heroVideo ? "导入广告视频" : productMediaUrl ? "真实产品素材" : "主镜头关键帧"}</span><strong>{heroVideo || productMediaUrl || heroFrameUrl ? "媒体已就绪" : "等待生成"}</strong></footer>
           </article>
 
           <article className="strategy-card-v4">
@@ -1009,7 +998,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           <div className="hero-layout-v4">
             <article className="hero-media-v4">
               <span className="hero-media-v4__badge">当前视频</span>
-              <AdaptiveMediaFrame
+              {heroVideo?.url || heroFrameUrl ? <AdaptiveMediaFrame
                 aspectRatio={displayProject.brief.aspectRatio}
                 stage="hero"
                 mediaType={heroVideo ? "video" : "image"}
@@ -1018,7 +1007,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
                 fit="contain"
                 showBlurredBackdrop={false}
                 alt={`镜头 ${heroShot.index}：${heroShot.subtitle}`}
-              />
+              /> : <VisualAssetPlaceholder title="预览待生成" description="完成对应生成步骤后，这里将显示预览。" aspectRatio={displayProject.brief.aspectRatio} />}
               <div><strong>镜头 {heroShot.index}</strong><h3>{heroShot.subtitle}</h3><p>{heroShot.goal}</p></div>
             </article>
 
@@ -1215,45 +1204,6 @@ async function pollProjectWanVideoUntilComplete(
   throw new Error("Wan 2.7 已等待 10 分钟仍未完成。任务可能仍在百炼处理中，请稍后刷新项目继续查看。");
 }
 
-async function pollProjectQwenImages(
-  projectId: string,
-  eventId: string,
-  onProgress: () => void | Promise<void>
-): Promise<NonNullable<GenerateImagesResponse["data"]>> {
-  const intervalMs = 3_000;
-  const maxAttempts = 300;
-  let consecutiveTransportErrors = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
-    let response: Response;
-    try {
-      response = await fetch(
-        `/api/generate-images?projectId=${encodeURIComponent(projectId)}&eventId=${encodeURIComponent(eventId)}`,
-        { cache: "no-store" }
-      );
-    } catch (error) {
-      consecutiveTransportErrors += 1;
-      if (consecutiveTransportErrors < 12) continue;
-      throw error;
-    }
-
-    const result = await readClientApiResponse<NonNullable<GenerateImagesResponse["data"]>>(response);
-    await onProgress();
-    if (result.success && result.data?.status === "completed") return result.data;
-    if (result.success && result.data?.status === "running") {
-      consecutiveTransportErrors = 0;
-      continue;
-    }
-    if ([502, 503, 504].includes(response.status) && consecutiveTransportErrors < 12) {
-      consecutiveTransportErrors += 1;
-      continue;
-    }
-    throw new Error(result.error || "Qwen-Image 关键帧任务状态查询失败。");
-  }
-
-  throw new Error("Qwen-Image 已等待 15 分钟仍未完成。请刷新项目查看保留的任务日志。");
-}
 function InfoCard({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;
 }
@@ -1341,7 +1291,7 @@ function ShotCard({
   const keyframe = currentFrame
     ? keyframes.find((item) => item.frameId === currentFrame.id)
     : keyframes[0];
-  const imageUrl = keyframe?.localUrl || keyframe?.imageUrl || shotPlaceholderUrl(shot.index);
+  const imageUrl = keyframe?.fallbackUsed ? undefined : keyframe?.localUrl || keyframe?.imageUrl;
   const status = keyframeCardStatus(keyframe);
   const isLoading = keyframe?.status === "loading" || keyframe?.status === "generated" || keyframe?.status === "qa-review";
   const frameCount = Math.max(1, frames.length);
@@ -1358,7 +1308,7 @@ function ShotCard({
       aria-label={`镜头 ${shot.index} 帧轮播`}
     >
       <div className="keyframe-card-v4__media">
-        <AdaptiveMediaFrame
+        {imageUrl ? <AdaptiveMediaFrame
           aspectRatio={aspectRatio}
           stage="keyframe"
           mediaType="image"
@@ -1366,7 +1316,7 @@ function ShotCard({
           fit="contain"
           showBlurredBackdrop={false}
           alt={`镜头 ${shot.index} 第 ${safeIndex + 1} 帧：${currentFrame?.description ?? shot.subtitle}`}
-        />
+        /> : <VisualAssetPlaceholder title="关键帧待生成" description="当前镜头还没有关键帧。" aspectRatio={aspectRatio} status={isLoading ? "running" : keyframe?.status === "failed" ? "failed" : "pending"} actionLabel="生成关键帧" onAction={() => onGenerate(currentFrame?.id)} />}
         <div className="keyframe-card-v4__badges">
           {isHeroShot ? <span className="is-hero">当前主镜头</span> : null}
           {shot.exactProductShot ? <span>精确产品镜头</span> : shot.containsProduct ? <span>产品互动镜头</span> : null}
@@ -1669,13 +1619,6 @@ function formatDuration(durationSec: number) {
   const minutes = Math.floor(rounded / 60);
   const seconds = rounded % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function shotPlaceholderUrl(index: number) {
-  if (index === 2) return "/demo-keyframes/shot-2.png";
-  if (index === 3) return "/demo-keyframes/shot-3.png";
-  if (index === 4) return "/demo-keyframes/shot-4.png";
-  return "/landing-cold-brew-hero.png";
 }
 
 function projectKeyframesRecord(project: GenerationProject): Record<string, KeyframeResult> {

@@ -2,23 +2,26 @@
 
 import { useState } from "react";
 import type { CreativeCandidateSet, CreativeDirection } from "@/lib/schemas/project";
+import type { CreativeStageStatus } from "@/lib/creative/creativeStageState";
 
 type Props = {
   candidateSet?: CreativeCandidateSet;
-  busy: boolean;
+  operation: "idle" | "generate" | "regenerate" | "select" | "confirm";
+  stageStatus: CreativeStageStatus;
   onGenerate: () => void;
   onSelect: (candidateId: string) => void;
   onConfirm: (candidateId: string) => void;
 };
 
-export function CreativeCandidateGrid({ candidateSet, busy, onGenerate, onSelect, onConfirm }: Props) {
+export function CreativeCandidateGrid({ candidateSet, operation, stageStatus, onGenerate, onSelect, onConfirm }: Props) {
   const [detail, setDetail] = useState<CreativeDirection | null>(null);
-  if (busy && !candidateSet) return <div className="creative-loading" aria-live="polite"><div className="creative-loading__copy"><strong>正在构思创意方向</strong><ol><li>理解产品与受众</li><li>形成三套差异化机制</li><li>补足可执行导演细节</li></ol></div>{[1, 2, 3].map((item) => <div key={item}><i /><i /><i /><i /></div>)}</div>;
-  if (!candidateSet) return <div className="creative-empty-state"><strong>还没有创意方向</strong><p>生成后会得到三套机制、故事和高光时刻都不同的完整方案。</p><button type="button" className="button-primary-v3" disabled={busy} onClick={onGenerate}>{busy ? "生成中" : "生成 3 套创意方向"}</button></div>;
+  const busy = operation !== "idle";
+  if (operation === "generate" && !candidateSet) return <div className="creative-loading" aria-live="polite"><div className="creative-loading__copy"><strong>正在构思创意方向</strong><ol><li>理解产品与受众</li><li>形成三套差异化机制</li><li>补足可执行导演细节</li></ol></div>{[1, 2, 3].map((item) => <div key={item}><i /><i /><i /><i /></div>)}</div>;
+  if (!candidateSet) return <div className="creative-empty-state"><strong>还没有创意方向</strong><p>生成后会得到三套机制、故事和高光时刻都不同的完整方案。</p><button type="button" className="button-primary-v3" disabled={busy} onClick={onGenerate}>{operation === "generate" ? "生成中" : "生成 3 套创意方向"}</button></div>;
 
-  const selectedId = candidateSet.selectedCandidateId ?? candidateSet.recommendedCandidateId;
+  const selectedId = candidateSet.selectedCandidateId;
   return <>
-    <div className="creative-set-toolbar"><div><strong>第 {candidateSet.version} 组方案</strong><span>共 3 套可用创意</span></div><button type="button" className="button-secondary-v3" disabled={busy} onClick={onGenerate}>{busy ? "重新生成中" : "重新生成一组"}</button></div>
+    <div className="creative-set-toolbar"><div><strong>第 {candidateSet.version} 组方案</strong><span>{stageStatus === "confirmed" ? "已确认" : stageStatus === "selected" ? "已选择，等待确认" : "请选择一套创意"}</span></div><button type="button" className="button-secondary-v3" disabled={busy} onClick={onGenerate}>{operation === "regenerate" ? "重新生成中" : "重新生成一组"}</button></div>
     <div className="creative-candidate-grid">
       {candidateSet.candidates.map((candidate) => {
         const selected = selectedId === candidate.id;
@@ -30,7 +33,7 @@ export function CreativeCandidateGrid({ candidateSet, busy, onGenerate, onSelect
         </article>;
       })}
     </div>
-    <div className="creative-confirm-bar"><span>{selectedId === candidateSet.recommendedCandidateId ? "已选择系统推荐方案" : "已选择自定义方案"}</span><button type="button" className="button-primary-v3" disabled={busy} onClick={() => onConfirm(selectedId)}>{busy ? "处理中" : "确认创意并继续"}</button></div>
+    <div className="creative-confirm-bar"><span>{stageStatus === "confirmed" ? "创意方案已确认" : selectedId ? selectedId === candidateSet.recommendedCandidateId ? "已选择系统推荐方案" : "已选择自定义方案" : "选择方案后继续"}</span><button type="button" className="button-primary-v3" disabled={busy || !selectedId || stageStatus === "confirmed"} onClick={() => selectedId && onConfirm(selectedId)}>{operation === "confirm" ? "正在保存并进入下一步…" : stageStatus === "confirmed" ? "已确认" : "确认创意并继续"}</button></div>
     {detail ? <div className="creative-detail-backdrop" role="presentation" onMouseDown={() => setDetail(null)}><section className="creative-detail-sheet" role="dialog" aria-modal="true" aria-label={`${detail.title}完整方案`} onMouseDown={(event) => event.stopPropagation()}><header><div><span>完整创意方案</span><h2>{detail.title}</h2></div><button type="button" aria-label="关闭" onClick={() => setDetail(null)}>×</button></header><dl>{detailRows(detail).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section></div> : null}
   </>;
 }
