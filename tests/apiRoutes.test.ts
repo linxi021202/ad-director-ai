@@ -28,6 +28,9 @@ import { POST as generateStrategyPOST } from "../app/api/generate-strategy/route
 import { POST as renderVideoPOST } from "../app/api/render-video/route";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { createPrivateAsset } from "../lib/assets/assetStore";
+import { clearQwenModelAvailability } from "../lib/image/qwenImageModelRouter";
+import { listModelCallLogs } from "../lib/logs/modelCallStore";
+import { GET as exportCallLogs } from "../app/api/call-logs/export/route";
 import { buildVisualMasterSpecs } from "../lib/continuity/visualMasters";
 import { createMockKeyframeQA, inspectKeyframe } from "../lib/visual/visualQA";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
@@ -93,6 +96,7 @@ describe("second-stage API routes", () => {
     process.env.STORAGE_ROOT = storageRoot;
     process.env.ANONYMOUS_SESSION_OWNERSHIP_SALT = "api-route-test-salt";
     resetAnonymousProjectQueuesForTests();
+    clearQwenModelAvailability("test-session");
     const created = await createAnonymousProject("test-session");
     const noProductShots = created.project.shots.map((shot) => ({
       ...shot,
@@ -388,7 +392,7 @@ describe("second-stage API routes", () => {
     const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
     const imageEvents = saved.project.generationEvents?.filter((event) => event.provider === "qwen-image") ?? [];
     expect(imageEvents.some((event) => event.status === "running")).toBe(false);
-    expect(imageEvents.some((event) => event.status === "fallback" && event.message.includes("provider failed"))).toBe(true);
+    expect(imageEvents.some((event) => event.status === "failed" && event.message.includes("provider failed"))).toBe(true);
   }, 12_000);
 
 
@@ -507,6 +511,39 @@ describe("second-stage API routes", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.stringify(body)).not.toContain("/mock/");
     expect(JSON.stringify(body)).toContain("/api/projects/");
+  });
+  it("saves a single keyframe with the fallback model and exports its Qwen attempts", async () => {
+    process.env.AI_MODE = "real";
+    process.env.ENABLE_REAL_IMAGE = "true";
+    process.env.DASHSCOPE_API_KEY = "sk-dashscope-secret-test-key";
+    const shot = testProjectShots[0]!;
+    const frameId = shot.frames![0]!.id;
+    const requestedModels: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://example.com/fallback-frame.png") return new Response(VALID_PNG_BYTES, { status: 200, headers: { "Content-Type": "image/png" } });
+      const body = JSON.parse(String(init?.body)) as { model: string; input: { messages: Array<{ content: unknown[] }> } };
+      requestedModels.push(body.model);
+      expect(body.input.messages[0]?.content.some((item) => typeof item === "object" && item !== null && "image" in item)).toBe(true);
+      if (body.model === "qwen-image-3.0") return new Response(JSON.stringify({ code: "QuotaExceeded", message: "Free allocated quota exceeded" }), { status: 429 });
+      return new Response(JSON.stringify({ request_id: "req-2", output: { results: [{ image_url: "https://example.com/fallback-frame.png" }] } }), { status: 200 });
+    }));
+    const response = await generateImagesPOST(jsonRequest({ projectId: testProjectId, shots: [shot], mode: "all-shots", frameIds: [frameId] }));
+    const body = await responseJson(response);
+    const data = body.data as { images: Array<{ model: string; assetId?: string; referenceUsed: boolean; fallbackUsed: boolean }> };
+    expect(requestedModels).toEqual(["qwen-image-3.0", "qwen-image-2.0"]);
+    expect(data.images[0]).toMatchObject({ model: "qwen-image-2.0", referenceUsed: true, fallbackUsed: false });
+    expect(data.images[0]?.assetId).toBeTruthy();
+    const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
+    expect(saved.project.keyframes?.find((frame) => frame.frameId === frameId)).toMatchObject({ model: "qwen-image-2.0", assetId: data.images[0]?.assetId });
+    const entries = await listModelCallLogs("test-session", { projectId: testProjectId, stage: "keyframes", shotId: shot.id, frameId });
+    expect(entries.filter((entry) => entry.kind === "call").map((entry) => [entry.model, entry.status, entry.errorCode])).toEqual([
+      ["qwen-image-2.0", "completed", undefined], ["qwen-image-3.0", "failed", "QUOTA_EXHAUSTED"], ["qwen-image", "blocked", "MODEL_SKIPPED_CAPABILITY_MISMATCH"]
+    ]);
+    const taskId = entries.find((entry) => entry.kind === "task")!.taskId;
+    const reportResponse = await exportCallLogs(new Request(`http://localhost/api/call-logs/export?projectId=${testProjectId}&taskId=${taskId}&format=json`));
+    const report = await reportResponse.json() as { summary: { failedCalls: number }; entries: Array<{ model: string }> };
+    expect(report.summary.failedCalls).toBe(1);
+    expect(report.entries.some((entry) => entry.model === "qwen-image-2.0")).toBe(true);
   });
 
   it("generate-strategy can call DeepSeek through providerRouter in real text mode", async () => {

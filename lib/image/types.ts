@@ -28,6 +28,13 @@ export type QwenImageResult = {
   costEstimate?: string;
   referenceUsed?: boolean;
   error?: string;
+  errorCode?: string;
+  providerErrorCode?: string;
+  httpStatus?: number;
+  taskId?: string;
+  requestStartedAt?: number;
+  requestCompletedAt?: number;
+  retryAfterMs?: number;
 };
 
 export type DownloadImageInput = {

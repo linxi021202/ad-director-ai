@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { isRateLimited, isSameOrigin } from "@/lib/secrets/security";
+import { clearQwenModelAvailability } from "@/lib/image/qwenImageModelRouter";
 import { secretStore } from "@/lib/secrets/store";
 import { configurableProviders } from "@/lib/secrets/types";
 import { getAnonymousApiSession } from "@/lib/session/api";
@@ -30,5 +31,6 @@ export async function DELETE(
   }
 
   await secretStore.delete(session.id, provider.data);
+  if (provider.data === "qwen-image") clearQwenModelAvailability(session.id);
   return NextResponse.json({ deleted: true });
 }

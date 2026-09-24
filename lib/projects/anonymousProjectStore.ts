@@ -506,6 +506,28 @@ export async function mutateOwnedAnonymousProject(
     return nextRecord;
   });
 }
+
+export async function clearOwnedProjectDiagnosticHistory(
+  sessionId: string,
+  projectId: string,
+  clearModelLogs: () => Promise<number>
+): Promise<{ clearedEvents: number; clearedCalls: number; activeCount: number }> {
+  const safeId = parseProjectId(projectId);
+  return withWriteQueue(`project:${sessionNamespace(sessionId)}:${safeId}`, async () => {
+    const current = await requireOwnedAnonymousProject(sessionId, safeId);
+    const events = current.project.generationEvents ?? [];
+    const activeCount = events.filter((event) => ["queued", "running", "qa-review"].includes(event.status)).length;
+    if (activeCount) return { clearedEvents: 0, clearedCalls: 0, activeCount };
+    const clearedCalls = await clearModelLogs();
+    if (events.length) {
+      await writeRecordAtomic(sessionId, anonymousProjectRecordSchema.parse({
+        ...current,
+        project: { ...current.project, generationEvents: [] }
+      }));
+    }
+    return { clearedEvents: events.length, clearedCalls, activeCount: 0 };
+  });
+}
 export async function deleteOwnedAnonymousProject(sessionId: string, projectId: string): Promise<void> {
   const safeId = parseProjectId(projectId);
   await withWriteQueue(`project:${sessionNamespace(sessionId)}:${safeId}`, async () => {

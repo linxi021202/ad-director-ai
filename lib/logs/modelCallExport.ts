@@ -10,6 +10,7 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
   const archive = await readModelCallLogArchive(sessionId, scope.projectId, scope.taskId);
   const entries = archive.entries.map((entry) => ({
     ...entry,
+    jobId: entry.jobId ?? null,
     model: entry.model ?? null,
     mode: entry.mode ?? null,
     shotId: entry.shotId ?? null,
@@ -33,7 +34,9 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     validationIssues: entry.validationIssues ?? null,
     repaired: entry.repaired ?? null,
     requestOptions: entry.requestOptions ?? null,
-    outputAssetIds: entry.outputAssetIds ?? null
+    outputAssetIds: entry.outputAssetIds ?? null,
+    referenceImageCount: entry.referenceImageCount ?? null,
+    referenceImagesIncluded: entry.referenceImagesIncluded ?? null
   }));
   return {
     schemaVersion: 1,
@@ -45,6 +48,7 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     retention: { days: archive.retentionDays, maxSessionEntries: 500, limitReached: archive.retentionLimitReached, firstAvailableAt: archive.firstAvailableAt ? new Date(archive.firstAvailableAt).toISOString() : null,
       notice: archive.retentionLimitReached ? "会话日志达到保留上限，更早记录可能已被清理；本文件包含当前仍保存的全部匹配记录。" : null },
     summary: { total: entries.length, failedCalls: entries.filter((entry) => entry.kind === "call" && entry.status === "failed").length,
+      failedTasks: entries.filter((entry) => entry.kind === "task" && entry.status === "failed").length,
       interruptedTasks: entries.filter((entry) => entry.kind === "task" && entry.status === "interrupted").length,
       affectedShotIds: [...new Set(entries.filter((entry) => entry.status === "failed" && entry.shotId).map((entry) => entry.shotId!))] },
     entries,
@@ -61,7 +65,7 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
     `导出时间：${report.exportedAt}`, `应用提交：${report.environment.commit ?? "未提供"}`,
     `记录数量：${report.summary.total}`, "",
     "## 二、失败摘要",
-    `失败模型调用：${report.summary.failedCalls}`, `中断任务：${report.summary.interruptedTasks}`,
+    `失败模型调用：${report.summary.failedCalls}`, `失败任务：${report.summary.failedTasks}`, `中断任务：${report.summary.interruptedTasks}`,
     `受影响镜头：${report.summary.affectedShotIds.join("、") || "无已记录镜头"}`,
     ...report.entries.filter((entry) => entry.status === "failed").map((entry) => `- ${safe(entry.errorCode ?? "未知错误")}：${safe(entry.errorSummary ?? "未采集错误摘要")}；字段：${safe(entry.validationPath ?? "未采集")}`), "",
     "## 三、任务执行时间线",
@@ -83,7 +87,7 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
   }
   lines.push("## 六、模型请求信息");
   for (const entry of report.entries.filter((item) => item.kind === "call")) {
-    lines.push(`- ${entry.id}：${safe(entry.model ?? "未知模型")}，${safe(entry.mode ?? "未知模式")}，请求参数 ${entry.requestOptions ? JSON.stringify(entry.requestOptions) : "未采集"}，输入/输出 Token ${entry.inputTokens ?? "未知"}/${entry.outputTokens ?? "未知"}，HTTP ${entry.httpStatus ?? "未知"}，耗时 ${entry.modelCallElapsedMs ?? "未知"} ms`);
+    lines.push(`- ${entry.id}：批次 ${entry.jobId ?? "未关联"}，任务 ${entry.taskId}，镜头 ${safe(entry.shotId ?? "未知")}，帧 ${safe(entry.frameId ?? "未知")}，${safe(entry.model ?? "未知模型")}，${safe(entry.mode ?? "未知模式")}，参考图 ${entry.referenceImageCount ?? "未知"} 张，资产 ${entry.outputAssetIds?.join("、") ?? "无"}，请求参数 ${entry.requestOptions ? JSON.stringify(entry.requestOptions) : "未采集"}，输入/输出 Token ${entry.inputTokens ?? "未知"}/${entry.outputTokens ?? "未知"}，HTTP ${entry.httpStatus ?? "未知"}，耗时 ${entry.modelCallElapsedMs ?? "未知"} ms`);
   }
   lines.push("", "## 七、完整错误详情", ...report.entries.filter((entry) => entry.errorSummary).map((entry) => `- ${entry.id}：${safe(entry.errorSummary!)}`), "", "## 八、无法获取的信息", ...report.unavailable.map((item) => `- ${item}`));
   if (report.retention.notice) lines.push("", `保留范围提示：${report.retention.notice}`);

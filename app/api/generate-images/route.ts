@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import { diagnoseQwenImageFallback } from "../../../lib/api/provider-diagnostics";
+import { upsertModelCallLog } from "../../../lib/logs/modelCallStore";
+import type { QwenModelAttempt } from "../../../lib/image/qwenImageModelRouter";
 import { markPrivateAssetsLifecycle } from "../../../lib/assets/assetStore";
 import { apiJson, sanitizeApiError } from "../../../lib/api/response";
 import { getPublicAIStatus } from "../../../lib/config/ai";
@@ -60,6 +62,7 @@ type ImageBatchInput = {
   productVisualSpec?: ProductVisualSpec;
   masterReferenceAssetIdsByShot: Record<string, string[]>;
   batchEventId: string;
+  batchRunId: string;
   shotEvents: Map<string, string>;
 };
 
@@ -173,6 +176,7 @@ export async function POST(request: Request) {
         selectLockedMasterAssetIds(owned.project, shot)
       ])),
       batchEventId: batchEvent.id,
+      batchRunId: batchEvent.runId,
       shotEvents
     };
 
@@ -328,6 +332,21 @@ async function executeImageBatch(input: ImageBatchInput) {
       const frameShot = shotForFrame(shot, frame);
       const qaShot = { ...frameShot, id: shot.id };
       const references = selectImageReferencesForShot(project, shot);
+      const eventId = input.shotEvents.get(frame.id);
+      const onModelAttempt = eventId ? async (attempt: QwenModelAttempt) => {
+        await upsertModelCallLog(input.sessionId, {
+          kind: "call", taskId: eventId, jobId: input.batchRunId, projectId: input.projectId,
+          stage: "keyframes", provider: "qwen-image", model: attempt.model, mode: attempt.mode,
+          shotId: shot.id, frameId: frame.id, attempt: attempt.attempt, status: attempt.status,
+          startedAt: attempt.startedAt, completedAt: attempt.completedAt,
+          durationMs: Math.max(0, attempt.completedAt - attempt.startedAt),
+          errorCode: attempt.errorCode, errorSummary: attempt.error, providerErrorCode: attempt.providerErrorCode,
+          httpStatus: attempt.httpStatus, providerRequestId: attempt.requestId, providerTaskId: attempt.taskId,
+          referenceImageCount: attempt.referenceCount, referenceImagesIncluded: attempt.referenceCount > 0,
+          requestOptions: { size: attempt.size, referenceCount: attempt.referenceCount, endpointMode: "dashscope-sync", promptExtend: attempt.promptExtend, watermark: attempt.watermark },
+          ...(attempt.assetId ? { outputAssetIds: [attempt.assetId] } : {})
+        });
+      } : undefined;
       let result: ShotImageGenerationResult = { ...await generateShotImage(input.projectId, frameShot, {
         aspectRatio: input.aspectRatio,
         hasChineseText: true,
@@ -336,12 +355,12 @@ async function executeImageBatch(input: ImageBatchInput) {
         productImages: references.productImages,
         productVisualSpec: input.productVisualSpec,
         masterReferenceAssetIds: references.masterReferenceAssetIds,
-        continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined
+        continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined,
+        onModelAttempt
       }), shotId: shot.id, frameId: frame.id };
       let qaResult: KeyframeQAResult | undefined;
       const qaResults: KeyframeQAResult[] = [];
       let status: EvaluatedImage["status"] = result.fallbackUsed || !result.assetId ? "fallback" : "ready";
-      const eventId = input.shotEvents.get(frame.id);
 
       if (!result.fallbackUsed && result.provider === "mockImageProvider") {
         qaResult = createMockKeyframeQA(qaShot, 1, frame.id);
@@ -384,7 +403,8 @@ async function executeImageBatch(input: ImageBatchInput) {
             productImages: selectImageReferencesForShot(project, shot).productImages,
             productVisualSpec: input.productVisualSpec,
             masterReferenceAssetIds: selectImageReferencesForShot(project, shot).masterReferenceAssetIds,
-            continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined
+            continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined,
+            onModelAttempt
           }), shotId: shot.id, frameId: frame.id };
           if (!result.fallbackUsed && result.assetId) {
             await persistKeyframeState(input, shot, frame, result, "generated");
@@ -412,12 +432,13 @@ async function executeImageBatch(input: ImageBatchInput) {
       const image = toClientImage(evaluated);
       if (eventId) {
         const reason = image.fallbackReason ?? "模型未返回可用图片。";
-        await completeGenerationEvent(
+        if (image.status === "fallback") await failGenerationEvent(input.sessionId, input.projectId, eventId, `镜头关键帧生成失败：${reason}`, image.errorCode ?? "PROVIDER_REQUEST_FAILED");
+        else await completeGenerationEvent(
           input.sessionId,
           input.projectId,
           eventId,
           image.status === "ready" ? "关键帧通过视觉一致性检查。" : image.status === "needs-review" ? "关键帧两次视觉检查未通过，需要人工确认。" : `镜头关键帧生成失败：${reason}`,
-          { status: image.status === "ready" ? "completed" : image.status === "needs-review" ? "needs-review" : "fallback", latencyMs: image.latencyMs }
+          { status: image.status === "ready" ? "completed" : "needs-review", latencyMs: image.latencyMs }
         );
       }
       completedCount += 1;
@@ -566,7 +587,10 @@ function shotForFrame(shot: TargetShot, frame: ShotFrame): TargetShot {
 }
 
 async function failImageBatch(input: ImageBatchInput, detail: string) {
+  const project = (await requireOwnedAnonymousProject(input.sessionId, input.projectId)).project;
   await Promise.all([...input.shotEvents.entries()].map(async ([frameId, eventId]) => {
+    const current = project.generationEvents?.find((event) => event.id === eventId);
+    if (!current || !["queued", "running", "qa-review"].includes(current.status)) return;
     const target = input.targetFrames.find((item) => item.frame.id === frameId);
     await failGenerationEvent(input.sessionId, input.projectId, eventId, `镜头 ${target?.shot.index ?? "?"} 第 ${(target?.frame.index ?? 0) + 1} 帧生成中断：${detail}`).catch(() => undefined);
   }));

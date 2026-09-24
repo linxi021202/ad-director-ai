@@ -21,6 +21,7 @@ export type ModelSettingsStatus = {
   wan: { capability: "api-available" | "not-configured"; apiAvailable: boolean };
   remotion: { source: "local" };
 };
+type ImageModelInspection = { notice: string; models: Array<{ modelId: string; referenceImageInput: boolean; status: "available" | "unavailable" | "unknown"; reason: string }> };
 
 const providers = [
   { id: "deepseek" as const, draftKey: "deepseek" as const, statusKey: "deepseek" as const, name: "DeepSeek", role: "策略、分镜与全部提示词", label: "DeepSeek API Key" },
@@ -68,6 +69,8 @@ export function ModelSettingsSheet({
   const [visible, setVisible] = useState<Record<ProviderId, boolean>>({ deepseek: false, "qwen-image": false });
   const [busy, setBusy] = useState<ProviderId | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [imageModels, setImageModels] = useState<ImageModelInspection | null>(null);
+  const [detectingModels, setDetectingModels] = useState(false);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -87,6 +90,7 @@ export function ModelSettingsSheet({
       setDraftKeys({ deepseek: "", qwenImage: "" });
       setVisible({ deepseek: false, "qwen-image": false });
       setMessage(null);
+      setImageModels(null);
       return;
     }
 
@@ -130,6 +134,7 @@ export function ModelSettingsSheet({
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(readMessage(result, "保存失败，请检查密钥格式或稍后重试。"));
       setDraftKeys((current) => ({ ...current, [providerConfig.draftKey]: "" }));
+      if (provider === "qwen-image") setImageModels(null);
       setMessage("密钥已保存到当前临时会话。");
       await refresh();
     } catch (error) {
@@ -163,6 +168,7 @@ export function ModelSettingsSheet({
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(readMessage(result, "删除失败。"));
       setDraftKeys((current) => ({ ...current, [providerConfig.draftKey]: "" }));
+      if (provider === "qwen-image") setImageModels(null);
       setMessage("当前会话密钥已删除。");
       await refresh();
     } catch (error) {
@@ -170,6 +176,17 @@ export function ModelSettingsSheet({
     } finally {
       setBusy(null);
     }
+  }
+
+  async function detectImageModels() {
+    setDetectingModels(true);
+    try {
+      const response = await fetch("/api/model-settings/qwen-image/detect", { method: "POST" });
+      const result = await response.json() as ImageModelInspection | { error?: string };
+      if (!response.ok || !("models" in result)) throw new Error("error" in result ? result.error : "图像模型检测失败。");
+      setImageModels(result);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "图像模型检测失败。"); }
+    finally { setDetectingModels(false); }
   }
 
   if (!open) return null;
@@ -227,10 +244,12 @@ export function ModelSettingsSheet({
                   <span className={"model-provider-state " + (current.validated === false && current.configured ? "is-pending" : "")}>{statusText(current)}</span>
                   <div>
                     <button type="button" disabled={!current.configured || busy === provider.id} onClick={() => void validate(provider.id)}>测试连接</button>
+                    {provider.id === "qwen-image" ? <button type="button" disabled={detectingModels || busy !== null} onClick={() => void detectImageModels()}>{detectingModels ? "检测中…" : "检测图像模型"}</button> : null}
                     <button type="button" disabled={!draft.trim() || busy === provider.id} onClick={() => void save(provider.id)}>保存</button>
                     <details><summary aria-label="更多操作">•••</summary><button type="button" disabled={current.source !== "session" || busy === provider.id} onClick={() => void remove(provider.id)}>删除密钥</button></details>
                   </div>
                 </div>
+                {provider.id === "qwen-image" && imageModels ? <div className="model-image-inspection"><p>{imageModels.notice}</p><ul>{imageModels.models.map((model) => <li key={model.modelId}><strong>{model.modelId}</strong><span>{model.referenceImageInput ? "支持参考图" : "不支持参考图"} · {model.status === "available" ? "列表可见" : model.status === "unavailable" ? "暂不可用" : "待验证"}</span><small>{model.reason}</small></li>)}</ul></div> : null}
               </section>
             );
           })}

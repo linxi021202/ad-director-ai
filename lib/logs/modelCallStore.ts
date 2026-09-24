@@ -12,6 +12,7 @@ const modelCallLogSchema = z.object({
   id: z.string().uuid(),
   kind: z.enum(["task", "call"]),
   taskId: z.string().uuid(),
+  jobId: z.string().uuid().optional(),
   projectId: z.string().uuid(),
   stage: z.string().min(1).max(40),
   provider: z.string().min(1).max(40),
@@ -43,7 +44,7 @@ const modelCallLogSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional(),
   outputLength: z.number().int().nonnegative().optional(),
   finishReason: z.string().max(80).optional(),
-  requestOptions: z.object({ temperature: z.number().optional(), maxTokens: z.number().int().positive().optional(), responseFormat: z.enum(["json", "text"]).optional(), thinking: z.string().max(30).optional() }).strict().optional(),
+  requestOptions: z.object({ temperature: z.number().optional(), maxTokens: z.number().int().positive().optional(), responseFormat: z.enum(["json", "text"]).optional(), thinking: z.string().max(30).optional(), size: z.string().max(30).optional(), referenceCount: z.number().int().min(0).max(3).optional(), endpointMode: z.string().max(60).optional(), promptExtend: z.boolean().optional(), watermark: z.boolean().optional() }).strict().optional(),
   jsonParsed: z.boolean().optional(),
   schemaValid: z.boolean().optional(),
   normalized: z.boolean().optional(),
@@ -51,6 +52,8 @@ const modelCallLogSchema = z.object({
   chunkSaved: z.boolean().optional(),
   referenceAssetIds: z.array(z.string().uuid()).max(12).optional(),
   outputAssetIds: z.array(z.string().uuid()).max(12).optional(),
+  referenceImageCount: z.number().int().min(0).max(3).optional(),
+  referenceImagesIncluded: z.boolean().optional(),
   plannedMode: z.string().max(80).optional(),
   actualMode: z.string().max(80).optional(),
   downgradeAuthorized: z.boolean().optional(),
@@ -78,14 +81,14 @@ export async function upsertModelCallLog(sessionId: string, input: ModelCallLogI
   return entry;
 }
 
-export async function listModelCallLogs(sessionId: string, options: { projectId?: string; shotId?: string; before?: number; limit?: number } = {}): Promise<ModelCallLog[]> {
+export async function listModelCallLogs(sessionId: string, options: { projectId?: string; shotId?: string; frameId?: string; stage?: string; before?: number; limit?: number } = {}): Promise<ModelCallLog[]> {
   if (options.projectId) await requireOwnedAnonymousProject(sessionId, options.projectId);
   const file = logPath(sessionId);
   let result: ModelCallLog[] = [];
   await serialize(file, async () => {
     const stored = await readLogFile(file);
     result = stored.entries
-      .filter((entry) => (!options.projectId || entry.projectId === options.projectId) && (!options.shotId || entry.shotId === options.shotId) && (!options.before || entry.startedAt < options.before))
+      .filter((entry) => (!options.projectId || entry.projectId === options.projectId) && (!options.shotId || entry.shotId === options.shotId) && (!options.frameId || entry.frameId === options.frameId) && (!options.stage || entry.stage === options.stage) && (!options.before || entry.startedAt < options.before))
       .sort((left, right) => right.startedAt - left.startedAt || right.id.localeCompare(left.id))
       .slice(0, Math.min(100, Math.max(1, options.limit ?? 50)));
   });
@@ -103,10 +106,22 @@ export async function readModelCallLogArchive(sessionId: string, projectId: stri
   return { entries, retentionLimitReached: archive.entries.length >= MODEL_CALL_LOG_LIMIT, retentionDays: 30, firstAvailableAt: archive.entries[0]?.startedAt ?? null };
 }
 
+export async function clearModelCallLogs(sessionId: string, projectId: string): Promise<number> {
+  await requireOwnedAnonymousProject(sessionId, projectId);
+  const file = logPath(sessionId);
+  let removed = 0;
+  await serialize(file, async () => {
+    const stored = await readLogFile(file);
+    removed = stored.entries.filter((entry) => entry.projectId === projectId).length;
+    if (removed) await writeLogFile(file, { version: 1, entries: stored.entries.filter((entry) => entry.projectId !== projectId) });
+  });
+  return removed;
+}
+
 export async function mirrorGenerationEvent(sessionId: string, raw: z.infer<typeof generationEventSchema>): Promise<void> {
   const event = generationEventSchema.parse(raw);
   await upsertModelCallLog(sessionId, {
-    id: event.id, kind: "task", taskId: event.id, projectId: event.projectId,
+    id: event.id, kind: "task", taskId: event.id, jobId: event.runId, projectId: event.projectId,
     stage: event.stage, provider: event.provider, shotId: event.shotId, frameId: event.frameId,
     status: event.status, startedAt: event.startedAt, completedAt: event.completedAt,
     durationMs: event.latencyMs,

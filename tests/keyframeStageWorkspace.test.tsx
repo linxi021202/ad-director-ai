@@ -16,6 +16,7 @@ describe("keyframe production workspace", () => {
     expect(html).toContain("关键帧待生成");
     expect(html).toContain("当前镜头还没有关键帧");
     expect(html).toContain("生成关键帧");
+    expect(html).toContain("镜头日志");
     expect(html).toContain(`aspect-ratio:${project.brief.aspectRatio.replace(":", " / ")}`);
     expect(html).not.toContain("demo-keyframes");
   });

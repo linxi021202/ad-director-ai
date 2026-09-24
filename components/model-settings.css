@@ -48,6 +48,7 @@
 
 
 .model-provider-card.is-targeted { border-color:rgba(103,232,249,.48); background:rgba(8,145,178,.08); }
+.model-image-inspection{margin-top:12px;border-top:1px solid rgba(255,255,255,.09);padding-top:10px;color:#aebfbd;font-size:11px}.model-image-inspection p{margin:0 0 8px}.model-image-inspection ul{list-style:none;padding:0;margin:0}.model-image-inspection li{display:grid;grid-template-columns:125px minmax(0,1fr);gap:4px 8px;padding:7px 0;border-top:1px solid rgba(255,255,255,.06)}.model-image-inspection li strong{color:#edf4f2;font-weight:600}.model-image-inspection li small{grid-column:2;color:#8fa7a3}
 .model-settings-trigger { position:relative; display:inline-flex; min-height:40px; align-items:center; gap:8px; border:1px solid rgba(255,255,255,.1); border-radius:11px; background:rgba(255,255,255,.035); padding:0 14px; color:#d8e0eb; font-size:13px; font-weight:650; cursor:pointer; }
 .model-settings-trigger:hover { border-color:rgba(103,232,249,.3); background:rgba(103,232,249,.07); }
 .model-settings-trigger:focus-visible { outline:2px solid rgba(103,232,249,.72); outline-offset:2px; }

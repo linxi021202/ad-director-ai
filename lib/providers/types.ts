@@ -52,6 +52,13 @@ export type ImageGenerationOptions = {
   masterReferenceAssetIds?: string[];
   masterReferenceAssetIdsByShot?: Record<string, string[]>;
   productVisualSpec?: ProductVisualSpec;
+  onModelAttempt?: (attempt: {
+    model: string; attempt: number; status: "completed" | "failed" | "blocked";
+    startedAt: number; completedAt: number; errorCode?: string; error?: string;
+    providerErrorCode?: string; httpStatus?: number; requestId?: string; taskId?: string;
+    referenceCount: number; size: string; assetId?: string; mode: string;
+    promptExtend: boolean; watermark: boolean;
+  }) => Promise<void>;
 };
 
 export type VideoGenerationOptions = {

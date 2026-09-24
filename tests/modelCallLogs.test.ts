@@ -10,11 +10,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
-import { GET } from "../app/api/call-logs/route";
+import { DELETE, GET } from "../app/api/call-logs/route";
 import { GET as exportLogs } from "../app/api/call-logs/export/route";
 import { listModelCallLogs, upsertModelCallLog } from "../lib/logs/modelCallStore";
 import { createAnonymousProject, requireOwnedAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
+import { appendGenerationEvent, listGenerationEvents, startGenerationEvent } from "../lib/projects/generationEvents";
 
 const originalEnv = { ...process.env };
 let root = "";
@@ -137,5 +139,56 @@ describe("persistent model call logs", () => {
     sessionMock.id = "log-session-b";
     const other = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&format=json`));
     expect(other.status).toBe(404);
+  });
+
+  it("links a failed Qwen attempt to its keyframe frame task instead of an anchors event", async () => {
+    await appendGenerationEvent(sessionMock.id, projectId, { stage: "anchors", provider: "system", action: "确认场景", status: "completed", message: "场景已确认。" });
+    const frame = await appendGenerationEvent(sessionMock.id, projectId, {
+      stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", status: "failed",
+      message: "镜头 1 生成失败。", shotId: "shot-1", frameId: "frame-1"
+    });
+    await upsertModelCallLog(sessionMock.id, {
+      kind: "call", taskId: frame.id, jobId: frame.runId, projectId, stage: "keyframes", provider: "qwen-image",
+      model: "qwen-image-3.0", mode: "reference-keyframe", shotId: "shot-1", frameId: "frame-1",
+      attempt: 2, status: "failed", startedAt: Date.now(), errorCode: "QUOTA_EXHAUSTED",
+      providerErrorCode: "QuotaExceeded", httpStatus: 429, referenceImageCount: 2, referenceImagesIncluded: true
+    });
+    const focused = await GET(new Request(`http://localhost/api/call-logs?projectId=${projectId}&stage=keyframes&shotId=shot-1&frameId=frame-1`));
+    const entries = (await focused.json()).data.entries as Array<{ stage: string; taskId: string; provider: string }>;
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry.stage === "keyframes" && entry.taskId === frame.id)).toBe(true);
+    const exportResponse = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&taskId=${frame.id}&format=json`));
+    const report = await exportResponse.json() as { summary: { failedCalls: number }; entries: Array<{ provider: string; frameId: string; stage: string }> };
+    expect(report.summary.failedCalls).toBe(1);
+    expect(report.entries.some((entry) => entry.provider === "qwen-image" && entry.frameId === "frame-1")).toBe(true);
+    expect(report.entries.some((entry) => entry.stage === "anchors")).toBe(false);
+  });
+
+  it("clears only current-project diagnostic history without changing project content or version", async () => {
+    const frame = await appendGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", status: "failed", message: "失败", shotId: "shot-1", frameId: "frame-1" });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: frame.id, projectId, stage: "keyframes", provider: "qwen-image", model: "qwen-image-3.0", shotId: "shot-1", frameId: "frame-1", status: "failed", startedAt: Date.now() });
+    const before = await requireOwnedAnonymousProject(sessionMock.id, projectId);
+    const response = await DELETE(new NextRequest(`http://localhost/api/call-logs?projectId=${projectId}`, { method: "DELETE", headers: { origin: "http://localhost" } }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).clearedCalls).toBe(2);
+    const after = await requireOwnedAnonymousProject(sessionMock.id, projectId);
+    expect(after.version).toBe(before.version);
+    expect(after.project.shots).toEqual(before.project.shots);
+    expect(Object.fromEntries(Object.entries(after.project.stageStates ?? {}).map(([stage, state]) => [stage, state.status])))
+      .toEqual(Object.fromEntries(Object.entries(before.project.stageStates ?? {}).map(([stage, state]) => [stage, state.status])));
+    expect(after.project.keyframes).toEqual(before.project.keyframes);
+    expect(await listModelCallLogs(sessionMock.id, { projectId })).toEqual([]);
+    expect(await listGenerationEvents(sessionMock.id, projectId)).toEqual([]);
+  });
+
+  it("rejects cross-session clearing and preserves logs while a generation job runs", async () => {
+    await startGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", message: "运行中", shotId: "shot-1", frameId: "frame-1" });
+    const request = () => new NextRequest(`http://localhost/api/call-logs?projectId=${projectId}`, { method: "DELETE", headers: { origin: "http://localhost" } });
+    const blocked = await DELETE(request());
+    expect(blocked.status).toBe(409);
+    expect((await listModelCallLogs(sessionMock.id, { projectId })).length).toBeGreaterThan(0);
+    sessionMock.id = "log-session-b";
+    const foreign = await DELETE(request());
+    expect(foreign.status).toBe(404);
   });
 });

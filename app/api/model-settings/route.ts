@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getProviderSecretStatus } from "@/lib/secrets/resolver";
+import { clearQwenModelAvailability } from "@/lib/image/qwenImageModelRouter";
 import { isPlausibleApiKey, isRateLimited, isSameOrigin } from "@/lib/secrets/security";
 import { secretStore } from "@/lib/secrets/store";
 import { configurableProviders } from "@/lib/secrets/types";
@@ -28,6 +29,7 @@ export async function POST(request: NextRequest) {
   }
 
   await secretStore.set(session.id, parsed.data.provider, parsed.data.apiKey.trim());
+  if (parsed.data.provider === "qwen-image") clearQwenModelAvailability(session.id);
   const status = await getProviderSecretStatus(parsed.data.provider, session.id);
   return NextResponse.json({ provider: parsed.data.provider, status });
 }

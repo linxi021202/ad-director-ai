@@ -2,6 +2,7 @@ import { getAIConfig } from "../config/ai";
 import { resolveProviderApiKey } from "../secrets/resolver";
 import { downloadGeneratedImage } from "./downloadImage";
 import { estimateQwenImageCost } from "./imageCostEstimate";
+import { classifyQwenFailure } from "./qwenImageErrors";
 import type { QwenImageRequest, QwenImageResult } from "./types";
 
 const QWEN_IMAGE_PATH = "/api/v1/services/aigc/multimodal-generation/generation";
@@ -203,7 +204,24 @@ type TaskPollResult = {
   imageUrl?: string;
   requestId?: string;
   error?: string;
+  errorCode?: string;
+  providerErrorCode?: string;
+  httpStatus?: number;
+  retryAfterMs?: number;
 };
+
+function providerCode(payload: unknown): string | undefined {
+  return getStringProperty(payload, "code") || (payload && typeof payload === "object" && "error" in payload
+    ? getStringProperty((payload as { error?: unknown }).error, "code") : undefined);
+}
+
+function retryAfterMs(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(raw) - Date.now();
+  return Number.isFinite(delay) ? Math.max(0, Math.round(delay)) : undefined;
+}
 
 async function pollQwenImageTask(baseUrl: string, apiKey: string, taskId: string): Promise<TaskPollResult> {
   for (let attempt = 1; attempt <= TASK_POLL_MAX_ATTEMPTS; attempt += 1) {
@@ -211,7 +229,7 @@ async function pollQwenImageTask(baseUrl: string, apiKey: string, taskId: string
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`
-      }
+      }, signal: AbortSignal.timeout(20_000)
     });
 
     const payload = (await response.json().catch(() => null)) as unknown;
@@ -222,7 +240,9 @@ async function pollQwenImageTask(baseUrl: string, apiKey: string, taskId: string
       return {
         payload,
         requestId,
-        error: sanitizeErrorMessage(apiError || `DashScope task query failed with HTTP ${response.status}.`)
+        error: sanitizeErrorMessage(apiError || `DashScope task query failed with HTTP ${response.status}.`),
+        errorCode: classifyQwenFailure(response.status, providerCode(payload), apiError || ""),
+        providerErrorCode: providerCode(payload), httpStatus: response.status, retryAfterMs: retryAfterMs(response)
       };
     }
 
@@ -236,7 +256,7 @@ async function pollQwenImageTask(baseUrl: string, apiKey: string, taskId: string
       return {
         payload,
         requestId,
-        error: `DashScope task ${taskId} succeeded but did not include a supported image URL field.`
+        error: `DashScope task ${taskId} succeeded but did not include a supported image URL field.`, errorCode: "PROVIDER_ERROR"
       };
     }
 
@@ -244,7 +264,7 @@ async function pollQwenImageTask(baseUrl: string, apiKey: string, taskId: string
       return {
         payload,
         requestId,
-        error: `DashScope task ${taskId} ended with status ${status}.`
+        error: `DashScope task ${taskId} ended with status ${status}.`, errorCode: classifyQwenFailure(undefined, providerCode(payload), apiError || taskMessage(payload) || status), providerErrorCode: providerCode(payload)
       };
     }
 
@@ -252,9 +272,11 @@ async function pollQwenImageTask(baseUrl: string, apiKey: string, taskId: string
   }
 
   return {
-    error: `DashScope task ${taskId} did not finish within ${Math.round((TASK_POLL_INTERVAL_MS * TASK_POLL_MAX_ATTEMPTS) / 1000)} seconds.`
+    error: `DashScope task ${taskId} did not finish within ${Math.round((TASK_POLL_INTERVAL_MS * TASK_POLL_MAX_ATTEMPTS) / 1000)} seconds.`, errorCode: "REQUEST_TIMEOUT"
   };
 }
+
+function taskMessage(payload: unknown) { return getStringProperty(payload, "message") ?? getStringProperty(payload, "error_message"); }
 
 async function cacheImageIfNeeded(
   input: QwenImageRequest,
@@ -278,6 +300,8 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
   assertServerOnly();
 
   const startedAt = Date.now();
+  let requestStartedAt: number | undefined;
+  let requestCompletedAt: number | undefined;
   let model = input.model || "qwen-image";
   let size = input.size || "1152*2048";
 
@@ -297,7 +321,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         size,
         cacheStatus: "not-requested",
         costEstimate: estimateQwenImageCost(size),
-        error: "ENABLE_REAL_IMAGE must be true before calling Qwen-Image."
+        error: "ENABLE_REAL_IMAGE must be true before calling Qwen-Image.", errorCode: "PROVIDER_NOT_CONFIGURED"
       };
     }
 
@@ -312,10 +336,11 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         size,
         cacheStatus: "not-requested",
         costEstimate: estimateQwenImageCost(size),
-        error: "DASHSCOPE_API_KEY is required when ENABLE_REAL_IMAGE=true."
+        error: "DASHSCOPE_API_KEY is required when ENABLE_REAL_IMAGE=true.", errorCode: "PROVIDER_NOT_CONFIGURED"
       };
     }
 
+    requestStartedAt = Date.now();
     const response = await fetch(joinUrl(config.qwenImage.baseUrl, QWEN_IMAGE_PATH), {
       method: "POST",
       headers: {
@@ -325,13 +350,14 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
       body: JSON.stringify(buildQwenImageRequestBody(input, model, size, {
         promptExtend: config.qwenImage.promptExtend,
         watermark: config.qwenImage.watermark
-      }))
+      })), signal: AbortSignal.timeout(90_000)
     });
 
     const payload = (await response.json().catch(() => null)) as unknown;
     const apiError = extractApiError(payload);
 
     if (!response.ok || apiError) {
+      requestCompletedAt = Date.now();
       return {
         success: false,
         requestId: extractRequestId(payload),
@@ -341,7 +367,9 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         size,
         cacheStatus: "not-requested",
         costEstimate: estimateQwenImageCost(size),
-        error: sanitizeErrorMessage(apiError || `DashScope Qwen-Image request failed with HTTP ${response.status}.`)
+        error: sanitizeErrorMessage(apiError || `DashScope Qwen-Image request failed with HTTP ${response.status}.`),
+        errorCode: classifyQwenFailure(response.status, providerCode(payload), apiError || ""),
+        providerErrorCode: providerCode(payload), httpStatus: response.status, retryAfterMs: retryAfterMs(response), requestStartedAt, requestCompletedAt
       };
     }
 
@@ -353,6 +381,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
     if (!imageUrl && taskId) {
       const taskResult = await pollQwenImageTask(config.qwenImage.baseUrl, apiKey, taskId);
       if (taskResult.error) {
+        requestCompletedAt = Date.now();
         return {
           success: false,
           requestId: taskResult.requestId ?? requestId,
@@ -362,7 +391,9 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
           size,
           cacheStatus: "not-requested",
           costEstimate: estimateQwenImageCost(size),
-          error: sanitizeErrorMessage(taskResult.error)
+          error: sanitizeErrorMessage(taskResult.error), errorCode: taskResult.errorCode,
+          providerErrorCode: taskResult.providerErrorCode, httpStatus: taskResult.httpStatus, taskId,
+          retryAfterMs: taskResult.retryAfterMs, requestStartedAt, requestCompletedAt
         };
       }
 
@@ -371,6 +402,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
     }
 
     if (!imageUrl) {
+      requestCompletedAt = Date.now();
       return {
         success: false,
         requestId,
@@ -380,10 +412,12 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         size,
         cacheStatus: "not-requested",
         costEstimate: estimateQwenImageCost(size),
-        error: "DashScope Qwen-Image response did not include an image URL or task_id."
+        error: "DashScope Qwen-Image response did not include an image URL or task_id.", errorCode: "PROVIDER_ERROR",
+        httpStatus: response.status, taskId, requestStartedAt, requestCompletedAt
       };
     }
 
+    requestCompletedAt = Date.now();
     const cached = await cacheImageIfNeeded(input, imageUrl);
     if (input.projectId && input.shotId && (!cached.assetId || cached.cacheStatus !== "cached")) {
       return {
@@ -395,7 +429,9 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         size,
         cacheStatus: cached.cacheStatus,
         costEstimate: estimateQwenImageCost(size),
-        error: sanitizeErrorMessage(cached.error || "Generated image could not be persisted privately.")
+        error: sanitizeErrorMessage(cached.error || "Generated image could not be persisted privately."),
+        errorCode: cached.error?.includes("download") ? "ASSET_DOWNLOAD_FAILED" : "ASSET_PERSIST_FAILED",
+        httpStatus: response.status, taskId, requestStartedAt, requestCompletedAt
       };
     }
 
@@ -411,7 +447,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
       size,
       cacheStatus: cached.cacheStatus,
       costEstimate: estimateQwenImageCost(size),
-      referenceUsed: hasImageReference(input)
+      referenceUsed: hasImageReference(input), httpStatus: response.status, taskId, requestStartedAt, requestCompletedAt
     };
   } catch (error) {
     return {
@@ -422,7 +458,8 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
       size,
       cacheStatus: "not-requested",
       costEstimate: estimateQwenImageCost(size),
-      error: sanitizeErrorMessage(error)
+      error: sanitizeErrorMessage(error),
+      errorCode: classifyQwenFailure(undefined, undefined, sanitizeErrorMessage(error)), requestStartedAt, requestCompletedAt: Date.now()
     };
   }
 }

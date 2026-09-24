@@ -1,4 +1,5 @@
 import { callQwenImage } from "../image/qwenImageClient";
+import { generateQwenImageAdaptive } from "../image/qwenImageModelRouter";
 import { composeExactProductAsset } from "../image/exactProductComposite";
 import { estimateQwenImageCost } from "../image/imageCostEstimate";
 import { markPrivateAssetsLifecycle } from "../assets/assetStore";
@@ -78,7 +79,8 @@ function fallbackShotImage(
   prompt: string,
   fallbackReason: string,
   latencyMs: number,
-  errorCode?: string
+  errorCode?: string,
+  attemptedModel?: string
 ): ShotImageGenerationResult {
   return {
     shotId: shot.id,
@@ -86,7 +88,7 @@ function fallbackShotImage(
     localUrl: shotFallbackImage(shot),
     prompt,
     provider: "placeholder",
-    model: getDefaultModel(),
+    model: attemptedModel ?? getDefaultModel(),
     latencyMs,
     size: getDefaultSize(),
     cacheStatus: "not-requested",
@@ -192,13 +194,20 @@ async function generateShotImage(
         projectId
       }));
     } catch {
-      // A missing optional master is reported by QA; it does not replace Product Master.
+      return fallbackShotImage(shot, buildShotPrompt(shot), "已确认的人物或场景参考图无法读取，已停止生成，避免失去视觉一致性。", Date.now() - startedAt, "REFERENCE_ASSET_UNAVAILABLE");
     }
   }
 
+  const requiredReferenceEntries = [
+    ...(productReferenceImages[0] ? [{ image: productReferenceImages[0], role: "product" as const }] : []),
+    ...masterReferenceImages.map((image) => ({ image, role: "master" as const }))
+  ];
+  if (requiredReferenceEntries.length > 3) {
+    return fallbackShotImage(shot, buildShotPrompt(shot), "所需的产品、人物和场景参考图超过模型支持的 3 张，已停止生成，避免静默丢失参考图。", Date.now() - startedAt, "REFERENCE_LIMIT_EXCEEDED");
+  }
   const referenceEntries = [
-    ...productReferenceImages.map((image) => ({ image, role: "product" as const })),
-    ...masterReferenceImages.map((image) => ({ image, role: "master" as const })),
+    ...requiredReferenceEntries,
+    ...productReferenceImages.slice(1).map((image) => ({ image, role: "product" as const })),
     ...(continuityReferenceImage ? [{ image: continuityReferenceImage, role: "continuity" as const }] : [])
   ].slice(0, 3);
   const referenceImages = referenceEntries.map((entry) => entry.image);
@@ -235,23 +244,24 @@ async function generateShotImage(
       : ""
   ].filter(Boolean).join("\n");
 
-  const result = await callQwenImage({
+  const result = await generateQwenImageAdaptive({
     prompt,
     ...(referenceImages.length ? { referenceImages } : {}),
-    model: referenceImages.length ? process.env.QWEN_IMAGE_EDIT_MODEL || "qwen-image-2.0" : undefined,
     negativePrompt: hasProductReference ? PRODUCT_REFERENCE_QWEN_NEGATIVE_PROMPT : DEFAULT_QWEN_NEGATIVE_PROMPT,
     projectId,
     shotId: shot.id,
     size: getSizeForAspectRatio(options?.aspectRatio),
     sessionId: options?.sessionId
-  });
+  }, options?.onModelAttempt);
 
   if (!result.success) {
     return fallbackShotImage(
       shot,
       prompt,
       `Qwen-Image keyframe generation failed for shot ${shot.index}: ${result.error ?? "unknown error"}. Used placeholder image fallback.`,
-      result.latencyMs || Date.now() - startedAt
+      result.latencyMs || Date.now() - startedAt,
+      result.errorCode,
+      result.model
     );
   }
 
@@ -277,7 +287,7 @@ async function generateShotImage(
         assetId: composite.assetId,
         prompt,
         provider: "deterministic-product-composite",
-        model: "qwen-background-plus-source-product",
+        model: result.model,
         latencyMs: result.latencyMs,
         requestId: result.requestId,
         size: `${composite.width}*${composite.height}`,

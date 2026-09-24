@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ViewportDrawer } from "./ViewportDrawer";
 
 type Entry = {
-  id: string; kind: "task" | "call"; taskId: string; projectId: string; stage: string;
+  id: string; kind: "task" | "call"; taskId: string; jobId?: string; projectId: string; stage: string;
   provider: string; model?: string; mode?: string; pass?: string; shotId?: string; frameId?: string;
   status: string; startedAt: number; completedAt?: number; durationMs?: number;
   jobElapsedMs?: number; lastHeartbeatAt?: number; interruptedAt?: number;
@@ -14,15 +14,16 @@ type Entry = {
   validationPath?: string; httpStatus?: number; providerRequestId?: string; providerTaskId?: string;
   inputTokens?: number; outputTokens?: number; outputLength?: number; finishReason?: string;
   jsonParsed?: boolean; schemaValid?: boolean; normalized?: boolean; repaired?: boolean;
+  referenceImageCount?: number; outputAssetIds?: string[];
   message?: string;
 };
 
 const providerOptions = ["全部", "DeepSeek", "Qwen-Image", "Wan", "TTS", "Remotion"];
-const statusOptions = ["全部", "运行中", "成功", "失败", "已取消", "已降级"];
+const statusOptions = ["全部", "运行中", "成功", "失败", "已取消", "已降级", "已跳过"];
 const providerNames: Record<string, string> = { deepseek: "DeepSeek", "qwen-image": "Qwen-Image", wan: "Wan", tts: "TTS", remotion: "Remotion" };
-const statusNames: Record<string, string> = { queued: "排队中", running: "运行中", "qa-review": "校验中", completed: "成功", "needs-review": "待检查", failed: "失败", fallback: "已降级", cancelled: "已取消", blocked: "已阻塞", interrupted: "已中断" };
+const statusNames: Record<string, string> = { queued: "排队中", running: "运行中", "qa-review": "校验中", completed: "成功", "needs-review": "待检查", failed: "失败", fallback: "已降级", cancelled: "已取消", blocked: "已跳过", interrupted: "已中断" };
 
-export function CallLogDrawer({ projectId, projectName, label = "调用日志", focusShotId }: { projectId?: string; projectName?: string; label?: string; focusShotId?: string }) {
+export function CallLogDrawer({ projectId, projectName, label = "调用日志", focusShotId, focusFrameId, focusStage }: { projectId?: string; projectName?: string; label?: string; focusShotId?: string; focusFrameId?: string; focusStage?: string }) {
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [provider, setProvider] = useState("全部");
@@ -32,18 +33,26 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const loadEpoch = useRef(0);
 
   async function load(before?: number) {
+    const epoch = loadEpoch.current;
     setLoading(true);
     try {
       const query = new URLSearchParams({ limit: "50" });
       if (projectId) query.set("projectId", projectId);
+      if (focusStage) query.set("stage", focusStage);
+      if (focusShotId && focusStage) query.set("shotId", focusShotId);
+      if (focusFrameId && focusStage) query.set("frameId", focusFrameId);
       if (before) query.set("before", String(before));
       const response = await fetch(`/api/call-logs?${query}`, { cache: "no-store" });
       if (!response.ok) throw new Error("调用日志暂时无法读取。");
       const data = await response.json() as { data?: { entries?: Entry[] } };
       let next = data.data?.entries ?? [];
-      if (!before && projectId && focusShotId && !next.some((entry) => entry.shotId === focusShotId)) {
+      if (!focusStage && !before && projectId && focusShotId && !next.some((entry) => entry.shotId === focusShotId)) {
         const focusedQuery = new URLSearchParams({ projectId, shotId: focusShotId, limit: "1" });
         const focusedResponse = await fetch(`/api/call-logs?${focusedQuery}`, { cache: "no-store" });
         if (focusedResponse.ok) {
@@ -51,6 +60,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
           next = [...next, ...(focusedData.data?.entries ?? [])];
         }
       }
+      if (epoch !== loadEpoch.current) return;
       setEntries((current) => [...new Map([...current, ...next].map((entry) => [entry.id, entry])).values()]
         .sort((left, right) => right.startedAt - left.startedAt || right.id.localeCompare(left.id)));
       setHasMore((data.data?.entries ?? []).length === 50);
@@ -64,23 +74,39 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
 
   useEffect(() => {
     if (!open) return;
+    loadEpoch.current += 1;
     setEntries([]);
     setSelectedId(null);
     void load();
     const timer = window.setInterval(() => { void load(); }, 5_000);
     return () => window.clearInterval(timer);
-  }, [open, projectId]);
+  }, [open, projectId, focusStage, focusShotId, focusFrameId]);
 
   useEffect(() => {
-    if (open && focusShotId && entries.length && !selectedId) setSelectedId(entries.find((entry) => entry.shotId === focusShotId)?.id ?? null);
-  }, [open, focusShotId, entries, selectedId]);
+    if (open && focusShotId && entries.length && !selectedId) setSelectedId(entries.find((entry) => entry.shotId === focusShotId && (!focusStage || entry.stage === focusStage) && (!focusFrameId || entry.frameId === focusFrameId) && entry.kind === "task")?.id
+      ?? entries.find((entry) => entry.shotId === focusShotId && (!focusStage || entry.stage === focusStage) && (!focusFrameId || entry.frameId === focusFrameId))?.id ?? null);
+  }, [open, focusShotId, focusFrameId, focusStage, entries, selectedId]);
 
   const filtered = entries.filter((entry) => (provider === "全部" || providerNames[entry.provider] === provider)
     && (status === "全部" || statusNames[entry.status] === status));
   const active = entries.filter((entry) => entry.kind === "task" && ["queued", "running", "qa-review"].includes(entry.status));
   const selected = entries.find((entry) => entry.id === selectedId);
   const currentProjectId = projectId ?? selected?.projectId ?? entries[0]?.projectId;
-  const currentTaskId = selected?.taskId ?? active[0]?.taskId ?? entries[0]?.taskId;
+  const currentTaskId = selected?.taskId ?? active[0]?.taskId ?? (focusStage ? entries.find((entry) => entry.stage === focusStage && (!focusShotId || entry.shotId === focusShotId) && (!focusFrameId || entry.frameId === focusFrameId))?.taskId : entries[0]?.taskId);
+
+  async function clearLogs() {
+    if (!projectId) return;
+    setClearing(true);
+    try {
+      const response = await fetch(`/api/call-logs?projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" });
+      const data = await response.json() as { error?: string; clearedCalls?: number; clearedEvents?: number };
+      if (!response.ok) throw new Error(data.error ?? "清空调用日志失败。");
+      loadEpoch.current += 1;
+      setEntries([]); setSelectedId(null); setHasMore(false); setConfirmClear(false);
+      setNotice("调用日志已清空。"); setError(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "清空调用日志失败。"); }
+    finally { setClearing(false); }
+  }
 
   async function exportLogs(scope: "task" | "project", format: "json" | "markdown", copy = false) {
     if (!currentProjectId || (scope === "task" && !currentTaskId)) return;
@@ -115,25 +141,29 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
         <select aria-label="按模型筛选" value={provider} onChange={(event) => setProvider(event.target.value)}>{providerOptions.map((option) => <option key={option}>{option}</option>)}</select>
         <select aria-label="按状态筛选" value={status} onChange={(event) => setStatus(event.target.value)}>{statusOptions.map((option) => <option key={option}>{option}</option>)}</select>
         <details className="call-log-export"><summary>导出日志</summary><div>
-          <button type="button" disabled={exporting || !currentTaskId} onClick={() => void exportLogs("task", "json")}>当前任务 · JSON</button>
-          <button type="button" disabled={exporting || !currentTaskId} onClick={() => void exportLogs("task", "markdown")}>当前任务 · Markdown</button>
-          <button type="button" disabled={exporting || !currentProjectId} onClick={() => void exportLogs("project", "json")}>当前项目 · JSON</button>
-          <button type="button" disabled={exporting || !currentProjectId} onClick={() => void exportLogs("project", "markdown")}>当前项目 · Markdown</button>
-          <button type="button" disabled={exporting || !currentTaskId} onClick={() => void exportLogs("task", "markdown", true)}>复制诊断摘要</button>
+          {!entries.length ? <p>当前没有可导出的调用记录。</p> : null}
+          <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "json")}>当前任务 · JSON</button>
+          <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "markdown")}>当前任务 · Markdown</button>
+          <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "json")}>当前项目 · JSON</button>
+          <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "markdown")}>当前项目 · Markdown</button>
+          <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "markdown", true)}>复制诊断摘要</button>
         </div></details>
+        <button type="button" className="call-log-clear" disabled={!projectId || !entries.length || clearing} title={!entries.length ? "当前没有可清空的调用记录" : undefined} onClick={() => setConfirmClear(true)}>清空日志</button>
       </div>
       <div className="call-log-sheet__scroll">
         <section><h3>当前任务</h3>{active.length ? active.map((entry) => <button type="button" className="call-log-row" key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {entry.stage}</span><strong>{entry.message || "任务执行中"}</strong><small>{statusNames[entry.status]} · 已运行 {Math.max(0, Math.floor((Date.now() - entry.startedAt) / 1000))} 秒{entry.progressTotal ? ` · ${entry.progressCurrent ?? 0}/${entry.progressTotal}` : ""}</small></button>) : <p className="call-log-empty">当前没有运行中的任务。</p>}</section>
         <section><h3>调用历史</h3>{filtered.map((entry) => <button type="button" className={`call-log-row${selectedId === entry.id ? " is-selected" : ""}`} key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {entry.mode || entry.stage} {entry.shotId ? `· ${entry.shotId}` : ""}</span><strong>{statusNames[entry.status] ?? entry.status} · {new Date(entry.startedAt).toLocaleString("zh-CN")}</strong>{entry.errorCode || entry.errorSummary ? <small>{entry.errorCode || ""} {entry.errorSummary?.slice(0, 110)}</small> : null}</button>)}
-          {!filtered.length ? <p className="call-log-empty">暂无符合条件的记录。</p> : null}{hasMore ? <button type="button" className="call-log-more" disabled={loading} onClick={() => void load(entries.at(-1)?.startedAt)}>{loading ? "正在加载…" : "加载更早记录"}</button> : null}</section>
+          {!filtered.length ? <p className="call-log-empty">{focusStage === "keyframes" ? "当前镜头尚无关键帧调用记录。旧任务可能未采集诊断信息，请重试该帧后查看。" : projectId && !entries.length ? "当前项目暂无调用日志。" : "暂无符合条件的记录。"}</p> : null}{hasMore ? <button type="button" className="call-log-more" disabled={loading} onClick={() => void load(entries.at(-1)?.startedAt)}>{loading ? "正在加载…" : "加载更早记录"}</button> : null}</section>
         {selected ? <section className="call-log-diagnostics"><h3>技术诊断</h3><dl>{([
-          ["调用编号", selected.id], ["任务编号", selected.taskId], ["模型", selected.model], ["生成模式", selected.mode], ["镜头", selected.shotId], ["状态", statusNames[selected.status] ?? selected.status],
+          ["调用编号", selected.id], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["模型", selected.model], ["生成模式", selected.mode], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
           ["模型调用耗时", selected.kind === "call" && selected.durationMs !== undefined ? `${selected.durationMs} 毫秒` : undefined], ["任务跨度", selected.kind === "task" && selected.jobElapsedMs !== undefined ? `${selected.jobElapsedMs} 毫秒` : undefined], ["最后活动", selected.lastHeartbeatAt ? new Date(selected.lastHeartbeatAt).toLocaleString("zh-CN") : undefined], ["中断发现", selected.interruptedAt ? new Date(selected.interruptedAt).toLocaleString("zh-CN") : undefined],
           ["重试序号", selected.attempt], ["错误类型", selected.errorCode], ["服务商错误码", selected.providerErrorCode], ["错误详情", selected.errorSummary], ["校验路径", selected.validationPath], ["字段问题", selected.validationIssues?.map((issue) => `${issue.path}: ${issue.message}`).join("；")],
-          ["HTTP 状态", selected.httpStatus], ["请求编号", selected.providerRequestId], ["输入 Token", selected.inputTokens], ["输出 Token", selected.outputTokens], ["输出长度", selected.outputLength], ["结束原因", selected.finishReason], ["JSON 解析", selected.jsonParsed === undefined ? undefined : selected.jsonParsed ? "成功" : "失败"], ["结构校验", selected.schemaValid === undefined ? undefined : selected.schemaValid ? "通过" : "失败"], ["修复", selected.repaired === undefined ? undefined : selected.repaired ? "已执行" : "未执行"], ["请求参数", selected.requestOptions ? JSON.stringify(selected.requestOptions) : undefined]
+          ["HTTP 状态", selected.httpStatus], ["请求编号", selected.providerRequestId], ["服务商任务编号", selected.providerTaskId], ["输入 Token", selected.inputTokens], ["输出 Token", selected.outputTokens], ["输出长度", selected.outputLength], ["结束原因", selected.finishReason], ["JSON 解析", selected.jsonParsed === undefined ? undefined : selected.jsonParsed ? "成功" : "失败"], ["结构校验", selected.schemaValid === undefined ? undefined : selected.schemaValid ? "通过" : "失败"], ["修复", selected.repaired === undefined ? undefined : selected.repaired ? "已执行" : "未执行"], ["请求参数", selected.requestOptions ? JSON.stringify(selected.requestOptions) : undefined]
         ] as Array<[string, string | number | undefined]>).filter(([, value]) => value !== undefined).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl></section> : null}
         {error ? <p className="call-log-error">{error}</p> : null}
+        {notice ? <p className="call-log-notice" role="status">{notice}</p> : null}
       </div>
+      {confirmClear ? <div className="call-log-confirm-layer"><div role="alertdialog" aria-modal="true" aria-label="确认清空调用日志"><strong>清空当前项目日志？</strong><p>清空后将无法恢复，但不会删除项目内容和生成素材。</p><div><button type="button" disabled={clearing} onClick={() => setConfirmClear(false)}>取消</button><button type="button" className="is-danger" disabled={clearing} onClick={() => void clearLogs()}>{clearing ? "清空中…" : "确认清空"}</button></div></div></div> : null}
     </ViewportDrawer>
   </>;
 }
