@@ -14,11 +14,13 @@ export const QWEN_IMAGE_CANDIDATES = [
 ] as const;
 
 export type QwenModelAttempt = {
-  model: string; attempt: number; status: "completed" | "failed" | "blocked";
+  model: string; attempt: number; status: "completed" | "failed" | "blocked" | "running";
   startedAt: number; completedAt: number; errorCode?: string; error?: string;
   providerErrorCode?: string; httpStatus?: number; requestId?: string; taskId?: string;
   referenceCount: number; size: string; assetId?: string; mode: string;
   promptExtend: boolean; watermark: boolean;
+  providerStatus?: string; submittedAt?: number; lastPolledAt?: number; pollCount?: number; imageUrl?: string;
+  submissionElapsedMs?: number; downloadElapsedMs?: number;
 };
 
 type Availability = { code: string; cooldownUntil: number; lastCheckedAt: number };
@@ -58,6 +60,24 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
   let index = 0;
   let last: QwenImageResult | undefined;
 
+  if (input.resumeTaskId) {
+    const startedAt = Date.now();
+    const result = await call({ ...input, model: "qwen-image-3.0", onTaskProgress: async (progress) => {
+      await input.onTaskProgress?.(progress);
+      await onAttempt?.({ model: "qwen-image-3.0", attempt: 2, status: progress.status === "FAILED" ? "failed" : progress.status === "SUCCEEDED" ? "completed" : "running",
+        startedAt: progress.submittedAt, completedAt: Date.now(), requestId: progress.requestId, taskId: progress.taskId,
+        referenceCount, size: input.size ?? "1152*2048", mode, providerStatus: progress.status,
+        submittedAt: progress.submittedAt, lastPolledAt: progress.lastPolledAt, pollCount: progress.pollCount,
+        imageUrl: progress.imageUrl, ...parameters });
+    } });
+    await onAttempt?.({ model: "qwen-image-3.0", attempt: 2, status: result.success ? "completed" : result.errorCode === "TASK_POLL_INTERRUPTED" ? "running" : "failed",
+      startedAt, completedAt: Date.now(), errorCode: result.errorCode, error: result.error,
+      providerErrorCode: result.providerErrorCode, httpStatus: result.httpStatus, requestId: result.requestId,
+      taskId: result.taskId, referenceCount, size: input.size ?? "1152*2048", assetId: result.assetId, mode,
+      submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs, ...parameters });
+    return result;
+  }
+
   for (const candidate of QWEN_IMAGE_CANDIDATES) {
     const size = candidate.modelId === "qwen-image" ? legacySize(input.size ?? "1152*2048") : input.size ?? "1152*2048";
     const now = Date.now();
@@ -74,12 +94,20 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
       continue;
     }
     for (let rateRetry = 0; rateRetry < 2; rateRetry += 1) {
-      const result = await call({ ...input, model: candidate.modelId, size });
+      const result = await call({ ...input, model: candidate.modelId, size,
+        onTaskProgress: async (progress) => {
+          await input.onTaskProgress?.(progress);
+          await onAttempt?.({ model: candidate.modelId, attempt, status: progress.status === "FAILED" ? "failed" : progress.status === "SUCCEEDED" ? "completed" : "running",
+            startedAt: progress.submittedAt, completedAt: Date.now(), requestId: progress.requestId, taskId: progress.taskId,
+            referenceCount, size, mode, providerStatus: progress.status, submittedAt: progress.submittedAt,
+            lastPolledAt: progress.lastPolledAt, pollCount: progress.pollCount, imageUrl: progress.imageUrl, ...parameters });
+        } });
       const code = result.errorCode as QwenFailureCode | undefined;
-      await onAttempt?.({ model: candidate.modelId, attempt: rateRetry ? ++index : attempt, status: result.success ? "completed" : "failed",
+      await onAttempt?.({ model: candidate.modelId, attempt: rateRetry ? ++index : attempt, status: result.success ? "completed" : result.errorCode === "TASK_POLL_INTERRUPTED" ? "running" : "failed",
         startedAt: result.requestStartedAt ?? now, completedAt: result.requestCompletedAt ?? Date.now(),
         errorCode: result.errorCode, error: result.error, providerErrorCode: result.providerErrorCode, httpStatus: result.httpStatus,
-        requestId: result.requestId, taskId: result.taskId, referenceCount, size, assetId: result.assetId, mode, ...parameters });
+        requestId: result.requestId, taskId: result.taskId, referenceCount, size, assetId: result.assetId, mode,
+        submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs, ...parameters });
       if (result.success) { state.delete(candidate.modelId); return result; }
       last = result;
       if (code === "RATE_LIMITED" && !rateRetry && (result.retryAfterMs ?? 1000) <= 5000) {

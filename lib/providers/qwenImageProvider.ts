@@ -256,10 +256,15 @@ async function generateShotImage(
     projectId,
     shotId: shot.id,
     size: getSizeForAspectRatio(options?.aspectRatio),
-    sessionId: options?.sessionId
+    sessionId: options?.sessionId,
+    resumeTaskId: options?.resumeTaskId,
+    onTaskProgress: options?.onTaskProgress
   }, options?.onModelAttempt);
 
   if (!result.success) {
+    if (result.errorCode === "TASK_POLL_INTERRUPTED" || result.errorCode === "SUBMISSION_STATE_UNKNOWN") {
+      throw new Error(result.errorCode);
+    }
     return fallbackShotImage(
       shot,
       prompt,

@@ -567,7 +567,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setTraceLabel("正在恢复 Qwen-Image 关键帧任务");
     void pollQwenImagesUntilComplete(project.id, event.id, (elapsedSeconds, completed, total) => {
       if (cancelled) return;
-      setTraceLabel(`Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
+      setTraceLabel(elapsedSeconds >= 90 ? `生成时间较长，任务仍在处理中（${completed}/${total}）` : `Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
       void refreshServerEvents(project.id);
     }).then(async (completed) => {
       if (cancelled) return;
@@ -715,7 +715,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               workingProject.id,
               imageResponse.data.eventId,
               (elapsedSeconds, completed, total) => {
-                setTraceLabel(`Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
+                setTraceLabel(elapsedSeconds >= 90 ? `生成时间较长，任务仍在处理中（${completed}/${total}）` : `Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
                 void refreshServerEvents(workingProject.id);
               }
             )
@@ -1551,7 +1551,7 @@ async function pollQwenImagesUntilComplete(
   onProgress: (elapsedSeconds: number, completed: number, total: number) => void
 ): Promise<GenerateImagesData> {
   const intervalMs = 3_000;
-  const maxAttempts = 300;
+  const maxAttempts = 720;
   let consecutiveTransportErrors = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {

@@ -244,14 +244,14 @@ export async function normalizeInterruptedEvents(sessionId: string, projectId: s
   const record = await requireOwnedAnonymousProject(sessionId, projectId);
   const now = Date.now();
   const hasStale = (record.project.generationEvents ?? []).some(
-    (event) => event.status === "running" && now - (event.lastHeartbeatAt ?? event.startedAt) > STAGE_TIMEOUT_MS[event.stage]
+    (event) => event.status === "running" && event.stage !== "keyframes" && now - (event.lastHeartbeatAt ?? event.startedAt) > STAGE_TIMEOUT_MS[event.stage]
   );
   if (!hasStale) return;
 
   const updated = await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
     ...project,
     generationEvents: (project.generationEvents ?? []).map((event) => {
-      if (event.status !== "running" || now - (event.lastHeartbeatAt ?? event.startedAt) <= STAGE_TIMEOUT_MS[event.stage]) return event;
+      if (event.status !== "running" || event.stage === "keyframes" || now - (event.lastHeartbeatAt ?? event.startedAt) <= STAGE_TIMEOUT_MS[event.stage]) return event;
       return sanitizeGenerationEvent({
         ...event,
         status: "interrupted",

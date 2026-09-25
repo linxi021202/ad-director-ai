@@ -53,12 +53,16 @@ export type ImageGenerationOptions = {
   masterReferenceAssetIdsByShot?: Record<string, string[]>;
   productVisualSpec?: ProductVisualSpec;
   onModelAttempt?: (attempt: {
-    model: string; attempt: number; status: "completed" | "failed" | "blocked";
+    model: string; attempt: number; status: "completed" | "failed" | "blocked" | "running";
     startedAt: number; completedAt: number; errorCode?: string; error?: string;
     providerErrorCode?: string; httpStatus?: number; requestId?: string; taskId?: string;
     referenceCount: number; size: string; assetId?: string; mode: string;
     promptExtend: boolean; watermark: boolean;
+    providerStatus?: string; submittedAt?: number; lastPolledAt?: number; pollCount?: number; imageUrl?: string;
+    submissionElapsedMs?: number; downloadElapsedMs?: number;
   }) => Promise<void>;
+  resumeTaskId?: string;
+  onTaskProgress?: (progress: import("../image/types").QwenTaskProgress) => Promise<void>;
 };
 
 export type VideoGenerationOptions = {

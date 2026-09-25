@@ -410,31 +410,35 @@ describe("second-stage API routes", () => {
       `/api/projects/${testProjectId}/assets/`
     );
     expect(data.images.slice(1).some((image) => image.fallbackUsed)).toBe(true);
+    const failedFrame = data.images.find((image) => image.fallbackUsed) as { frameId?: string; assetId?: string } | undefined;
+    expect(failedFrame?.assetId).toBeUndefined();
     expect(data.failedShots.length).toBeGreaterThan(0);
     expect(JSON.stringify(body)).not.toContain("sk-dashscope-secret-test-key");
     const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
+    expect(saved.project.keyframes?.find((frame) => frame.frameId === failedFrame?.frameId)).toMatchObject({ fallbackUsed: true, status: "fallback" });
+    expect(saved.project.keyframes?.find((frame) => frame.frameId === failedFrame?.frameId)?.assetId).toBeUndefined();
+    expect(saved.project.keyframes?.find((frame) => frame.frameId === failedFrame?.frameId)?.imageUrl).toBeUndefined();
     const imageEvents = saved.project.generationEvents?.filter((event) => event.provider === "qwen-image") ?? [];
     expect(imageEvents.some((event) => event.status === "running")).toBe(false);
     expect(imageEvents.some((event) => event.status === "failed" && event.message.includes("provider failed"))).toBe(true);
   }, 12_000);
 
 
-  it("generate-images does not force DashScope async mode by default", async () => {
+  it("generate-images uses the async endpoint for reference-driven qwen-image-3.0", async () => {
     process.env.AI_MODE = "real";
     process.env.ENABLE_REAL_IMAGE = "true";
     process.env.DASHSCOPE_API_KEY = "sk-dashscope-secret-test-key";
 
-    let callCount = 0;
-    const fetchMock = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
-      callCount += 1;
-      if (callCount === 1) {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes("/image-generation/generation")) {
         const headers = new Headers(init?.headers);
-        expect(headers.get("X-DashScope-Async")).toBeNull();
+        expect(headers.get("X-DashScope-Async")).toBe("enable");
         return new Response(
-          JSON.stringify({ request_id: "req-sync", output: { results: [{ image_url: "https://example.com/sync-shot.png" }] } }),
+          JSON.stringify({ request_id: "req-async", output: { task_id: "task-async", task_status: "PENDING" } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
+      if (url.includes("/tasks/task-async")) return new Response(JSON.stringify({ request_id: "req-poll", output: { task_status: "SUCCEEDED", results: [{ image_url: "https://example.com/sync-shot.png" }] } }), { status: 200 });
       return new Response(VALID_PNG_BYTES, {
         status: 200,
         headers: { "Content-Type": "image/png" }
@@ -445,7 +449,7 @@ describe("second-stage API routes", () => {
     const response = await generateImagesPOST(
       jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots" })
     );
-    const body = await responseJson(response);
+    const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ fallbackUsed: boolean }> };
 
     expect(body.success).toBe(true);
@@ -486,7 +490,7 @@ describe("second-stage API routes", () => {
     const response = await generateImagesPOST(
       jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots" })
     );
-    const body = await responseJson(response);
+    const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ fallbackUsed: boolean; requestId?: string; localUrl?: string }> };
 
     expect(body.success).toBe(true);
@@ -516,7 +520,7 @@ describe("second-stage API routes", () => {
     const response = await generateImagesPOST(
       jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots" })
     );
-    const text = await response.text();
+    const text = JSON.stringify(await completedImageResponse(response));
 
     expect(text).not.toContain("sk-dashscope-secret-test-key");
     expect(text).toContain("[redacted]");
@@ -544,14 +548,15 @@ describe("second-stage API routes", () => {
     const requestedModels: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://example.com/fallback-frame.png") return new Response(VALID_PNG_BYTES, { status: 200, headers: { "Content-Type": "image/png" } });
+      if (url.includes("/api/v1/tasks/quota-task")) return new Response(JSON.stringify({ code: "QuotaExceeded", message: "Free allocated quota exceeded", output: { task_status: "FAILED" } }), { status: 200 });
       const body = JSON.parse(String(init?.body)) as { model: string; input: { messages: Array<{ content: unknown[] }> } };
       requestedModels.push(body.model);
       expect(body.input.messages[0]?.content.some((item) => typeof item === "object" && item !== null && "image" in item)).toBe(true);
-      if (body.model === "qwen-image-3.0") return new Response(JSON.stringify({ code: "QuotaExceeded", message: "Free allocated quota exceeded" }), { status: 429 });
+      if (body.model === "qwen-image-3.0") return new Response(JSON.stringify({ request_id: "req-quota", output: { task_id: "quota-task", task_status: "PENDING" } }), { status: 200 });
       return new Response(JSON.stringify({ request_id: "req-2", output: { results: [{ image_url: "https://example.com/fallback-frame.png" }] } }), { status: 200 });
     }));
     const response = await generateImagesPOST(jsonRequest({ projectId: testProjectId, shots: [shot], mode: "all-shots", frameIds: [frameId] }));
-    const body = await responseJson(response);
+    const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ model: string; assetId?: string; referenceUsed: boolean; fallbackUsed: boolean }> };
     expect(requestedModels).toEqual(["qwen-image-3.0", "qwen-image-2.0"]);
     expect(data.images[0]).toMatchObject({ model: "qwen-image-2.0", referenceUsed: true, fallbackUsed: false });

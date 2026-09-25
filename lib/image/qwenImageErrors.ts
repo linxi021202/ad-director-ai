@@ -2,7 +2,7 @@ export type QwenFailureCode =
   | "AUTH_FAILED" | "QUOTA_EXHAUSTED" | "INSUFFICIENT_BALANCE" | "RATE_LIMITED"
   | "MODEL_NOT_AVAILABLE" | "MODEL_NOT_SUPPORTED_IN_REGION" | "INVALID_PARAMETER"
   | "INVALID_PROMPT" | "INVALID_IMAGE" | "REFERENCE_IMAGE_NOT_SUPPORTED"
-  | "REQUEST_TIMEOUT" | "TEMPORARY_PROVIDER_ERROR" | "PROVIDER_ERROR"
+  | "REQUEST_TIMEOUT" | "SUBMISSION_STATE_UNKNOWN" | "TASK_POLL_INTERRUPTED" | "TEMPORARY_PROVIDER_ERROR" | "PROVIDER_ERROR"
   | "ASSET_DOWNLOAD_FAILED" | "ASSET_PERSIST_FAILED" | "PROVIDER_NOT_CONFIGURED";
 
 export function classifyQwenFailure(httpStatus: number | undefined, providerCode: string | undefined, message: string): QwenFailureCode {
@@ -20,6 +20,7 @@ export function classifyQwenFailure(httpStatus: number | undefined, providerCode
   if (/invalid.prompt|prompt.*invalid|datainspectionfailed|content.*moderation/.test(detail)) return "INVALID_PROMPT";
   if (httpStatus === 400 || /invalid.parameter|invalidparam|malformed.request|invalid.size/.test(detail)) return "INVALID_PARAMETER";
   if (/timeout|timed.out|aborterror/.test(detail)) return "REQUEST_TIMEOUT";
+  if (/internalerror|serviceunavailable|temporar(?:y|ily)|server[._ -]*error|system[._ -]*error/.test(detail)) return "TEMPORARY_PROVIDER_ERROR";
   if (httpStatus !== undefined && httpStatus >= 500) return "TEMPORARY_PROVIDER_ERROR";
   return "PROVIDER_ERROR";
 }

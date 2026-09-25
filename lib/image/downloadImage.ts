@@ -13,16 +13,18 @@ function sanitizeDownloadError(error: unknown): string {
 
 export async function downloadGeneratedImage(input: DownloadImageInput): Promise<DownloadImageResult> {
   assertServerOnly();
-  if (!input.sessionId) return { success: false, cacheStatus: "remote-only", error: "Private image persistence requires an anonymous session." };
+  if (!input.sessionId) return { success: false, cacheStatus: "remote-only", error: "Private image persistence requires an anonymous session.", failureStage: "persist" };
 
+  let failureStage: "download" | "persist" = "download";
   try {
     const response = await fetch(input.imageUrl, { cache: "no-store", redirect: "follow" });
     if (!response.ok) {
-      return { success: false, cacheStatus: "remote-only", error: `Failed to download generated image: HTTP ${response.status}` };
+      return { success: false, cacheStatus: "remote-only", error: `Failed to download generated image: HTTP ${response.status}`, failureStage: "download" };
     }
 
     const bytes = new Uint8Array(await response.arrayBuffer());
     const inspected = validateGeneratedImage({ bytes, responseContentType: response.headers.get("content-type") });
+    failureStage = "persist";
     const asset = await createPrivateAsset(input.sessionId, input.projectId, {
       kind: "keyframe",
       role: input.shotId,
@@ -41,6 +43,6 @@ export async function downloadGeneratedImage(input: DownloadImageInput): Promise
       cacheStatus: "cached"
     };
   } catch (error) {
-    return { success: false, cacheStatus: "remote-only", error: sanitizeDownloadError(error) };
+    return { success: false, cacheStatus: "remote-only", error: sanitizeDownloadError(error), failureStage };
   }
 }

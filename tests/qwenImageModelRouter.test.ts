@@ -2,7 +2,8 @@ vi.mock("server-only", () => ({}));
 const secret = vi.hoisted(() => ({ value: "sk-first-key-for-tests" }));
 vi.mock("../lib/secrets/resolver", () => ({ resolveProviderApiKey: vi.fn(async () => secret.value) }));
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { callQwenImage } from "../lib/image/qwenImageClient";
 import { clearQwenModelAvailability, generateQwenImageAdaptive, inspectQwenImageModels, type QwenModelAttempt } from "../lib/image/qwenImageModelRouter";
 import { classifyQwenFailure, shouldFallbackQwen } from "../lib/image/qwenImageErrors";
 import type { QwenImageRequest, QwenImageResult } from "../lib/image/types";
@@ -15,6 +16,7 @@ function result(model: string, success: boolean, errorCode?: string): QwenImageR
 }
 
 beforeEach(() => { secret.value = "sk-first-key-for-tests"; clearQwenModelAvailability(input.sessionId!); });
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("Qwen capability-aware routing", () => {
   it("skips legacy qwen-image without making a reference-image request", async () => {
@@ -90,5 +92,60 @@ describe("Qwen capability-aware routing", () => {
       expect(detection.models.find((model) => model.modelId === "qwen-image-2.0")?.status).toBe("unknown");
       expect(detection.notice).toContain("不代表仍有生成额度");
     } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+describe("Qwen task lifecycle", () => {
+  beforeEach(() => { vi.stubEnv("AI_MODE", "real"); vi.stubEnv("ENABLE_REAL_IMAGE", "true"); });
+
+  it("submits 3.0 asynchronously, then observes PENDING, RUNNING and SUCCEEDED", async () => {
+    const statuses: string[] = [];
+    let polls = 0;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/image-generation/generation")) {
+        expect(new Headers(init?.headers).get("X-DashScope-Async")).toBe("enable");
+        return new Response(JSON.stringify({ request_id: "submit-1", output: { task_id: "task-1", task_status: "PENDING" } }));
+      }
+      polls += 1;
+      return new Response(JSON.stringify({ request_id: `poll-${polls}`, output: polls === 1 ? { task_status: "PENDING" } : polls === 2 ? { task_status: "RUNNING" } : { task_status: "SUCCEEDED", results: [{ image_url: "https://example.com/generated.png" }] } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await callQwenImage({ prompt: "单帧广告", model: "qwen-image-3.0", sessionId: input.sessionId,
+      onTaskProgress: async (progress) => { statuses.push(progress.status); expect(progress.taskId).toBe("task-1"); } });
+    expect(response).toMatchObject({ success: true, model: "qwen-image-3.0", taskId: "task-1", imageUrl: "https://example.com/generated.png" });
+    expect(statuses).toEqual(["PENDING", "PENDING", "RUNNING", "SUCCEEDED"]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  }, 15_000);
+
+  it("resumes an existing task without another paid submission", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toContain("/api/v1/tasks/existing-task");
+      return new Response(JSON.stringify({ request_id: "poll-resume", output: { task_status: "SUCCEEDED", results: [{ image_url: "https://example.com/resumed.png" }] } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await callQwenImage({ prompt: "单帧广告", model: "qwen-image-3.0", sessionId: input.sessionId, resumeTaskId: "existing-task" });
+    expect(response).toMatchObject({ success: true, taskId: "existing-task", imageUrl: "https://example.com/resumed.png" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back when submission state is unknown", async () => {
+    const call = vi.fn(async (request: QwenImageRequest) => result(request.model!, false, "SUBMISSION_STATE_UNKNOWN"));
+    await generateQwenImageAdaptive(input, undefined, call);
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a submitted task on polling interruption without starting 2.0", async () => {
+    const call = vi.fn(async (request: QwenImageRequest) => ({ ...result(request.model!, false, "TASK_POLL_INTERRUPTED"), taskId: "task-still-running" }));
+    const response = await generateQwenImageAdaptive(input, undefined, call);
+    expect(response).toMatchObject({ errorCode: "TASK_POLL_INTERRUPTED", taskId: "task-still-running" });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not abort synchronous 2.0 at the old 90-second threshold", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ output: { results: [{ image_url: "https://example.com/sync.png" }] } }))));
+    const response = await callQwenImage({ prompt: "单帧广告", model: "qwen-image-2.0", sessionId: input.sessionId });
+    expect(response.success).toBe(true);
+    expect(timeoutSpy).toHaveBeenCalledWith(300_000);
   });
 });

@@ -12,6 +12,8 @@ export type QwenImageRequest = {
   promptExtend?: boolean;
   watermark?: boolean;
   sessionId?: string;
+  resumeTaskId?: string;
+  onTaskProgress?: (progress: QwenTaskProgress) => Promise<void>;
 };
 
 export type QwenImageResult = {
@@ -35,6 +37,8 @@ export type QwenImageResult = {
   requestStartedAt?: number;
   requestCompletedAt?: number;
   retryAfterMs?: number;
+  submissionElapsedMs?: number;
+  downloadElapsedMs?: number;
 };
 
 export type DownloadImageInput = {
@@ -44,12 +48,23 @@ export type DownloadImageInput = {
   sessionId?: string;
 };
 
+export type QwenTaskProgress = {
+  taskId: string;
+  requestId?: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  submittedAt: number;
+  lastPolledAt?: number;
+  pollCount: number;
+  imageUrl?: string;
+};
+
 export type DownloadImageResult = {
   success: boolean;
   assetId?: string;
   localUrl?: string;
   cacheStatus: QwenImageCacheStatus;
   error?: string;
+  failureStage?: "download" | "persist";
 };
 
 

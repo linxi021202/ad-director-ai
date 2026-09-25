@@ -40,7 +40,7 @@ export async function pollProjectKeyframes(
   onProgress?: () => void | Promise<void>
 ): Promise<KeyframeGenerationData> {
   let transportErrors = 0;
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 720; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 3_000));
     let response: Response;
     try {
@@ -59,7 +59,7 @@ export async function pollProjectKeyframes(
     if ([502, 503, 504].includes(response.status) && ++transportErrors < 12) continue;
     throw new Error(publicKeyframeError(result.error));
   }
-  throw new Error("Qwen-Image 已等待 15 分钟仍未完成。请刷新项目查看保留的任务日志。");
+  throw new Error("关键帧任务处理时间较长，请刷新项目查看已保留的任务状态。");
 }
 
 function publicKeyframeError(message?: string | null) {
