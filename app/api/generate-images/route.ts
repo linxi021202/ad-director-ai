@@ -159,7 +159,8 @@ export async function POST(request: Request) {
       return [frame.id, frameSubmissionFingerprint(owned.project.id, shot, frame, version)];
     }));
     const unresolved = owned.project.generationEvents?.find((item) => item.stage === "keyframes" && item.action === "生成单帧关键帧"
-      && item.errorCode === "SUBMISSION_STATE_UNKNOWN" && item.submissionFingerprint === fingerprintByFrame.get(item.frameId ?? ""));
+      && item.errorCode === "SUBMISSION_STATE_UNKNOWN" && Boolean(item.frameId && item.submissionFingerprint)
+      && item.submissionFingerprint === fingerprintByFrame.get(item.frameId!));
     if (unresolved) return apiJson({ success: false, data: null,
       trace: { route: "generate-images", stage: "submission-unresolved", eventId: unresolved.id }, fallbackUsed: false,
       error: "提交状态未知，请先检查任务状态和调用日志；为避免重复计费，当前帧暂不可重新提交。" }, 409);
