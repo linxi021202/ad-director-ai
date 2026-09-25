@@ -60,6 +60,8 @@ export type ImageGenerationOptions = {
     promptExtend: boolean; watermark: boolean;
     providerStatus?: string; submittedAt?: number; lastPolledAt?: number; pollCount?: number; imageUrl?: string;
     submissionElapsedMs?: number; downloadElapsedMs?: number;
+    submissionDiagnostic?: import("../image/types").QwenSubmissionDiagnostic;
+    networkFailure?: import("../image/types").QwenNetworkFailure;
   }) => Promise<void>;
   resumeTaskId?: string;
   onTaskProgress?: (progress: import("../image/types").QwenTaskProgress) => Promise<void>;

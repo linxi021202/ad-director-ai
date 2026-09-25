@@ -13,6 +13,7 @@ import {
 } from "../lib/projects/anonymousProjectStore";
 import {
   appendGenerationEvent,
+  blockUnknownSubmission,
   attachGenerationEventProviderTask,
   clearGenerationEvents,
   completeGenerationEvent,
@@ -47,6 +48,19 @@ afterEach(async () => {
 });
 
 describe("server generation event persistence", () => {
+  it("keeps an unknown image submission blocked with its fingerprint after reload", async () => {
+    const fingerprint = "a".repeat(64);
+    const event = await startGenerationEvent(SESSION_A, projectId, {
+      stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", message: "正在提交。",
+      shotId: "shot-1", frameId: "frame-1", submissionFingerprint: fingerprint
+    });
+    await blockUnknownSubmission(SESSION_A, projectId, event.id);
+    resetAnonymousProjectQueuesForTests();
+    const [restored] = await listGenerationEvents(SESSION_A, projectId);
+    expect(restored).toMatchObject({ status: "blocked", errorCode: "SUBMISSION_STATE_UNKNOWN",
+      submissionFingerprint: fingerprint });
+    expect(restored.providerTaskId).toBeUndefined();
+  });
   it("persists completed events and restores them after the in-memory queue resets", async () => {
     const event = await startGenerationEvent(SESSION_A, projectId, {
       stage: "strategy",

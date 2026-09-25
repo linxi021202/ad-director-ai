@@ -978,6 +978,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
                 shot={shot}
                 aspectRatio={displayProject.brief.aspectRatio}
                 keyframes={shotKeyframes(shot, keyframes)}
+                blockedFrameIds={(displayProject.generationEvents ?? []).filter((event) => event.shotId === shot.id && event.status === "blocked" && event.errorCode === "SUBMISSION_STATE_UNKNOWN" && event.frameId).map((event) => event.frameId!)}
+                onRefresh={() => void fetchProjectSnapshot()}
                 isHeroShot={Boolean(displayProject.heroShotId) && shot.id === heroShot.id}
                 onGenerate={(frameId) => void generateSingleShot(shot, frameId)}
                 onToggleLock={(frame) => void toggleFrameLock(shot, frame)}
@@ -1264,6 +1266,8 @@ function ProjectWorkflow({ steps }: { steps: ProjectWorkflowStep[] }) {
 function ShotCard({
   shot,
   keyframes,
+  blockedFrameIds,
+  onRefresh,
   aspectRatio,
   isHeroShot,
   onGenerate,
@@ -1275,6 +1279,8 @@ function ShotCard({
 }: {
   shot: StoryboardShot;
   keyframes: KeyframeResult[];
+  blockedFrameIds: string[];
+  onRefresh: () => void;
   aspectRatio: AspectRatio;
   isHeroShot: boolean;
   onGenerate: (frameId?: string) => void;
@@ -1288,6 +1294,7 @@ function ShotCard({
   const [currentIndex, setCurrentIndex] = useState(0);
   const safeIndex = Math.min(Math.max(0, currentIndex), Math.max(0, frames.length - 1));
   const currentFrame = frames[safeIndex];
+  const submissionBlocked = Boolean(currentFrame?.id && blockedFrameIds.includes(currentFrame.id));
   const keyframe = currentFrame
     ? keyframes.find((item) => item.frameId === currentFrame.id)
     : keyframes[0];
@@ -1316,7 +1323,7 @@ function ShotCard({
           fit="contain"
           showBlurredBackdrop={false}
           alt={`镜头 ${shot.index} 第 ${safeIndex + 1} 帧：${currentFrame?.description ?? shot.subtitle}`}
-        /> : <VisualAssetPlaceholder title="关键帧待生成" description="当前镜头还没有关键帧。" aspectRatio={aspectRatio} status={isLoading ? "running" : keyframe?.status === "failed" ? "failed" : "pending"} actionLabel="生成关键帧" onAction={() => onGenerate(currentFrame?.id)} />}
+        /> : <VisualAssetPlaceholder title={submissionBlocked ? "提交状态未知" : "关键帧待生成"} description={submissionBlocked ? "请先检查生成详情和调用日志，避免重复提交。" : "当前镜头还没有关键帧。"} aspectRatio={aspectRatio} status={isLoading ? "running" : keyframe?.status === "failed" || submissionBlocked ? "failed" : "pending"} actionLabel={submissionBlocked ? undefined : "生成关键帧"} onAction={submissionBlocked ? undefined : () => onGenerate(currentFrame?.id)} />}
         <div className="keyframe-card-v4__badges">
           {isHeroShot ? <span className="is-hero">当前主镜头</span> : null}
           {shot.exactProductShot ? <span>精确产品镜头</span> : shot.containsProduct ? <span>产品互动镜头</span> : null}
@@ -1341,9 +1348,11 @@ function ShotCard({
         </div>
         {keyframe?.fallbackUsed ? <span className="keyframe-card-v4__fallback"><i aria-hidden="true" />已使用本地降级图</span> : null}
         <div className="keyframe-card-v4__actions">
-          <button type="button" className="project-button-v4 project-button-v4--ai" disabled={isLoading || currentFrame?.isLocked} aria-busy={isLoading} onClick={() => onGenerate(currentFrame?.id)}>
-            {isLoading ? "生成中" : currentFrame?.isLocked ? "当前帧已锁定" : keyframe?.status === "ready" && !keyframe.fallbackUsed ? "重生当前帧" : "生成当前帧"}
+          <button type="button" className="project-button-v4 project-button-v4--ai" disabled={isLoading || currentFrame?.isLocked || submissionBlocked} aria-busy={isLoading} onClick={() => onGenerate(currentFrame?.id)}>
+            {submissionBlocked ? "提交状态待核查" : isLoading ? "生成中" : currentFrame?.isLocked ? "当前帧已锁定" : keyframe?.status === "ready" && !keyframe.fallbackUsed ? "重生当前帧" : "生成当前帧"}
           </button>
+          {submissionBlocked ? <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={onRefresh}>重新检查状态</button> : null}
+          {submissionBlocked ? <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={() => onOpenDetails("trace")}>查看调用记录</button> : null}
           {currentFrame ? <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={() => onToggleLock(currentFrame)}>{currentFrame.isLocked ? "解锁当前帧" : "锁定当前帧"}</button> : null}
           {isHeroShot
             ? <span className="keyframe-card-v4__hero-state">已选为主镜头</span>

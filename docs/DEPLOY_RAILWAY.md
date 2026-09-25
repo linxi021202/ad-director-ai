@@ -31,6 +31,7 @@ MAX_RENDER_QUEUE_SIZE=6
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-pro
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com
+DASHSCOPE_SUBMISSION_TIMEOUT_MS=30000
 QWEN_IMAGE_MODEL=qwen-image
 QWEN_IMAGE_EDIT_MODEL=qwen-image-2.0
 HAPPYHORSE_BASE_URL=https://dashscope.aliyuncs.com
@@ -40,6 +41,7 @@ COSYVOICE_MODEL=cosyvoice-v3-flash
 ```
 
 Do not configure platform-wide model API keys. Each visitor supplies their own keys through the server-only session settings flow.
+The submission timeout is independent of the image generation timeout. Keep the default until production network diagnostics explain a submission delay; raising it alone does not resolve connectivity or oversized requests.
 
 ## First deployment
 

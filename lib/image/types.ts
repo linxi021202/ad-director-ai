@@ -14,6 +14,28 @@ export type QwenImageRequest = {
   sessionId?: string;
   resumeTaskId?: string;
   onTaskProgress?: (progress: QwenTaskProgress) => Promise<void>;
+  onSubmissionStart?: (diagnostic: QwenSubmissionDiagnostic) => Promise<void>;
+};
+
+export type QwenSubmissionDiagnostic = {
+  requestHost: string;
+  requestPath: string;
+  region: string;
+  workspaceIdMasked?: string;
+  apiMode: "dashscope-async" | "dashscope-sync";
+  payloadBytes: number;
+  timeoutMs: number;
+  referenceTypes: string[];
+  requestStartedAt: number;
+};
+
+export type QwenNetworkFailure = {
+  failurePhase: "DNS" | "CONNECT" | "TLS" | "REQUEST_WRITE" | "WAITING_RESPONSE" | "HTTP_RESPONSE" | "JSON_PARSE";
+  errorName?: string;
+  errorMessage?: string;
+  causeCode?: string;
+  causeErrno?: number;
+  causeSyscall?: string;
 };
 
 export type QwenImageResult = {
@@ -39,6 +61,8 @@ export type QwenImageResult = {
   retryAfterMs?: number;
   submissionElapsedMs?: number;
   downloadElapsedMs?: number;
+  submissionDiagnostic?: QwenSubmissionDiagnostic;
+  networkFailure?: QwenNetworkFailure;
 };
 
 export type DownloadImageInput = {

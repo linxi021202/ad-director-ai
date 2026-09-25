@@ -58,6 +58,7 @@ const envSchema = z.object({
 
   DASHSCOPE_API_KEY: optionalSecretSchema,
   DASHSCOPE_BASE_URL: optionalUrlEnvSchema(DEFAULT_DASHSCOPE_BASE_URL),
+  DASHSCOPE_SUBMISSION_TIMEOUT_MS: positiveIntEnvSchema(30_000),
   QWEN_IMAGE_MODEL: z.string().min(1).default("qwen-image"),
   VISUAL_INSPECTOR_MODEL: z.string().min(1).default("qwen3.7-plus"),
   QWEN_IMAGE_SIZE: z.string().min(1).default("1152*2048"),
@@ -95,7 +96,7 @@ export type AIConfig = {
   realVideoEnabled: boolean;
   platformKeysAllowed: boolean;
   deepseek: { apiKey?: string; baseUrl: string; model: string; configured: boolean };
-  qwenImage: { apiKey?: string; baseUrl: string; imageModel: string; inspectorModel: string; size: string; promptExtend: boolean; watermark: boolean; configured: boolean };
+  qwenImage: { apiKey?: string; baseUrl: string; submissionTimeoutMs: number; imageModel: string; inspectorModel: string; size: string; promptExtend: boolean; watermark: boolean; configured: boolean };
   video: {
     provider: RawAIEnv["VIDEO_PROVIDER"];
     model: string;
@@ -164,7 +165,7 @@ function buildConfig(env: RawAIEnv): AIConfig {
     realVideoEnabled: env.ENABLE_REAL_VIDEO,
     platformKeysAllowed: allowPlatformKeys,
     deepseek: { apiKey: deepseekApiKey, baseUrl: env.DEEPSEEK_BASE_URL, model: env.DEEPSEEK_MODEL, configured: Boolean(deepseekApiKey) },
-    qwenImage: { apiKey: dashscopeApiKey, baseUrl: env.DASHSCOPE_BASE_URL, imageModel: env.QWEN_IMAGE_MODEL, inspectorModel: env.VISUAL_INSPECTOR_MODEL, size: env.QWEN_IMAGE_SIZE, promptExtend: env.QWEN_IMAGE_PROMPT_EXTEND, watermark: env.QWEN_IMAGE_WATERMARK, configured: Boolean(dashscopeApiKey) },
+    qwenImage: { apiKey: dashscopeApiKey, baseUrl: env.DASHSCOPE_BASE_URL, submissionTimeoutMs: env.DASHSCOPE_SUBMISSION_TIMEOUT_MS, imageModel: env.QWEN_IMAGE_MODEL, inspectorModel: env.VISUAL_INSPECTOR_MODEL, size: env.QWEN_IMAGE_SIZE, promptExtend: env.QWEN_IMAGE_PROMPT_EXTEND, watermark: env.QWEN_IMAGE_WATERMARK, configured: Boolean(dashscopeApiKey) },
     video: {
       provider: env.VIDEO_PROVIDER,
       model: env.WAN_VIDEO_MODEL,

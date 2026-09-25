@@ -12,6 +12,7 @@ import { projectStoreErrorResponse } from "../../../lib/projects/api";
 import {
   completeGenerationEvent,
   failGenerationEvent,
+  blockUnknownSubmission,
   attachGenerationEventProviderTask,
   markGenerationEventQAReview,
   startGenerationEvent,
@@ -38,6 +39,11 @@ import { ensureShotArchitecture } from "../../../lib/storyboard/shotArchitecture
 import { ensureVisualAnchorWorkspace, getVisualAnchorReadiness } from "../../../lib/visual/visualAnchors";
 
 const QWEN_FRAME_CONCURRENCY = 2;
+
+function frameSubmissionFingerprint(projectId: string, shot: TargetShot, frame: ShotFrame, keyframeVersion: string) {
+  return createHash("sha256").update(JSON.stringify({ projectId, shotId: shot.id, frameId: frame.id,
+    model: "qwen-image-3.0", keyframeVersion, promptCn: frame.imagePromptCn, promptEn: frame.imagePromptEn })).digest("hex");
+}
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -147,6 +153,16 @@ export async function POST(request: Request) {
     if (!targetFrames.length) {
       return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "frame-validation" }, fallbackUsed: false, error: "没有找到可生成的镜头帧。" }, 400);
     }
+    const fingerprintByFrame = new Map(targetFrames.map(({ shot, frame }) => {
+      const version = owned.project.keyframeVersions?.filter((item) => item.shotId === shot.id && item.frameId === frame.id)
+        .map((item) => item.assetId ?? "").join(":") ?? "";
+      return [frame.id, frameSubmissionFingerprint(owned.project.id, shot, frame, version)];
+    }));
+    const unresolved = owned.project.generationEvents?.find((item) => item.stage === "keyframes" && item.action === "生成单帧关键帧"
+      && item.errorCode === "SUBMISSION_STATE_UNKNOWN" && item.submissionFingerprint === fingerprintByFrame.get(item.frameId ?? ""));
+    if (unresolved) return apiJson({ success: false, data: null,
+      trace: { route: "generate-images", stage: "submission-unresolved", eventId: unresolved.id }, fallbackUsed: false,
+      error: "提交状态未知，请先检查任务状态和调用日志；为避免重复计费，当前帧暂不可重新提交。" }, 409);
     const activeBatch = owned.project.generationEvents?.find((item) => item.stage === "keyframes" && item.action === "生成关键帧批次" && item.status === "running");
     if (activeBatch) {
       return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "existing-batch", eventId: activeBatch.id }, fallbackUsed: false,
@@ -162,7 +178,8 @@ export async function POST(request: Request) {
     for (const { shot, frame } of targetFrames) {
       const event = await startGenerationEvent(session.id, activeProjectId, {
         stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧",
-        message: `正在生成镜头 ${shot.index} 的第 ${frame.index + 1} 帧。`, shotId: shot.id, frameId: frame.id, runId: batchEvent.runId
+        message: `正在生成镜头 ${shot.index} 的第 ${frame.index + 1} 帧。`, shotId: shot.id, frameId: frame.id,
+        submissionFingerprint: fingerprintByFrame.get(frame.id), runId: batchEvent.runId
       });
       shotEvents.set(frame.id, event.id);
     }
@@ -296,8 +313,9 @@ export async function GET(request: Request) {
               resumeTaskIdsByFrame: new Map(frameEvents.map((item) => [item.frameId!, item.providerTaskId!])) });
           }
         } else if (frameEvents.length) {
-          await failGenerationEvent(session.id, projectId.data, event.id,
-            "关键帧任务已中断，部分镜头尚未取得服务商任务编号。系统不会自动重复提交，请查看逐帧日志后再操作。", "SUBMISSION_STATE_UNKNOWN");
+          await Promise.all(frameEvents.filter((item) => !item.providerTaskId).map((item) =>
+            blockUnknownSubmission(session.id, projectId.data, item.id)));
+          await blockUnknownSubmission(session.id, projectId.data, event.id);
           return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "submission-unresolved" }, fallbackUsed: false,
             error: "部分镜头的提交状态无法确认，已停止自动重试，避免重复生成。" }, 409);
         } else {
@@ -306,8 +324,7 @@ export async function GET(request: Request) {
             await completeGenerationEvent(session.id, projectId.data, event.id, "关键帧批次已恢复完成。",
               { status: batchData.failedShots.length ? "fallback" : "completed", progressCurrent: batchData.images.length, progressTotal: batchData.requestedShots });
           } else {
-            await failGenerationEvent(session.id, projectId.data, event.id,
-              "关键帧任务已中断，无法确认未完成镜头的提交状态。系统不会自动重复提交。", "SUBMISSION_STATE_UNKNOWN");
+            await blockUnknownSubmission(session.id, projectId.data, event.id);
             return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "submission-unresolved" }, fallbackUsed: false,
               error: "关键帧任务已中断，提交状态无法确认，请查看调用日志。" }, 409);
           }
@@ -408,6 +425,15 @@ async function executeImageBatch(input: ImageBatchInput) {
           pollCount: attempt.pollCount ?? progress?.pollCount, nextPollAt: attempt.status === "running" ? Date.now() + 3000 : undefined,
           generationElapsedMs: (attempt.submittedAt ?? progress?.submittedAt) ? Date.now() - (attempt.submittedAt ?? progress!.submittedAt) : undefined,
           submissionElapsedMs: attempt.submissionElapsedMs, downloadElapsedMs: attempt.downloadElapsedMs,
+          requestHost: attempt.submissionDiagnostic?.requestHost, requestPath: attempt.submissionDiagnostic?.requestPath,
+          region: attempt.submissionDiagnostic?.region, workspaceIdMasked: attempt.submissionDiagnostic?.workspaceIdMasked,
+          apiMode: attempt.submissionDiagnostic?.apiMode, payloadBytes: attempt.submissionDiagnostic?.payloadBytes,
+          submissionTimeoutMs: attempt.submissionDiagnostic?.timeoutMs,
+          referenceSourceTypes: attempt.submissionDiagnostic?.referenceTypes,
+          failurePhase: attempt.networkFailure?.failurePhase,
+          networkErrorName: attempt.networkFailure?.errorName, networkErrorMessage: attempt.networkFailure?.errorMessage,
+          networkCauseCode: attempt.networkFailure?.causeCode, networkCauseErrno: attempt.networkFailure?.causeErrno,
+          networkCauseSyscall: attempt.networkFailure?.causeSyscall,
           finalAssetId: attempt.assetId,
           imageUrl: attempt.assetId ? `/api/projects/${input.projectId}/assets/${attempt.assetId}` : undefined,
           ...(attempt.assetId ? { outputAssetIds: [attempt.assetId] } : {})
@@ -419,7 +445,8 @@ async function executeImageBatch(input: ImageBatchInput) {
           { taskId: progress.taskId, requestId: progress.requestId, status: "running",
             message: progress.status === "PENDING" ? "关键帧任务已提交，正在等待模型处理。" : progress.status === "RUNNING" ? "关键帧正在生成。" : progress.status === "FAILED" ? "服务商任务已结束，正在核对失败原因。" : "关键帧生成完成，正在保存图片。" });
       } : undefined;
-      let result: ShotImageGenerationResult = { ...await generateShotImage(input.projectId, frameShot, {
+      let generated: ShotImageGenerationResult;
+      try { generated = await generateShotImage(input.projectId, frameShot, {
         aspectRatio: input.aspectRatio,
         hasChineseText: true,
         sessionId: input.sessionId,
@@ -431,7 +458,13 @@ async function executeImageBatch(input: ImageBatchInput) {
         onModelAttempt,
         onTaskProgress,
         resumeTaskId: input.resumeTaskIdsByFrame?.get(frame.id)
-      }), shotId: shot.id, frameId: frame.id };
+      }); } catch (error) {
+        if (error instanceof Error && error.message === "SUBMISSION_STATE_UNKNOWN" && eventId) {
+          await blockUnknownSubmission(input.sessionId, input.projectId, eventId);
+        }
+        throw error;
+      }
+      let result: ShotImageGenerationResult = { ...generated, shotId: shot.id, frameId: frame.id };
       let qaResult: KeyframeQAResult | undefined;
       const qaResults: KeyframeQAResult[] = [];
       let status: EvaluatedImage["status"] = result.fallbackUsed || !result.assetId ? "fallback" : "ready";
@@ -545,6 +578,10 @@ async function executeImageBatch(input: ImageBatchInput) {
     return { images, failedShots, mode: input.mode, requestedShots: input.requestedShots, generatedShots: images.length };
   } catch (error) {
     if (error instanceof Error && error.message === "TASK_POLL_INTERRUPTED") return { images: [], failedShots: [], mode: input.mode, requestedShots: input.requestedShots, generatedShots: 0 };
+    if (error instanceof Error && error.message === "SUBMISSION_STATE_UNKNOWN") {
+      await blockUnknownSubmission(input.sessionId, input.projectId, input.batchEventId);
+      return { images: [], failedShots: [], mode: input.mode, requestedShots: input.requestedShots, generatedShots: 0 };
+    }
     await failImageBatch(input, sanitizeApiError(error));
     throw error;
   }

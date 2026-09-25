@@ -58,7 +58,8 @@ const ALLOWED_ERROR_CODES = new Set([
   "VAGUE_PROMPT",
   "NOT_CONFIGURED",
   "RATE_LIMITED",
-  "QUOTA_EXHAUSTED"
+  "QUOTA_EXHAUSTED",
+  "SUBMISSION_STATE_UNKNOWN"
 ]);
 
 const STAGE_TIMEOUT_MS: Record<GenerationStage, number> = {
@@ -84,6 +85,7 @@ type NewEventInput = {
   message: string;
   shotId?: string;
   frameId?: string;
+  submissionFingerprint?: string;
   progressCurrent?: number;
   progressTotal?: number;
   errorCode?: string;
@@ -117,6 +119,7 @@ export async function appendGenerationEvent(
     message: input.message,
     ...(input.shotId ? { shotId: input.shotId } : {}),
     ...(input.frameId ? { frameId: input.frameId } : {}),
+    ...(input.submissionFingerprint ? { submissionFingerprint: input.submissionFingerprint } : {}),
     ...(input.progressCurrent !== undefined ? { progressCurrent: input.progressCurrent } : {}),
     ...(input.progressTotal !== undefined ? { progressTotal: input.progressTotal } : {}),
     startedAt: now,
@@ -180,6 +183,15 @@ export function failGenerationEvent(
     status: "failed",
     message,
     errorCode: sanitizeErrorCode(errorCode),
+    completedAt: Date.now()
+  });
+}
+
+export function blockUnknownSubmission(sessionId: string, projectId: string, eventId: string) {
+  return updateEvent(sessionId, projectId, eventId, {
+    status: "blocked",
+    message: "提交状态未知，请先检查任务状态和调用日志；系统已阻止同一帧重复提交。",
+    errorCode: "SUBMISSION_STATE_UNKNOWN",
     completedAt: Date.now()
   });
 }

@@ -1,6 +1,10 @@
 vi.mock("server-only", () => ({}));
 const secret = vi.hoisted(() => ({ value: "sk-first-key-for-tests" }));
 vi.mock("../lib/secrets/resolver", () => ({ resolveProviderApiKey: vi.fn(async () => secret.value) }));
+vi.mock("../lib/image/dashscopeDiagnostics", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/image/dashscopeDiagnostics")>(),
+  diagnoseDashScopeConnection: vi.fn(async () => ({ requestHost: "dashscope.aliyuncs.com", requestPath: "/api/v1/models", region: "cn-beijing", dns: "ok", tls: "ok", httpStatus: 200 }))
+}));
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { callQwenImage } from "../lib/image/qwenImageClient";
@@ -132,6 +136,26 @@ describe("Qwen task lifecycle", () => {
     const call = vi.fn(async (request: QwenImageRequest) => result(request.model!, false, "SUBMISSION_STATE_UNKNOWN"));
     await generateQwenImageAdaptive(input, undefined, call);
     expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("records safe submission metadata and the underlying network phase without another paid request", async () => {
+    vi.stubEnv("DASHSCOPE_SUBMISSION_TIMEOUT_MS", "45000");
+    const attempts: QwenModelAttempt[] = [];
+    const fetchMock = vi.fn(async () => { throw Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("connect timeout"), { code: "UND_ERR_CONNECT_TIMEOUT", errno: -110, syscall: "connect" })
+    }); });
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await generateQwenImageAdaptive(input, async (attempt) => { attempts.push(attempt); });
+    expect(response).toMatchObject({ errorCode: "SUBMISSION_STATE_UNKNOWN", networkFailure: {
+      failurePhase: "CONNECT", errorName: "TypeError", causeCode: "UND_ERR_CONNECT_TIMEOUT", causeErrno: -110, causeSyscall: "connect"
+    } });
+    expect(response.submissionDiagnostic).toMatchObject({ requestHost: "dashscope.aliyuncs.com",
+      requestPath: "/api/v1/services/aigc/image-generation/generation", region: "cn-beijing",
+      apiMode: "dashscope-async", timeoutMs: 45000, referenceTypes: ["data-url"] });
+    expect(response.submissionDiagnostic?.payloadBytes).toBeGreaterThan(100);
+    expect(attempts.some((attempt) => attempt.status === "running" && attempt.submissionDiagnostic?.payloadBytes)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(response)).not.toContain(secret.value);
   });
 
   it("keeps a submitted task on polling interruption without starting 2.0", async () => {

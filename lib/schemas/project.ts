@@ -744,6 +744,7 @@ export const generationEventSchema = z.object({
   message: z.string().trim().min(1).max(500),
   shotId: z.string().min(1).optional(),
   frameId: z.string().min(1).optional(),
+  submissionFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   providerTaskId: z.string().trim().min(1).max(200).optional(),
   providerRequestId: z.string().trim().min(1).max(200).optional(),
   progressCurrent: z.number().int().nonnegative().optional(),

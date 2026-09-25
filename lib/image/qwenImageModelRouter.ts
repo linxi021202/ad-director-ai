@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 import { getAIConfig } from "../config/ai";
 import { resolveProviderApiKey } from "../secrets/resolver";
 import { callQwenImage } from "./qwenImageClient";
+import { diagnoseDashScopeConnection } from "./dashscopeDiagnostics";
 import { shouldFallbackQwen, type QwenFailureCode } from "./qwenImageErrors";
-import type { QwenImageRequest, QwenImageResult } from "./types";
+import type { QwenImageRequest, QwenImageResult, QwenNetworkFailure, QwenSubmissionDiagnostic } from "./types";
 
 export const QWEN_IMAGE_CANDIDATES = [
   { modelId: "qwen-image", textToImage: true, referenceImageInput: false, imageEditing: false, priority: 1 },
@@ -21,6 +22,7 @@ export type QwenModelAttempt = {
   promptExtend: boolean; watermark: boolean;
   providerStatus?: string; submittedAt?: number; lastPolledAt?: number; pollCount?: number; imageUrl?: string;
   submissionElapsedMs?: number; downloadElapsedMs?: number;
+  submissionDiagnostic?: QwenSubmissionDiagnostic; networkFailure?: QwenNetworkFailure;
 };
 
 type Availability = { code: string; cooldownUntil: number; lastCheckedAt: number };
@@ -74,7 +76,8 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
       startedAt, completedAt: Date.now(), errorCode: result.errorCode, error: result.error,
       providerErrorCode: result.providerErrorCode, httpStatus: result.httpStatus, requestId: result.requestId,
       taskId: result.taskId, referenceCount, size: input.size ?? "1152*2048", assetId: result.assetId, mode,
-      submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs, ...parameters });
+      submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs,
+      submissionDiagnostic: result.submissionDiagnostic, networkFailure: result.networkFailure, ...parameters });
     return result;
   }
 
@@ -95,6 +98,11 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
     }
     for (let rateRetry = 0; rateRetry < 2; rateRetry += 1) {
       const result = await call({ ...input, model: candidate.modelId, size,
+        onSubmissionStart: async (diagnostic) => {
+          await input.onSubmissionStart?.(diagnostic);
+          await onAttempt?.({ model: candidate.modelId, attempt, status: "running", startedAt: diagnostic.requestStartedAt,
+            completedAt: diagnostic.requestStartedAt, referenceCount, size, mode, submissionDiagnostic: diagnostic, ...parameters });
+        },
         onTaskProgress: async (progress) => {
           await input.onTaskProgress?.(progress);
           await onAttempt?.({ model: candidate.modelId, attempt, status: progress.status === "FAILED" ? "failed" : progress.status === "SUCCEEDED" ? "completed" : "running",
@@ -107,7 +115,8 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
         startedAt: result.requestStartedAt ?? now, completedAt: result.requestCompletedAt ?? Date.now(),
         errorCode: result.errorCode, error: result.error, providerErrorCode: result.providerErrorCode, httpStatus: result.httpStatus,
         requestId: result.requestId, taskId: result.taskId, referenceCount, size, assetId: result.assetId, mode,
-        submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs, ...parameters });
+        submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs,
+        submissionDiagnostic: result.submissionDiagnostic, networkFailure: result.networkFailure, ...parameters });
       if (result.success) { state.delete(candidate.modelId); return result; }
       last = result;
       if (code === "RATE_LIMITED" && !rateRetry && (result.retryAfterMs ?? 1000) <= 5000) {
@@ -126,6 +135,8 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
 
 export async function inspectQwenImageModels(sessionId: string) {
   const key = await resolveProviderApiKey("qwen-image", sessionId);
+  const baseUrl = getAIConfig({ allowSessionSecrets: true }).qwenImage.baseUrl;
+  const connection = await diagnoseDashScopeConnection(baseUrl, key ?? undefined);
   const scope = credentialScope(sessionId, key);
   const cached = availability.get(scope);
   let listed: Set<string> | undefined;
@@ -153,7 +164,7 @@ export async function inspectQwenImageModels(sessionId: string) {
       } else notice = "模型列表不可读取；将在首次生成时检测。";
     } catch { notice = "模型列表暂时不可读取；将在首次生成时检测。"; }
   } else notice = "请先配置百炼 API Key；检测不会生成收费图片。";
-  return { notice, models: QWEN_IMAGE_CANDIDATES.map((candidate) => {
+  return { notice, connection, models: QWEN_IMAGE_CANDIDATES.map((candidate) => {
     const state = cached?.get(candidate.modelId);
     const cooling = state && state.cooldownUntil > Date.now() ? state : undefined;
     return { ...candidate, status: !key ? "unknown" : cooling ? "unavailable" : listed?.has(candidate.modelId) ? "available" : "unknown",

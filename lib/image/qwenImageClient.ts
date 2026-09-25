@@ -3,14 +3,14 @@ import { resolveProviderApiKey } from "../secrets/resolver";
 import { downloadGeneratedImage } from "./downloadImage";
 import { estimateQwenImageCost } from "./imageCostEstimate";
 import { classifyQwenFailure } from "./qwenImageErrors";
-import type { QwenImageRequest, QwenImageResult, QwenTaskProgress } from "./types";
+import { classifySubmissionFailure, describeDashScopeEndpoint } from "./dashscopeDiagnostics";
+import type { QwenImageRequest, QwenImageResult, QwenNetworkFailure, QwenSubmissionDiagnostic, QwenTaskProgress } from "./types";
 
 const QWEN_IMAGE_PATH = "/api/v1/services/aigc/multimodal-generation/generation";
 const QWEN_IMAGE_ASYNC_PATH = "/api/v1/services/aigc/image-generation/generation";
 const QWEN_TASK_PATH = "/api/v1/tasks";
 const TASK_POLL_INTERVAL_MS = 3000;
 const GENERATION_TIMEOUT_MS = 30 * 60_000;
-const SUBMISSION_TIMEOUT_MS = 30_000;
 const SYNC_TIMEOUT_MS = Math.max(120_000, Number(process.env.QWEN_IMAGE_SYNC_TIMEOUT_MS) || 300_000);
 
 export function buildQwenImageContent(input: Pick<QwenImageRequest, "prompt" | "referenceImage" | "referenceImages">) {
@@ -47,6 +47,8 @@ function assertServerOnly() {
 function sanitizeErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error ?? "unknown error");
   return raw
+    .replace(/https?:\/\/\S+/gi, "[redacted-url]")
+    .replace(/data:image\/\S+/gi, "[redacted-image]")
     .replace(/sk-[A-Za-z0-9._-]+/g, "[redacted]")
     .replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer [redacted]")
     .slice(0, 420);
@@ -328,6 +330,9 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
   let model = input.model || "qwen-image";
   let size = input.size || "1152*2048";
   let knownTaskId = input.resumeTaskId;
+  let submissionDiagnostic: QwenSubmissionDiagnostic | undefined;
+  let networkFailure: QwenNetworkFailure | undefined;
+  let submissionPhase: "WAITING_RESPONSE" | "JSON_PARSE" = "WAITING_RESPONSE";
 
   try {
     const config = getAIConfig({ allowSessionSecrets: true });
@@ -364,23 +369,38 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
       };
     }
 
-    requestStartedAt = Date.now();
     const isAsync = model === "qwen-image-3.0";
-    const response = input.resumeTaskId ? undefined : await fetch(joinUrl(config.qwenImage.baseUrl, isAsync ? QWEN_IMAGE_ASYNC_PATH : QWEN_IMAGE_PATH), {
+    const path = isAsync ? QWEN_IMAGE_ASYNC_PATH : QWEN_IMAGE_PATH;
+    const body = JSON.stringify(buildQwenImageRequestBody(input, model, size, {
+      promptExtend: config.qwenImage.promptExtend,
+      watermark: config.qwenImage.watermark
+    }));
+    if (!input.resumeTaskId) {
+      submissionDiagnostic = {
+        ...describeDashScopeEndpoint(config.qwenImage.baseUrl, path),
+        apiMode: isAsync ? "dashscope-async" : "dashscope-sync",
+        payloadBytes: Buffer.byteLength(body), timeoutMs: isAsync ? config.qwenImage.submissionTimeoutMs : SYNC_TIMEOUT_MS,
+        referenceTypes: (input.referenceImages?.length ? input.referenceImages : input.referenceImage ? [input.referenceImage] : [])
+          .map((reference) => reference.startsWith("data:") ? "data-url" : reference.startsWith("http") ? "remote-url" : "base64"),
+        requestStartedAt: Date.now()
+      };
+      await input.onSubmissionStart?.(submissionDiagnostic);
+      requestStartedAt = Date.now();
+    }
+    const response = input.resumeTaskId ? undefined : await fetch(joinUrl(config.qwenImage.baseUrl, path), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
         ...(isAsync ? { "X-DashScope-Async": "enable" } : {})
       },
-      body: JSON.stringify(buildQwenImageRequestBody(input, model, size, {
-        promptExtend: config.qwenImage.promptExtend,
-        watermark: config.qwenImage.watermark
-      })), signal: AbortSignal.timeout(isAsync ? SUBMISSION_TIMEOUT_MS : SYNC_TIMEOUT_MS)
+      body, signal: AbortSignal.timeout(isAsync ? config.qwenImage.submissionTimeoutMs : SYNC_TIMEOUT_MS)
     });
 
-    const payload = response ? (await response.json().catch(() => null)) as unknown : null;
-    if (response) submissionElapsedMs = Date.now() - requestStartedAt;
+    submissionPhase = "JSON_PARSE";
+    const payload = response ? await response.json() as unknown : null;
+    submissionPhase = "WAITING_RESPONSE";
+    if (response && requestStartedAt) submissionElapsedMs = Date.now() - requestStartedAt;
     const apiError = extractApiError(payload);
 
     if (response && (!response.ok || apiError)) {
@@ -396,7 +416,8 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         costEstimate: estimateQwenImageCost(size),
         error: sanitizeErrorMessage(apiError || `DashScope Qwen-Image request failed with HTTP ${response.status}.`),
         errorCode: classifyQwenFailure(response.status, providerCode(payload), apiError || ""),
-        providerErrorCode: providerCode(payload), httpStatus: response.status, retryAfterMs: retryAfterMs(response), requestStartedAt, requestCompletedAt, submissionElapsedMs
+        providerErrorCode: providerCode(payload), httpStatus: response.status, retryAfterMs: retryAfterMs(response), requestStartedAt, requestCompletedAt, submissionElapsedMs, submissionDiagnostic,
+        networkFailure: { failurePhase: "HTTP_RESPONSE" }
       };
     }
 
@@ -423,7 +444,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
           costEstimate: estimateQwenImageCost(size),
           error: sanitizeErrorMessage(taskResult.error), errorCode: taskResult.errorCode,
           providerErrorCode: taskResult.providerErrorCode, httpStatus: taskResult.httpStatus, taskId,
-          retryAfterMs: taskResult.retryAfterMs, requestStartedAt, requestCompletedAt, submissionElapsedMs
+          retryAfterMs: taskResult.retryAfterMs, requestStartedAt, requestCompletedAt, submissionElapsedMs, submissionDiagnostic
         };
       }
 
@@ -443,7 +464,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         cacheStatus: "not-requested",
         costEstimate: estimateQwenImageCost(size),
         error: "DashScope Qwen-Image response did not include an image URL or task_id.", errorCode: "PROVIDER_ERROR",
-        httpStatus: response?.status, taskId, requestStartedAt, requestCompletedAt, submissionElapsedMs
+        httpStatus: response?.status, taskId, requestStartedAt, requestCompletedAt, submissionElapsedMs, submissionDiagnostic
       };
     }
 
@@ -463,7 +484,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         costEstimate: estimateQwenImageCost(size),
         error: sanitizeErrorMessage(cached.error || "Generated image could not be persisted privately."),
         errorCode: cached.failureStage === "download" ? "ASSET_DOWNLOAD_FAILED" : "ASSET_PERSIST_FAILED",
-        httpStatus: response?.status, taskId, requestStartedAt, requestCompletedAt, submissionElapsedMs, downloadElapsedMs
+        httpStatus: response?.status, taskId, requestStartedAt, requestCompletedAt, submissionElapsedMs, downloadElapsedMs, submissionDiagnostic
       };
     }
 
@@ -479,9 +500,10 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
       size,
       cacheStatus: cached.cacheStatus,
       costEstimate: estimateQwenImageCost(size),
-      referenceUsed: hasImageReference(input), httpStatus: response?.status, taskId, requestStartedAt, requestCompletedAt, submissionElapsedMs, downloadElapsedMs
+      referenceUsed: hasImageReference(input), httpStatus: response?.status, taskId, requestStartedAt, requestCompletedAt, submissionElapsedMs, downloadElapsedMs, submissionDiagnostic
     };
   } catch (error) {
+    networkFailure = requestStartedAt && !knownTaskId ? classifySubmissionFailure(error, submissionPhase) : undefined;
     return {
       success: false,
       provider: "dashscope",
@@ -492,7 +514,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
       costEstimate: estimateQwenImageCost(size),
       error: sanitizeErrorMessage(error),
       errorCode: knownTaskId ? "TASK_POLL_INTERRUPTED" : requestStartedAt ? "SUBMISSION_STATE_UNKNOWN" : classifyQwenFailure(undefined, undefined, sanitizeErrorMessage(error)),
-      taskId: knownTaskId, requestStartedAt, requestCompletedAt: Date.now(), submissionElapsedMs
+      taskId: knownTaskId, requestStartedAt, requestCompletedAt: Date.now(), submissionElapsedMs, submissionDiagnostic, networkFailure
     };
   }
 }
