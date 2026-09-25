@@ -164,6 +164,27 @@ describe("persistent model call logs", () => {
     expect(report.entries.some((entry) => entry.stage === "anchors")).toBe(false);
   });
 
+  it("exports a failed DeepSeek detailed-prompt task for the selected shot, never anchors", async () => {
+    await appendGenerationEvent(sessionMock.id, projectId, { stage: "anchors", provider: "system", action: "确认场景", status: "running", message: "场景已确认。" });
+    const prompt = await appendGenerationEvent(sessionMock.id, projectId, {
+      stage: "prompts", provider: "deepseek", action: "生成单镜详细提示词", status: "failed",
+      message: "镜头 1 详细提示词失败。", shotId: "shot-1", errorCode: "SCHEMA_VALIDATION_FAILED"
+    });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: prompt.id, jobId: prompt.runId, projectId,
+      stage: "prompts", provider: "deepseek", model: "deepseek-v4-pro", shotId: "shot-1", frameId: "frame-1",
+      status: "failed", startedAt: Date.now(), errorCode: "SCHEMA_VALIDATION_FAILED", schemaValid: false,
+      validationPath: "framePrompts.0.handState" });
+    const focused = await GET(new Request(`http://localhost/api/call-logs?projectId=${projectId}&stage=prompts&shotId=shot-1`));
+    const entries = (await focused.json()).data.entries as Array<{ stage: string; taskId: string; provider: string }>;
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry.stage === "prompts" && entry.taskId === prompt.id)).toBe(true);
+    const response = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&taskId=${prompt.id}&format=json`));
+    const report = await response.json() as { summary: { failedCalls: number }; entries: Array<{ provider: string; stage: string }> };
+    expect(report.summary.failedCalls).toBe(1);
+    expect(report.entries.some((entry) => entry.provider === "deepseek")).toBe(true);
+    expect(report.entries.some((entry) => entry.stage === "anchors")).toBe(false);
+  });
+
   it("clears only current-project diagnostic history without changing project content or version", async () => {
     const frame = await appendGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", status: "failed", message: "失败", shotId: "shot-1", frameId: "frame-1" });
     await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: frame.id, projectId, stage: "keyframes", provider: "qwen-image", model: "qwen-image-3.0", shotId: "shot-1", frameId: "frame-1", status: "failed", startedAt: Date.now() });

@@ -1,5 +1,6 @@
 import { callQwenImage } from "../image/qwenImageClient";
 import { generateQwenImageAdaptive } from "../image/qwenImageModelRouter";
+import { hasDuplicatedFramePrompts } from "../storyboard/keyframePlan";
 import { composeExactProductAsset } from "../image/exactProductComposite";
 import { estimateQwenImageCost } from "../image/imageCostEstimate";
 import { markPrivateAssetsLifecycle } from "../assets/assetStore";
@@ -145,6 +146,10 @@ async function generateShotImage(
         error: null
       };
     }
+  }
+
+  if (hasDuplicatedFramePrompts(safeShot)) {
+    return fallbackShotImage(shot, buildShotPrompt(shot), "同一镜头的关键帧提示词重复，请先重新生成该镜头的详细提示词。", Date.now() - startedAt, "KEYFRAME_PLAN_DUPLICATED");
   }
 
   const requiresExactComposite = containsProduct && productFidelityMode === "exact" && productShotType !== "packshot";

@@ -247,6 +247,29 @@ describe("second-stage API routes", () => {
     expect(JSON.stringify(body)).toContain("wan2.7-i2v");
   });
 
+  it("records a failed DeepSeek prompt attempt for only the requested shot", async () => {
+    process.env.AI_MODE = "real";
+    process.env.ENABLE_REAL_TEXT = "true";
+    process.env.DEEPSEEK_API_KEY = "sk-prompt-test-key";
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { code: "InvalidApiKey", message: "Invalid API key" } }), { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const shot = testProjectShots[0]!;
+    const response = await generateAssetsPOST(jsonRequest({ projectId: testProjectId, brief: coldBrewDemo.brief,
+      strategy: coldBrewDemo.strategy, shots: [shot], batchSize: 1 }));
+    const body = await responseJson(response);
+    expect(body.success).toBe(false);
+    const project = (await requireOwnedAnonymousProject("test-session", testProjectId)).project;
+    const promptEvent = [...(project.generationEvents ?? [])].reverse().find((item) => item.stage === "prompts" && item.shotId === shot.id);
+    expect(promptEvent).toMatchObject({ stage: "prompts", shotId: shot.id, status: "failed" });
+    const logs = await listModelCallLogs("test-session", { projectId: testProjectId, stage: "prompts", shotId: shot.id });
+    expect(logs.some((item) => item.kind === "call" && item.provider === "deepseek" && item.status === "failed" && item.taskId === promptEvent?.id)).toBe(true);
+    expect(logs.some((item) => item.provider === "qwen-image")).toBe(false);
+    const reportResponse = await exportCallLogs(new Request(`http://localhost/api/call-logs/export?projectId=${testProjectId}&taskId=${promptEvent!.id}&format=json`));
+    const report = await reportResponse.json() as { summary: { failedCalls: number }; entries: Array<{ stage: string }> };
+    expect(report.summary.failedCalls).toBeGreaterThan(0);
+    expect(report.entries.every((item) => item.stage === "prompts")).toBe(true);
+  });
+
 
   it("generate-images hero-only returns independent frames without video calls", async () => {
     const fetchMock = vi.fn();

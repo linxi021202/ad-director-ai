@@ -37,6 +37,7 @@ function promptSourceShot(shot: ShotPromptExpansionInput["shot"]) {
         imagePromptEn: _frameImagePromptEn,
         negativePromptCn: _frameNegativePromptCn,
         negativePromptEn: _frameNegativePromptEn,
+        keyframeMoment: _keyframeMoment,
         ...frameSource
       } = frame;
       return frameSource;

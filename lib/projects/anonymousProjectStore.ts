@@ -9,6 +9,7 @@ import { coldBrewDemo } from "@/lib/mock/coldBrewDemo";
 import { ensureProjectContinuity } from "@/lib/continuity/projectContinuity";
 import { buildPartialNarrationPlan } from "@/lib/audio/narrationPlan";
 import { ensureStoryboardArchitecture } from "@/lib/storyboard/shotArchitecture";
+import { planShotKeyframeMoments } from "@/lib/storyboard/keyframePlan";
 import {
   adStrategySchema,
   aspectRatioSchema,
@@ -1056,6 +1057,7 @@ function promptsFromShots(shots: StoryboardShot[]) {
 }
 
 function applyDetailedPromptPackage(shot: StoryboardShot, promptPackage: DetailedShotPromptPackage): StoryboardShot {
+  const moments = planShotKeyframeMoments(shot);
   const firstFrame = promptPackage.framePrompts[0];
   return {
     ...shot,
@@ -1068,8 +1070,15 @@ function applyDetailedPromptPackage(shot: StoryboardShot, promptPackage: Detaile
     continuityConstraints: promptPackage.continuityContext.immutableElements,
     frames: shot.frames?.map((frame, index) => {
       const expanded = promptPackage.framePrompts.find((item) => item.frameId === frame.id) ?? promptPackage.framePrompts[index];
+      const moment = moments.find((item) => item.frameId === frame.id);
       return expanded ? {
         ...frame,
+        ...(moment ? { keyframeMoment: {
+          ...moment, characterPose: expanded.characterPose, handState: expanded.handState,
+          gazeDirection: expanded.gazeDirection, facialExpression: expanded.facialExpression,
+          productPosition: expanded.productPosition, productOrientation: expanded.productOrientation,
+          cameraAngle: expanded.cameraAngle, environment: expanded.environment
+        } } : {}),
         imagePromptCn: expanded.imagePromptCn,
         imagePromptEn: expanded.imagePromptEn,
         negativePromptCn: expanded.negativePromptCn,

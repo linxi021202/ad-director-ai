@@ -33,6 +33,7 @@ export async function POST(request: Request) {
   if (!sessionResult.initialized) return sessionResult.response;
   const { session } = sessionResult;
   let eventId: string | undefined;
+  let activeShotEventId: string | undefined;
   let projectId: string | undefined;
 
   try {
@@ -64,7 +65,6 @@ export async function POST(request: Request) {
       progressTotal: promptInputs.length
     });
     eventId = event.id;
-
     const promptRoute = selectProviderModel({ taskType: "prompt" });
     const imageRoute = selectProviderModel({ taskType: "image", hasChineseText: true });
     const videoRoute = selectProviderModel({ taskType: "video", isHeroShot: true });
@@ -98,6 +98,11 @@ export async function POST(request: Request) {
     let totalLatencyMs = 0;
     for (const input of sourceInputs) {
       const shot = input.shot;
+      const shotEvent = sourceInputs.length === 1 ? event : await startGenerationEvent(session.id, projectId, {
+        stage: "prompts", provider: "deepseek", action: "生成单镜详细提示词", shotId: shot.id,
+        runId: event.runId, message: `正在生成镜头 ${shot.index} 的详细提示词。`
+      });
+      activeShotEventId = shotEvent.id;
       const inputFingerprint = buildShotPromptInputFingerprint(input);
       let checkpoint: DetailedShotPromptDraft = owned.project.shotPromptDrafts?.find((item) =>
         item.shotId === shot.id
@@ -109,13 +114,15 @@ export async function POST(request: Request) {
         inputFingerprint,
         framePrompts: []
       };
+      let shotHadFailedCall = false;
       const result = await expandShotPrompts(input, {
         sessionId: session.id,
         resumeShotPromptDraft: checkpoint,
         onModelCall: async (details) => {
           const endedAt = Date.now();
+          if (!details.success || details.schemaValid === false) shotHadFailedCall = true;
           await upsertModelCallLog(session.id, {
-            kind: "call", taskId: event.id, projectId: projectId!, stage: "prompts", provider: "deepseek",
+            kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId: projectId!, stage: "prompts", provider: "deepseek",
             model: details.model, pass: details.pass, shotId: details.shotId, frameId: details.frameId,
             mode: details.mode, attempt: details.attempt,
             status: details.success && details.schemaValid !== false ? "completed" : "failed",
@@ -139,9 +146,15 @@ export async function POST(request: Request) {
           const framesById = new Map([...checkpoint.framePrompts, frame].map((item) => [item.frameId, item]));
           checkpoint = { ...checkpoint, framePrompts: [...framesById.values()] };
           await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
+        },
+        onShotPromptPlanReset: async () => {
+          checkpoint = { ...checkpoint, framePrompts: [] };
+          await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
         }
       });
       totalLatencyMs += result.latencyMs;
+      let shotFailure: string | undefined;
+      let shotErrorCode: string | undefined;
       if (result.success && result.data) {
         const promptPackage: DetailedShotPromptPackage = {
           ...result.data,
@@ -152,8 +165,26 @@ export async function POST(request: Request) {
         if (review.passed) {
           packages.push(promptPackage);
           await saveOwnedShotPromptPackage(session.id, projectId, promptPackage, productSpec.spec);
-        } else failures.push(`镜头 ${shot.index}：详细提示词未通过完整性检查，请单独重试。`);
-      } else failures.push(`镜头 ${shot.index}：${promptExpansionPublicError(result.error)}`);
+        } else {
+          shotFailure = "详细提示词未通过完整性检查，请单独重试。";
+          shotErrorCode = "PROMPT_QUALITY_REVIEW_FAILED";
+          await upsertModelCallLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
+            stage: "prompts", provider: "system", mode: "quality-review", shotId: shot.id, status: "failed",
+            startedAt: Date.now(), errorCode: shotErrorCode, errorSummary: review.issues.join("；").slice(0, 500) });
+        }
+      } else {
+        shotFailure = promptExpansionPublicError(result.error);
+        shotErrorCode = promptFailureCode(result.error);
+        if (!shotHadFailedCall) await upsertModelCallLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
+          stage: "prompts", provider: "system", mode: "prompt-stage-validation", shotId: shot.id,
+          status: "failed", startedAt: Date.now(), errorCode: shotErrorCode,
+          errorSummary: result.error ?? "详细提示词在最终组装时未通过检查。" });
+      }
+      if (shotFailure) {
+        failures.push(`镜头 ${shot.index}：${shotFailure}`);
+        await failGenerationEvent(session.id, projectId, shotEvent.id, `镜头 ${shot.index} 详细提示词失败：${shotFailure}`, shotErrorCode);
+      } else await completeGenerationEvent(session.id, projectId, shotEvent.id, `镜头 ${shot.index} 的图片与视频提示词已保存。`, { latencyMs: result.latencyMs });
+      activeShotEventId = undefined;
       await updateGenerationEventProgress(
         session.id,
         projectId,
@@ -179,18 +210,13 @@ export async function POST(request: Request) {
     const shots = updated.project.shots;
     const completedCount = refreshedInputs.length - remainingShotIds.length;
 
-    if (failures.length) {
-      await failGenerationEvent(session.id, projectId, event.id, `已完成 ${completedCount} / ${refreshedInputs.length} 个镜头，失败镜头可直接续跑。`, "PROMPT_EXPANSION_PARTIAL_FAILURE");
-    } else {
-      await completeGenerationEvent(
-        session.id,
-        projectId,
-        event.id,
-        remainingShotIds.length
-          ? `本批已完成，系统将继续生成剩余 ${remainingShotIds.length} 个镜头。`
+    if (sourceInputs.length !== 1) {
+      if (failures.length) await failGenerationEvent(session.id, projectId, event.id,
+        `已完成 ${completedCount} / ${refreshedInputs.length} 个镜头，失败镜头可直接续跑。`, "PROMPT_EXPANSION_PARTIAL_FAILURE");
+      else await completeGenerationEvent(session.id, projectId, event.id,
+        remainingShotIds.length ? `本批已完成，系统将继续生成剩余 ${remainingShotIds.length} 个镜头。`
           : `已完成全部 ${completedCount} 个镜头的详细图片与视频提示词。`,
-        { status: "completed", latencyMs: totalLatencyMs, progressCurrent: completedCount, progressTotal: refreshedInputs.length }
-      );
+        { status: "completed", latencyMs: totalLatencyMs, progressCurrent: completedCount, progressTotal: refreshedInputs.length });
     }
 
     const plannedAssets = buildPlannedAssets(shots, imageRoute.model, videoRoute.model);
@@ -224,13 +250,20 @@ export async function POST(request: Request) {
       error: failures.length ? `${failures.length} 个镜头的详细提示词尚未完成，已保留成功结果。请重试当前步骤。` : null
     }, failures.length ? 207 : 200);
   } catch (error) {
+    if (activeShotEventId && projectId) {
+      await failGenerationEvent(session.id, projectId, activeShotEventId, "当前镜头详细提示词生成中断。", promptFailureCode(sanitizeApiError(error))).catch(() => undefined);
+    }
     if (eventId && projectId) {
-      await failGenerationEvent(session.id, projectId, eventId, "提示词生成失败，请检查模型配置后重试。").catch(() => undefined);
+      if (eventId !== activeShotEventId) await failGenerationEvent(session.id, projectId, eventId, "提示词生成失败，请检查模型配置后重试。").catch(() => undefined);
     }
     const projectError = projectStoreErrorResponse(error);
     if (projectError) return projectError;
     return apiJson({ success: false, data: null, trace: { route: "generate-assets", stage: "exception" }, fallbackUsed: false, error: promptExpansionPublicError(sanitizeApiError(error)) }, 500);
   }
+}
+
+function promptFailureCode(error?: string | null) {
+  return error?.match(/(?:DEEPSEEK_[A-Z_]+|MODEL_SCHEMA_DRIFT|JSON_PARSE_FAILED|SCHEMA_VALIDATION_FAILED|KEYFRAME_PLAN_DUPLICATED|KEYFRAME_TRANSITION_IMPLAUSIBLE|VAGUE_PROMPT)/)?.[0] ?? "PROVIDER_REQUEST_FAILED";
 }
 
 function promptExpansionPublicError(error?: string | null) {

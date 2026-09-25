@@ -35,6 +35,20 @@ describe("keyframe production workspace", () => {
     expect(html).toContain("1 / 4");
   });
 
+  it("labels two frames as timed moments in one shot", () => {
+    const frames = [0, 1].map((index) => ({ ...shot.frames![index]!, index, keyframeMoment: {
+      timestampSec: index ? 2.6 : 0.5, microBeatId: `beat-${index + 1}`,
+      narrativePurpose: index ? "完成握持" : "注意到产品", momentDescription: index ? "右手握住产品并抬起" : "右手仍在键盘旁",
+      continuityFromPreviousFrame: index ? "同一人物和办公室，右手已经拿起产品" : "建立同一人物与办公室",
+      characterPose: "坐在办公椅上", handState: index ? "握住产品" : "靠近键盘", gazeDirection: "看向产品",
+      facialExpression: "自然", productPosition: index ? "手中" : "桌上", productOrientation: "正面", cameraAngle: "侧前方", environment: "办公室"
+    } }));
+    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={{ ...project, shots: [{ ...shot, frames }] }} keyframes={[]} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
+    expect(html).toContain("关键帧 1 · 0.5 秒");
+    expect(html).toContain("1 / 2");
+    expect(html).not.toContain("候选方案");
+  });
+
   it("uses the same placeholder component in refinement and production", () => {
     const html = renderToStaticMarkup(<VisualAssetPlaceholder title="预览待生成" description="完成对应生成步骤后，这里将显示预览。" aspectRatio="16:9" />);
     expect(html).toContain("visual-asset-placeholder");

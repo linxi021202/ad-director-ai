@@ -575,11 +575,14 @@ function updateShotFrame(
 }
 
 function shotForFrame(shot: TargetShot, frame: ShotFrame): TargetShot {
+  const moment = frame.keyframeMoment;
+  const frameMoment = moment ? `关键帧时间 ${moment.timestampSec.toFixed(2)} 秒。画面目的：${moment.narrativePurpose}。确定状态：${moment.momentDescription}。人物姿态：${moment.characterPose}；手部：${moment.handState}；视线：${moment.gazeDirection}；产品位置：${moment.productPosition}；机位：${moment.cameraAngle}。与前一帧的连续性：${moment.continuityFromPreviousFrame}。` : "";
+  const backgroundMoment = moment ? `人物姿态：${moment.characterPose}；手部状态：${moment.handState}；视线：${moment.gazeDirection}；机位：${moment.cameraAngle}。` : "";
   return {
     ...shot,
     id: `${shot.id}--${frame.id}`,
-    visualDescription: frame.description,
-    imagePromptCn: `${frame.imagePromptCn}\n硬性要求：只生成一个冻结瞬间的一张完整全画幅图片。禁止分镜板、网格、拼贴、接触表、前后对比和多面板。`,
+    visualDescription: `${backgroundMoment}${frame.description}`,
+    imagePromptCn: `${frameMoment}\n${frame.imagePromptCn}\n硬性要求：只生成一个冻结瞬间的一张完整全画幅图片。禁止分镜板、网格、拼贴、接触表、前后对比和多面板。`,
     imagePromptEn: `${frame.imagePromptEn}\nHARD CONSTRAINT: Generate exactly one frozen moment as one full-frame image. No storyboard, grid, collage, contact sheet, before/after layout, split screen, or multiple panels.`,
     negativePromptCn: [frame.negativePromptCn, shot.negativePromptCn, "多面板，拼贴，分镜板，网格，接触表，前后对比，分屏，多时刻"].filter(Boolean).join("，"),
     negativePromptEn: [frame.negativePromptEn, shot.negativePromptEn, "multi-panel, collage, storyboard, grid, contact sheet, before-after, split screen, multiple moments"].filter(Boolean).join(", ")

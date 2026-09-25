@@ -216,6 +216,7 @@ export type ProviderRequestContext = {
   resumeShotPromptDraft?: DetailedShotPromptDraft;
   onShotPromptFoundation?: (foundation: DetailedShotPromptFoundation) => Promise<void>;
   onShotPromptFrame?: (frame: DetailedFramePrompt) => Promise<void>;
+  onShotPromptPlanReset?: () => Promise<void>;
 };
 
 export type TextProvider = {

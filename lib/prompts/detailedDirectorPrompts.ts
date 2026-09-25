@@ -11,6 +11,7 @@ import type {
 import { NO_READABLE_TEXT_CN, NO_READABLE_TEXT_EN } from "./noReadableText";
 import { SINGLE_FRAME_HARD_CONSTRAINT_CN, SINGLE_VIDEO_HARD_CONSTRAINT_CN } from "./singleComposition";
 import { serializeProductVisualSpecForPrompt } from "../visual/productVisualSpec";
+import { planShotKeyframeMoments } from "../storyboard/keyframePlan";
 
 export type ShotPromptExpansionInput = {
   brief: ProductBrief;
@@ -84,18 +85,22 @@ export function buildSingleFramePromptExpansionPrompt(
   compact = false
 ): string {
   const { brief, strategy, shot, productVisualSpec } = input;
+  const moments = planShotKeyframeMoments(shot);
+  const moment = moments.find((item) => item.frameId === frame.id);
+  const previousMoment = moments[frame.index - 1];
   return `你是商业广告关键帧提示词工程师。只生成镜头 ${shot.index} 的第 ${frame.index + 1} 帧，不生成其他帧、视频提示词、评分或导演基础包。只输出一个合法 JSON 对象。
 
 商品与画幅：${JSON.stringify({ productName: brief.productName, aspectRatio: brief.aspectRatio, platform: brief.platform, verifiedClaims: brief.verifiedClaims })}
 创意信息：${JSON.stringify({ coreMessage: strategy.coreMessage, emotionalArc: strategy.emotionalArc, visualStyle: strategy.visualStyle, pacing: strategy.pacing })}
 镜头结构：${JSON.stringify(compactShotContext(shot))}
-当前冻结瞬间：${JSON.stringify({ frameId: frame.id, timestampSec: frame.timestampSec, role: frame.role, description: frame.description })}
+当前冻结瞬间：${JSON.stringify({ frameId: frame.id, timestampSec: moment?.timestampSec ?? frame.timestampSec, role: frame.role, description: frame.description, microBeatId: moment?.microBeatId, narrativePurpose: moment?.narrativePurpose, momentDescription: moment?.momentDescription, continuityFromPreviousFrame: moment?.continuityFromPreviousFrame })}
+上一关键帧状态：${JSON.stringify(previousMoment ?? null)}
 导演基础：${JSON.stringify(foundation)}
 ${serializeProductVisualSpecForPrompt(productVisualSpec)}
 
 字段必须且只能是 frameId、timestampSec、role、frozenMoment、subject、subjectPosition、characterPose、facialExpression、gazeDirection、handState、productPosition、productOrientation、productScale、environment、foreground、middleGround、background、composition、cameraHeight、cameraAngle、lens、focalLength、aperture、depthOfField、lightingDirection、lightingQuality、keyLight、fillLight、practicalLights、shadowBehavior、reflections、materialDetails、colorDesign、atmosphere、spatialDepth、continuityConstraints、forbiddenChanges、imagePromptCn、imagePromptEn、negativePromptCn、negativePromptEn。
-- frameId、timestampSec、role 必须分别原样返回 ${JSON.stringify(frame.id)}、${frame.timestampSec}、${JSON.stringify(frame.role)}。
-- 只描述 ${frame.timestampSec.toFixed(2)} 秒这一个冻结瞬间，不得包含动作前后两个时刻。
+- frameId、timestampSec、role 必须分别原样返回 ${JSON.stringify(frame.id)}、${moment?.timestampSec ?? frame.timestampSec}、${JSON.stringify(frame.role)}。
+- 只描述 ${(moment?.timestampSec ?? frame.timestampSec).toFixed(2)} 秒这一个冻结瞬间，不得包含动作前后两个时刻。人物身份、服装、产品外观和场景结构与上一帧相同，但姿态、手部、视线、产品位置和动作阶段必须具体推进，不得只替换帧号。
 - imagePromptCn ${compact ? "控制在 400-480 个中文字符" : "控制在 400-600 个中文字符"}；imagePromptEn ${compact ? "控制在 120-180 个英文单词" : "控制在 160-240 个英文单词"}。
 - imagePromptCn 必须明确包含“单一完整”和“可读文字”，并以单帧约束收尾。
 - continuityConstraints 和 forbiddenChanges 各至少三项。

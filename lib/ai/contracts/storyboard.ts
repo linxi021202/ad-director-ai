@@ -117,7 +117,14 @@ export const shotFrameSchema = z.object({
   imagePromptCn: z.string().min(1), imagePromptEn: z.string().min(1),
   negativePromptCn: z.string().min(1).optional(), negativePromptEn: z.string().min(1).optional(),
   assetId: z.string().uuid().optional(), status: shotFrameStatusSchema.default("pending"), isLocked: z.boolean().default(false),
-  sceneStateBefore: sceneStateSchema.optional(), sceneStateAfter: sceneStateSchema.optional()
+  sceneStateBefore: sceneStateSchema.optional(), sceneStateAfter: sceneStateSchema.optional(),
+  keyframeMoment: z.object({
+    timestampSec: z.number().nonnegative(), microBeatId: z.string().optional(), narrativePurpose: z.string().min(1),
+    momentDescription: z.string().min(1), continuityFromPreviousFrame: z.string().min(1),
+    characterPose: z.string().min(1), handState: z.string().min(1), gazeDirection: z.string().min(1),
+    facialExpression: z.string().min(1), productPosition: z.string().min(1), productOrientation: z.string().min(1),
+    cameraAngle: z.string().min(1), environment: z.string().min(1)
+  }).strict().optional()
 }).strict();
 
 export const microBeatPurposeSchema = z.enum(["orient", "reveal", "demonstrate", "emphasize", "react", "transition", "resolve"]);

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider, expandShotPrompts } from "../lib/providers/deepseekProvider";
 import { ensureShotArchitecture } from "../lib/storyboard/shotArchitecture";
+import { planShotKeyframeMoments } from "../lib/storyboard/keyframePlan";
 
 const originalEnv = { ...process.env };
 
@@ -60,15 +61,17 @@ function promptFoundation(shotId: string, durationSec: number) {
   };
 }
 
-function expandedFrame(frame: NonNullable<ReturnType<typeof ensureShotArchitecture>["frames"]>[number]) {
-  const cn = `${"单一完整商业摄影画面，只呈现一个确定冻结瞬间。人物位于画面左侧，双手状态清楚，视线看向中景真实产品；产品包装正面、容器轮廓、比例、颜色区域与材质严格保持。前景桌角建立深度，中景承载人物和产品，背景办公室窗户与显示器保持稳定。机位位于人物视线高度，标准焦段，景深克制，主光从右侧进入，辅光压低阴影，反射不遮挡产品。".repeat(3)}画面不得出现任何可读文字。这是一张单一完整摄影画面，只描述一个确定时间点。`;
-  const en = "One complete frozen commercial frame with a stable subject, exact product identity, clear hand state, controlled foreground, middle ground and background, eye-level camera, standard lens, shallow depth of field, directional key light, restrained fill light, accurate materials, no readable text, no collage, and no split screen. ".repeat(3);
+function expandedFrame(frame: NonNullable<ReturnType<typeof ensureShotArchitecture>["frames"]>[number], shot: ReturnType<typeof ensureShotArchitecture>) {
+  const timestampSec = planShotKeyframeMoments(shot).find((item) => item.frameId === frame.id)!.timestampSec;
+  const moment = frame.index === 0 ? "右手停在键盘旁，产品仍完整放在桌面，人物刚看向产品" : frame.index === 1 ? "右手已伸到产品旁，指尖即将接触杯身，人物视线落在杯盖" : "右手已握住产品并抬离桌面，视线追随杯身，身体轻微坐直";
+  const cn = `${"单一完整商业摄影画面，只呈现一个确定冻结瞬间。人物位于画面左侧，双手状态清楚，视线看向中景真实产品；产品包装正面、容器轮廓、比例、颜色区域与材质严格保持。前景桌角建立深度，中景承载人物和产品，背景办公室窗户与显示器保持稳定。机位位于人物视线高度，标准焦段，景深克制，主光从右侧进入，辅光压低阴影，反射不遮挡产品。".repeat(3)}此刻${moment}。画面不得出现任何可读文字。这是一张单一完整摄影画面，只描述一个确定时间点。`;
+  const en = `${"One complete frozen commercial frame with a stable subject, exact product identity, clear hand state, controlled foreground, middle ground and background, eye-level camera, standard lens, shallow depth of field, directional key light, restrained fill light, accurate materials, no readable text, no collage, and no split screen. ".repeat(3)}At this moment, ${frame.index === 0 ? "the hand rests by the keyboard while the product stays on the desk" : frame.index === 1 ? "the fingertips approach the product while it remains on the desk" : "the hand holds the product above the desk as the person sits upright"}.`;
   return {
-    frameId: frame.id, timestampSec: frame.timestampSec, role: frame.role,
-    frozenMoment: "人物视线刚落到产品上且双手保持稳定的确定瞬间",
+    frameId: frame.id, timestampSec, role: frame.role,
+    frozenMoment: frame.index === 0 ? "人物视线刚落到产品上且双手保持稳定的确定瞬间" : `人物已完成第 ${frame.index + 1} 阶段动作并保持稳定的确定瞬间`,
     subject: "同一位已确认人物与真实产品", subjectPosition: "人物左侧，产品右侧中景", characterPose: "坐姿微前倾且肩膀放松",
-    facialExpression: "克制专注的表情", gazeDirection: "视线明确看向产品", handState: "双手完整可见且保持自然",
-    productPosition: "产品位于桌面右侧中景", productOrientation: "包装正面朝向摄影机", productScale: "占画面高度约八分之一",
+    facialExpression: "克制专注的表情", gazeDirection: "视线明确看向产品", handState: frame.index === 0 ? "右手保持在键盘旁" : `右手已靠近产品并完成第 ${frame.index + 1} 阶段动作`,
+    productPosition: frame.index === 0 ? "产品位于桌面右侧中景" : `产品处于第 ${frame.index + 1} 阶段稳定位置`, productOrientation: "包装正面朝向摄影机", productScale: "占画面高度约八分之一",
     environment: "同一办公室空间与桌面陈设", foreground: "虚化桌角与文件", middleGround: "人物双手和真实产品", background: "窗户、显示器和座椅",
     composition: "偏心三分构图并保留顶部安全区", cameraHeight: "人物视线高度", cameraAngle: "轻微侧前方", lens: "标准镜头", focalLength: "50mm", aperture: "f/2.8",
     depthOfField: "主体清晰且背景轻微虚化", lightingDirection: "从右侧窗户指向左侧", lightingQuality: "柔和而有方向的主光", keyLight: "右侧窗户柔光", fillLight: "左前方低强度补光",
@@ -292,9 +295,9 @@ describe("deepseekProvider", () => {
           ? mockDeepSeekResponse('{"shotId":', "length")
           : mockDeepSeekResponse(JSON.stringify(promptFoundation(shot.id, shot.durationSec))));
       }
-      const frame = frames.find((item) => prompt.includes(item.id));
+      const frame = frames.find((item) => prompt.includes(`第 ${item.index + 1} 帧`));
       if (!frame) throw new Error("未找到当前帧");
-      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame))));
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame, shot))));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -326,8 +329,8 @@ describe("deepseekProvider", () => {
         return Promise.resolve(mockDeepSeekResponse(JSON.stringify(valid)));
       }
       if (prompt.includes("导演基础包") && !prompt.includes("关键帧提示词工程师")) return Promise.resolve(mockDeepSeekResponse(JSON.stringify(invalid)));
-      const frame = frames.find((item) => prompt.includes(item.id));
-      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame!))));
+      const frame = frames.find((item) => prompt.includes(`第 ${item.index + 1} 帧`));
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame!, shot))));
     });
     vi.stubGlobal("fetch", fetchMock);
     const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
@@ -361,16 +364,16 @@ describe("deepseekProvider", () => {
   it("resumes a detailed prompt package from its saved foundation and completed frames", async () => {
     const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
     const frames = shot.frames ?? [];
-    const savedFrames = [expandedFrame(frames[0]!)];
+    const savedFrames = [expandedFrame(frames[0]!, shot)];
     const persistedFrameIds: string[] = [];
     const fetchMock = vi.fn().mockImplementation((_url, init) => {
       const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
       const prompt = body.messages.findLast((message) => message.role !== "system")?.content ?? "";
       expect(prompt).not.toContain("只生成镜头 1 的导演基础包");
-      expect(prompt).not.toContain(frames[0]!.id);
-      const frame = frames.slice(1).find((item) => prompt.includes(item.id));
+      expect(prompt).not.toContain("只生成镜头 1 的第 1 帧");
+      const frame = frames.slice(1).find((item) => prompt.includes(`第 ${item.index + 1} 帧`));
       if (!frame) throw new Error("未找到待续写帧");
-      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame))));
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(expandedFrame(frame, shot))));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -392,6 +395,41 @@ describe("deepseekProvider", () => {
     expect(result.data?.framePrompts).toHaveLength(frames.length);
     expect(fetchMock).toHaveBeenCalledTimes(Math.max(0, frames.length - 1));
     expect(persistedFrameIds).toEqual(frames.slice(1).map((frame) => frame.id));
+  });
+
+  it("rebuilds only the current shot's frame plan after duplicate frame prompts", async () => {
+    const original = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const shot = { ...original, frames: original.frames!.slice(0, 2) };
+    let frameCalls = 0;
+    let foundationCalls = 0;
+    let resets = 0;
+    const diagnostics: string[] = [];
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      const prompt = body.messages.findLast((message) => message.role === "user")?.content ?? "";
+      if (prompt.includes("导演基础包") && !prompt.includes("关键帧提示词工程师")) {
+        foundationCalls += 1;
+        return Promise.resolve(mockDeepSeekResponse(JSON.stringify(promptFoundation(shot.id, shot.durationSec))));
+      }
+      frameCalls += 1;
+      const index = prompt.includes("第 2 帧") ? 1 : 0;
+      const current = shot.frames![index]!;
+      const valid = expandedFrame(current, shot);
+      const duplicated = frameCalls <= 2 && index === 1 ? {
+        ...expandedFrame(shot.frames![0]!, shot), frameId: current.id, timestampSec: valid.timestampSec, role: current.role
+      } : valid;
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(duplicated)));
+    }));
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      onShotPromptPlanReset: async () => { resets += 1; },
+      onModelCall: async (details) => { if (details.errorCode) diagnostics.push(details.errorCode); }
+    });
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(foundationCalls).toBe(1);
+    expect(frameCalls).toBe(4);
+    expect(resets).toBe(1);
+    expect(diagnostics).toContain("KEYFRAME_PLAN_DUPLICATED");
+    expect(result.data!.framePrompts[0]!.handState).not.toBe(result.data!.framePrompts[1]!.handState);
   });
 
   it("honors a custom storyboard count and duration plan", async () => {

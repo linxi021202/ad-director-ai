@@ -34,6 +34,7 @@ import { repairShotProductTerminology } from "../visual/productTerminology";
 import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, TextProvider } from "./types";
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
 import { ensureShotArchitecture, ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
+import { planShotKeyframeMoments, validateDetailedKeyframePlan } from "../storyboard/keyframePlan";
 import {
   buildStoryboardRepairPrompt,
   mergeStoryboardChunks,
@@ -700,7 +701,8 @@ export async function generateCreativeDirectionSet(
 
 export async function expandShotPrompts(
   input: ShotPromptExpansionInput,
-  context?: ProviderRequestContext
+  context?: ProviderRequestContext,
+  planRetry = 0
 ): Promise<RealTextProviderResponse<DetailedShotPromptPackage>> {
   const startedAt = Date.now();
   const model = getDeepSeekRuntimeConfig().model;
@@ -730,6 +732,7 @@ export async function expandShotPrompts(
 
   const shot = ensureShotArchitecture(input.shot);
   const frames = shot.frames ?? [];
+  const plannedMoments = planShotKeyframeMoments(shot);
   const validFrameIds = new Set(frames.map((frame) => frame.id));
   const framePrompts: DetailedShotPromptPackage["framePrompts"] = (context?.resumeShotPromptDraft?.framePrompts ?? [])
     .filter((frame) => validFrameIds.has(frame.frameId));
@@ -739,7 +742,7 @@ export async function expandShotPrompts(
     const frameBatch = pendingFrames.slice(frameOffset, frameOffset + 2);
     const results = await Promise.all(frameBatch.map(async (frame) => {
       const frameSchema = detailedFramePromptSchema.superRefine((value, refinement) => {
-        if (value.frameId !== frame.id || value.timestampSec !== frame.timestampSec || value.role !== frame.role) {
+        if (value.frameId !== frame.id || value.timestampSec !== plannedMoments.find((item) => item.frameId === frame.id)?.timestampSec || value.role !== frame.role) {
           refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["frameId"], message: "FRAME_IDENTITY_MISMATCH" });
         }
         if (!["单一完整", "可读文字"].every((term) => value.imagePromptCn.includes(term))) {
@@ -774,6 +777,21 @@ export async function expandShotPrompts(
   const assembled = detailedShotPromptPackageSchema.safeParse({ ...foundationData, framePrompts: orderedFramePrompts });
   if (!assembled.success) {
     return failureResponse(model, Date.now() - startedAt, `MODEL_SCHEMA_DRIFT：${assembled.error.message}`, tokenUsage);
+  }
+  const planCheck = validateDetailedKeyframePlan(shot, assembled.data.framePrompts);
+  if (!planCheck.passed) {
+    await context?.onModelCall?.({ model, pass: "C", shotId: shot.id, frameId: planCheck.frameId,
+      attempt: planRetry + 1, mode: "keyframe-plan-validation", latencyMs: 0, success: false,
+      error: `${planCheck.code}：当前镜头的逐帧计划重复或无法自然衔接。`, errorCode: planCheck.code,
+      jsonParsed: true, schemaValid: false });
+    if (planRetry < 1) {
+      await context?.onShotPromptPlanReset?.();
+      return expandShotPrompts(input, { ...context, resumeShotPromptDraft: {
+        shotId: shot.id, schemaVersion: 2, inputFingerprint: context?.resumeShotPromptDraft?.inputFingerprint ?? "0".repeat(64),
+        foundation: foundationData, framePrompts: []
+      } }, planRetry + 1);
+    }
+    return failureResponse(model, Date.now() - startedAt, planCheck.code, tokenUsage);
   }
   const concreteTerms = ["机位", "焦段", "前景", "中景", "背景", "主光", "材质", "产品"];
   if (concreteTerms.filter((term) => assembled.data.directingNotesCn.includes(term) || assembled.data.framePrompts.some((frame) => frame.imagePromptCn.includes(term))).length < 6) {

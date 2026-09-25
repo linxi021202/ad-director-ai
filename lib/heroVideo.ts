@@ -131,6 +131,7 @@ export function buildOptimizedVideoPrompt(shot: StoryboardShot) {
     `视频策略：${strategy}。严格按以下时间编舞执行，每段只做一个简单、可见、可连续完成的动作：`,
     `阶段摘要：${opening.startSec}–${opening.endSec} 秒建立；${development.startSec}–${development.endSec} 秒推进；${closing.startSec}–${closing.endSec} 秒稳定收束。`,
     buildTimedChoreography(shot),
+    ...(shot.frames ?? []).filter((frame) => frame.keyframeMoment).map((frame) => `关键帧 ${frame.index + 1} 位于 ${frame.keyframeMoment!.timestampSec.toFixed(2)} 秒：${frame.keyframeMoment!.momentDescription}。${frame.keyframeMoment!.continuityFromPreviousFrame}`),
     `DeepSeek 视频提示词：${shot.videoPromptCn}`,
     "镜头运动仅使用缓慢推进或轻微横移，并允许自然、细微的光线变化。",
     "保持当前画幅比例、主体位置和场景构图，不新增人物，不新增其他产品。",

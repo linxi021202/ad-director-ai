@@ -92,7 +92,7 @@ export default function HomePage() {
 
       <section className="home-hero">
         <div className={`home-hero-copy ${exitClass}`}>
-          <h1>上传产品信息，一键生成广告</h1>
+          <h1>上传商品信息，智能生成广告</h1>
 
           <div className="home-actions">
             <Link href={workspaceTarget} onMouseEnter={() => router.prefetch(workspaceTarget)} onFocus={() => router.prefetch(workspaceTarget)} onClick={handleTransition(workspaceTarget)} className="home-primary-action">

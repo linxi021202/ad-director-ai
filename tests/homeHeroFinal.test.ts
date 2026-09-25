@@ -53,7 +53,7 @@ describe("homepage final hero", () => {
   });
 
   it("explains the staged generation flow on the homepage", () => {
-    expect(page).toContain("上传产品信息，一键生成广告");
+    expect(page).toContain("上传商品信息，智能生成广告");
     expect(page).toContain("开始制作广告");
     expect(page).not.toContain("home-hero-summary");
     for (const label of ["添加产品图片", "选择创意方向", "确认人物与场景", "制作分镜与视频"]) expect(page).toContain(label);
