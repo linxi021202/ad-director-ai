@@ -1,10 +1,12 @@
 import "server-only";
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { callQwenImage } from "@/lib/image/qwenImageClient";
+import { generateQwenImageAdaptive, type QwenModelAttempt } from "@/lib/image/qwenImageModelRouter";
+import type { QwenImageResult } from "@/lib/image/types";
+import { upsertModelCallLog } from "@/lib/logs/modelCallStore";
 import {
   AnonymousProjectVersionConflictError,
   mutateOwnedAnonymousProject,
@@ -46,7 +48,8 @@ const requestSchema = z.discriminatedUnion("action", [
     expectedVersion: z.number().int().positive(),
     kind: z.enum(["character", "scene"]),
     targetId: z.string().trim().min(1).max(120),
-    count: z.number().int().min(2).max(3).default(3)
+    count: z.number().int().min(1).max(3).default(3),
+    candidateIndex: z.number().int().min(1).max(3).optional()
   }).strict(),
   z.object({
     action: z.literal("set-current"),
@@ -168,6 +171,7 @@ async function generateCandidates(
   source: GenerationProject,
   body: Extract<z.infer<typeof requestSchema>, { action: "generate-candidates" }>
 ) {
+  if (body.candidateIndex && body.count !== 1) return failure("VISUAL_ANCHOR_INVALID_CANDIDATE", "补生成单个候选时数量必须为 1。", 400);
   const project = ensureVisualAnchorWorkspace(source);
   const target = body.kind === "character"
     ? project.visualAnchorWorkspace!.characterBriefs.find((item) => item.id === body.targetId)
@@ -182,58 +186,72 @@ async function generateCandidates(
     progressCurrent: 0,
     progressTotal: body.count
   });
-  const planned = body.kind === "character"
-    ? await generateCharacterCandidateDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], { sessionId, maxProviderAttempts: 1 })
-    : await generateSceneCandidateDirections(target as SceneVisualSpec, { sessionId, maxProviderAttempts: 1 });
-  const directions = (planned.success && planned.data ? planned.data : body.kind === "character"
-    ? fallbackCharacterDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number])
-    : fallbackSceneDirections(target as SceneVisualSpec)).slice(0, body.count);
   const setId = randomUUID();
-  const requested = Array.from({ length: body.count }, (_, index) => ({
-    id: randomUUID(),
-    index: index + 1,
-    direction: directions[index]!,
-    prompt: body.kind === "character"
-      ? buildCharacterCandidatePrompt(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], directions[index] as CharacterCandidateDirection)
-      : buildSceneCandidatePrompt(target as SceneVisualSpec, directions[index] as SceneCandidateDirection)
-  }));
+  const indexes = body.candidateIndex ? [body.candidateIndex] : Array.from({ length: body.count }, (_, index) => index + 1);
+  const candidateIds = new Map(indexes.map((index) => [index, randomUUID()]));
+  let candidatesStarted = false;
   try {
-    let results = await Promise.all(requested.map((candidate) => callQwenImage({
-      prompt: candidate.prompt,
-      negativePrompt: VISUAL_ANCHOR_NEGATIVE_PROMPT,
-      projectId,
-      shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}`,
-      sessionId,
-      size: body.kind === "character" ? "1152*2048" : "2048*1152",
-      watermark: false
-    }).catch((error) => ({ success: false as const, assetId: null, error: error instanceof Error ? error.message : "候选生成失败。" }))));
-    const initialAssetIds = results.flatMap((result) => result.success && result.assetId ? [result.assetId] : []);
+    const planned = body.kind === "character"
+      ? await generateCharacterCandidateDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], { sessionId, maxProviderAttempts: 1 })
+      : await generateSceneCandidateDirections(target as SceneVisualSpec, { sessionId, maxProviderAttempts: 1 });
+    const directions = planned.success && planned.data ? planned.data : body.kind === "character"
+      ? fallbackCharacterDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number])
+      : fallbackSceneDirections(target as SceneVisualSpec);
+    const requested = indexes.map((index) => ({ id: candidateIds.get(index)!, index, direction: directions[index - 1] }));
+    const runCandidate = async (candidate: (typeof requested)[number], repair = false, repairPrompt?: string) => {
+      const startedAt = Date.now();
+      let prompt: string;
+      try {
+        if (!candidate.direction) throw new Error(`候选 ${candidate.index} 缺少创意方向。`);
+        prompt = repairPrompt ?? (body.kind === "character"
+          ? buildCharacterCandidatePrompt(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], candidate.direction as CharacterCandidateDirection)
+          : buildSceneCandidatePrompt(target as SceneVisualSpec, candidate.direction as SceneCandidateDirection));
+      } catch (error) {
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, "PROMPT_BUILD_FAILED", error, startedAt, repair);
+        return { requestItem: { ...candidate, prompt: "" }, result: null };
+      }
+      const requestItem = { ...candidate, prompt };
+      let modelAttemptSeen = false;
+      try {
+        const result = await generateQwenImageAdaptive({
+          prompt, negativePrompt: VISUAL_ANCHOR_NEGATIVE_PROMPT, projectId,
+          shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}${repair ? "-repair" : ""}`,
+          sessionId, size: body.kind === "character" ? "1152*2048" : "2048*1152", watermark: false
+        }, (attempt) => {
+          modelAttemptSeen = true;
+          return logAnchorModelAttempt(sessionId, projectId, event, body.kind, candidate.id, candidate.index, attempt, repair);
+        });
+        if (!modelAttemptSeen) await logAnchorCandidateResult(sessionId, projectId, event, body.kind, candidate.id, candidate.index, result, startedAt, repair);
+        return { requestItem, result };
+      } catch (error) {
+        const phase = error instanceof Error && error.message === "SUBMISSION_STATE_UNKNOWN" ? "MODEL_SUBMISSION_FAILED"
+          : modelAttemptSeen ? "UNKNOWN" : "MODEL_ROUTING_FAILED";
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, phase, error, startedAt, repair);
+        return { requestItem, result: null };
+      }
+    };
+    candidatesStarted = true;
+    let results = await Promise.all(requested.map((candidate) => runCandidate(candidate)));
+    const initialAssetIds = results.flatMap(({ result }) => result?.success && result.assetId ? [result.assetId] : []);
     const diversity = await inspectCandidateDiversity({ kind: body.kind, assetIds: initialAssetIds, sessionId, projectId });
     if (!diversity.passed && initialAssetIds.length === body.count) {
       const repairIndexes = new Set(diversity.tooSimilarIndexes.slice(0, 2));
       results = await Promise.all(results.map(async (result, index) => {
         if (!repairIndexes.has(index + 1)) return result;
         const candidate = requested[index]!;
-        const repaired = await callQwenImage({
-          prompt: `${candidate.prompt}\n多样性修复：上一版与其他方案过于相似。必须强化本方向的独有脸型/空间拓扑、轮廓、材质和构图差异，同时保持角色或场景功能不变。`,
-          negativePrompt: VISUAL_ANCHOR_NEGATIVE_PROMPT,
-          projectId,
-          shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}-repair`,
-          sessionId,
-          size: body.kind === "character" ? "1152*2048" : "2048*1152",
-          watermark: false
-        }).catch((error) => ({ success: false as const, assetId: null, error: error instanceof Error ? error.message : "候选修复失败。" }));
-        return repaired.success && repaired.assetId ? repaired : result;
+        const repaired = await runCandidate(candidate,
+          true, `${result.requestItem.prompt}\n多样性修复：上一版与其他方案过于相似。必须强化本方向的独有脸型/空间拓扑、轮廓、材质和构图差异，同时保持角色或场景功能不变。`);
+        return repaired.result?.success && repaired.result.assetId ? { ...result, result: repaired.result } : result;
       }));
     }
-    const successful = results.flatMap((result, index) => {
-      if (!result.success || !result.assetId) return [];
-      return [{ requestItem: requested[index]!, result }];
-    });
+    const successful = results.filter((item): item is { requestItem: (typeof results)[number]["requestItem"]; result: QwenImageResult } => Boolean(item.result?.success && item.result.assetId));
     if (successful.length === 0) {
-      const firstFailure = results.find((result) => result.error);
+      const firstCode = results.find((item) => item.result?.errorCode)?.result?.errorCode;
       await failGenerationEvent(sessionId, projectId, event.id, "本次候选均未生成成功，已有候选保持不变。", "PROVIDER_REQUEST_FAILED");
-      return failure("VISUAL_ANCHOR_GENERATION_FAILED", firstFailure?.error ?? "候选生成失败。", 502);
+      const guidance = firstCode === "INSUFFICIENT_BALANCE" ? "模型服务账户余额不足，请检查当前 Qwen 密钥对应账户。"
+        : firstCode === "AUTH_FAILED" ? "Qwen 密钥未通过验证，请在模型设置中检查。"
+        : "本次候选均未生成成功，请查看对应候选的调用日志。";
+      return failure("VISUAL_ANCHOR_GENERATION_FAILED", guidance, 502);
     }
     const now = new Date().toISOString();
     const nextVersion = Math.max(0, ...(project.visualAnchorWorkspace![body.kind === "character" ? "characterCandidates" : "sceneCandidates"]
@@ -242,9 +260,10 @@ async function generateCandidates(
     const candidates: VisualAnchorCandidate[] = successful.map(({ requestItem, result }, index) => ({
       id: requestItem.id,
       kind: body.kind,
+      candidateIndex: requestItem.index,
       targetId: body.targetId,
       assetId: result.assetId!,
-      label: `${body.kind === "character" ? "人物" : "场景"}方案 ${index + 1}`,
+      label: `${body.kind === "character" ? "人物" : "场景"}方案 ${requestItem.index}`,
       prompt: requestItem.prompt,
       directionTitle: requestItem.direction.title,
       directionSummary: requestItem.direction.differentiation,
@@ -255,7 +274,7 @@ async function generateCandidates(
       version: nextVersion,
       createdAt: now
     }));
-    await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => replaceVisualAnchorCandidates(latest, body.kind, body.targetId, candidates, now));
+    await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => replaceVisualAnchorCandidates(latest, body.kind, body.targetId, candidates, now, successful.length < body.count || Boolean(body.candidateIndex)));
     const failedCount = body.count - candidates.length;
     await completeGenerationEvent(sessionId, projectId, event.id, failedCount
       ? `已保留 ${candidates.length} 个成功候选，另有 ${failedCount} 个生成失败，可单独重试本模块。`
@@ -267,9 +286,103 @@ async function generateCandidates(
     const final = await requireOwnedAnonymousProject(sessionId, projectId);
     return NextResponse.json({ success: true, data: publicAnonymousProject(final) });
   } catch (error) {
+    if (!candidatesStarted) await Promise.all(indexes.map((index) => logAnchorCandidateFailure(sessionId, projectId, event, body.kind,
+      candidateIds.get(index)!, index, "PROMPT_BUILD_FAILED", error, event.startedAt).catch(() => undefined)));
     await failGenerationEvent(sessionId, projectId, event.id, "视觉候选生成失败。", "PROVIDER_REQUEST_FAILED").catch(() => undefined);
     throw error;
   }
+}
+
+type AnchorFailurePhase = "PROMPT_BUILD_FAILED" | "REFERENCE_ASSET_LOAD_FAILED" | "REFERENCE_URL_BUILD_FAILED"
+  | "MODEL_ROUTING_FAILED" | "MODEL_REQUEST_FAILED" | "MODEL_SUBMISSION_FAILED"
+  | "MODEL_GENERATION_FAILED" | "OUTPUT_PARSE_FAILED" | "ASSET_DOWNLOAD_FAILED"
+  | "ASSET_PERSIST_FAILED" | "UNKNOWN";
+
+function anchorFailurePhase(result: QwenImageResult): AnchorFailurePhase | undefined {
+  if (result.success && result.assetId) return undefined;
+  if (result.errorCode === "ASSET_DOWNLOAD_FAILED") return "ASSET_DOWNLOAD_FAILED";
+  if (result.errorCode === "ASSET_PERSIST_FAILED" || (result.success && !result.assetId)) return "ASSET_PERSIST_FAILED";
+  if (result.errorCode === "SUBMISSION_STATE_UNKNOWN") return "MODEL_SUBMISSION_FAILED";
+  if (result.errorCode === "TASK_POLL_INTERRUPTED") return "MODEL_GENERATION_FAILED";
+  if (result.networkFailure?.failurePhase === "JSON_PARSE") return "OUTPUT_PARSE_FAILED";
+  if (result.taskId) return "MODEL_GENERATION_FAILED";
+  if (result.errorCode === "PROVIDER_NOT_CONFIGURED" || result.errorCode === "MODEL_NOT_AVAILABLE") return "MODEL_ROUTING_FAILED";
+  return result.httpStatus || result.requestStartedAt ? "MODEL_REQUEST_FAILED" : "MODEL_ROUTING_FAILED";
+}
+
+async function logAnchorModelAttempt(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
+  anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, attempt: QwenModelAttempt, repair: boolean) {
+  const logId = anchorAttemptId(event.id, candidateId, `${repair ? "repair" : "initial"}:${attempt.model}:${attempt.attempt}`);
+  await upsertModelCallLog(sessionId, {
+    id: logId, kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
+    anchorType, candidateId, candidateIndex, model: attempt.model, attempt: attempt.attempt, mode: attempt.mode,
+    status: attempt.status, startedAt: attempt.startedAt, completedAt: attempt.completedAt,
+    requestStartedAt: attempt.status === "blocked" ? undefined : attempt.submissionDiagnostic?.requestStartedAt ?? attempt.startedAt,
+    requestCompletedAt: attempt.status === "blocked" ? undefined : attempt.completedAt,
+    durationMs: Math.max(0, attempt.completedAt - attempt.startedAt),
+    referenceImageCount: attempt.referenceCount, referenceImagesIncluded: attempt.referenceCount > 0,
+    errorCode: attempt.errorCode, providerErrorCode: attempt.providerErrorCode, errorSummary: attempt.error,
+    httpStatus: attempt.httpStatus, providerRequestId: attempt.requestId, providerTaskId: attempt.taskId,
+    finalAssetId: attempt.assetId, ...(attempt.assetId ? { outputAssetIds: [attempt.assetId] } : {}),
+    failurePhase: attempt.status === "failed" ? anchorFailurePhase({ success: false, provider: "dashscope", model: attempt.model,
+      latencyMs: 0, size: attempt.size, errorCode: attempt.errorCode, httpStatus: attempt.httpStatus,
+      taskId: attempt.taskId, networkFailure: attempt.networkFailure,
+      requestStartedAt: attempt.submissionDiagnostic?.requestStartedAt }) : undefined,
+    errorName: attempt.networkFailure?.errorName, causeCode: attempt.networkFailure?.causeCode,
+    requestHost: attempt.submissionDiagnostic?.requestHost, requestPath: attempt.submissionDiagnostic?.requestPath,
+    region: attempt.submissionDiagnostic?.region, workspaceIdMasked: attempt.submissionDiagnostic?.workspaceIdMasked,
+    apiMode: attempt.submissionDiagnostic?.apiMode, payloadBytes: attempt.submissionDiagnostic?.payloadBytes,
+    submissionTimeoutMs: attempt.submissionDiagnostic?.timeoutMs,
+    referenceSourceTypes: attempt.submissionDiagnostic?.referenceTypes,
+    networkErrorName: attempt.networkFailure?.errorName, networkErrorMessage: attempt.networkFailure?.errorMessage,
+    networkCauseCode: attempt.networkFailure?.causeCode, networkCauseErrno: attempt.networkFailure?.causeErrno,
+    networkCauseSyscall: attempt.networkFailure?.causeSyscall,
+    requestOptions: { size: attempt.size, referenceCount: attempt.referenceCount,
+      endpointMode: attempt.model === "qwen-image-3.0" ? "dashscope-async" : "dashscope-sync",
+      promptExtend: attempt.promptExtend, watermark: attempt.watermark }
+  });
+}
+
+async function logAnchorCandidateResult(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
+  anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, result: QwenImageResult,
+  startedAt: number, repair: boolean) {
+  await upsertModelCallLog(sessionId, {
+    id: anchorAttemptId(event.id, candidateId, repair ? "repair:summary" : "initial:summary"),
+    kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
+    anchorType, candidateId, candidateIndex, model: result.model, attempt: 1, mode: "anchor-candidate",
+    status: result.success && result.assetId ? "completed" : "failed", startedAt,
+    completedAt: Date.now(), durationMs: Date.now() - startedAt,
+    requestStartedAt: result.requestStartedAt, requestCompletedAt: result.requestCompletedAt,
+    referenceImageCount: result.referenceUsed ? 1 : 0, referenceImagesIncluded: Boolean(result.referenceUsed),
+    errorCode: result.errorCode, providerErrorCode: result.providerErrorCode, errorSummary: result.error,
+    httpStatus: result.httpStatus, providerRequestId: result.requestId, providerTaskId: result.taskId,
+    finalAssetId: result.assetId, ...(result.assetId ? { outputAssetIds: [result.assetId] } : {}),
+    failurePhase: anchorFailurePhase(result), errorName: result.networkFailure?.errorName,
+    causeCode: result.networkFailure?.causeCode
+  });
+}
+
+async function logAnchorCandidateFailure(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
+  anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, failurePhase: AnchorFailurePhase,
+  error: unknown, startedAt: number, repair = false) {
+  const cause = error instanceof Error && "cause" in error && error.cause && typeof error.cause === "object"
+    ? error.cause as { code?: unknown } : undefined;
+  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : failurePhase;
+  await upsertModelCallLog(sessionId, {
+    id: anchorAttemptId(event.id, candidateId, repair ? "repair:exception" : "initial:exception"),
+    kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
+    anchorType, candidateId, candidateIndex, model: "未调用", attempt: 1, mode: "anchor-candidate",
+    status: "failed", startedAt, completedAt: Date.now(), durationMs: Date.now() - startedAt,
+    referenceImageCount: 0, referenceImagesIncluded: false, failurePhase,
+    errorCode: code.slice(0, 80), errorName: error instanceof Error ? error.name : typeof error,
+    errorSummary: error instanceof Error ? error.message : String(error),
+    causeCode: typeof cause?.code === "string" ? cause.code.slice(0, 80) : undefined
+  });
+}
+
+function anchorAttemptId(eventId: string, candidateId: string, suffix: string) {
+  const digest = createHash("sha256").update(`${eventId}:${candidateId}:${suffix}`).digest("hex");
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 
 async function setCurrentCandidate(

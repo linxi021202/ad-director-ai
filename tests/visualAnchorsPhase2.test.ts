@@ -127,6 +127,23 @@ describe("Phase 2 visual anchors", () => {
     expect(project.visualAnchorWorkspace?.characterSelections?.[0]).toMatchObject({ status: "generated", setVersion: 2 });
   });
 
+  it("keeps the previous image for a failed slot during a partial candidate refresh", () => {
+    let project = anchorProject();
+    const targetId = project.sceneVisualSpecs![0]!.id;
+    const original = makeCandidates("scene", targetId, sceneAssetIds).map((item, index) => ({ ...item, candidateIndex: index + 1 }));
+    project = replaceVisualAnchorCandidates(project, "scene", targetId, original);
+    const refreshed = [original[0]!, original[2]!].map((item, index) => ({
+      ...item, id: crypto.randomUUID(), candidateIndex: index === 0 ? 1 : 3,
+      assetId: characterAssetIds[index]!, version: 2, setVersion: 2
+    }));
+    project = replaceVisualAnchorCandidates(project, "scene", targetId, refreshed, new Date().toISOString(), true);
+    const active = project.visualAnchorWorkspace!.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated");
+    expect(active.map((item) => item.candidateIndex).sort()).toEqual([1, 2, 3]);
+    expect(active.find((item) => item.candidateIndex === 2)?.assetId).toBe(sceneAssetIds[1]);
+    expect(active.find((item) => item.candidateIndex === 1)?.assetId).toBe(characterAssetIds[0]);
+    expect(active.find((item) => item.candidateIndex === 3)?.assetId).toBe(characterAssetIds[1]);
+  });
+
   it("keeps night and bright states inside one Scene Identity with stable spatial anchors", () => {
     const architecture = buildProjectContinuity({
       brief: coldBrewDemo.brief,
@@ -359,11 +376,12 @@ describe("Phase 2 visual anchors", () => {
     expect(response.status).toBe(404);
   });
 
-  it("issues one Qwen call per candidate instead of asking for a contact sheet", async () => {
+  it("uses the adaptive Qwen router for each candidate instead of asking for a contact sheet", async () => {
     const source = await readFile("app/api/projects/[projectId]/visual-anchors/route.ts", "utf8");
-    expect(source).toContain("Promise.all(requested.map((candidate) => callQwenImage");
-    expect(source).toContain("shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}`");
-    expect(source).toContain("count: z.number().int().min(2).max(3)");
+    expect(source).toContain("Promise.all(requested.map((candidate) => runCandidate(candidate)))");
+    expect(source).toContain("generateQwenImageAdaptive({");
+    expect(source).toContain("shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}${repair ? \"-repair\" : \"\"}`");
+    expect(source).toContain("count: z.number().int().min(1).max(3)");
     expect(source).toContain("generateCharacterCandidateDirections");
     expect(source).toContain("inspectCandidateDiversity");
     expect(source).toContain("repairIndexes");

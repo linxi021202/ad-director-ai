@@ -323,6 +323,7 @@ export const sceneCandidateDirectionSchema = z.object({
 export const visualAnchorCandidateSchema = z.object({
   id: z.string().uuid(),
   kind: visualAnchorCandidateKindSchema,
+  candidateIndex: z.number().int().min(1).max(3).optional(),
   targetId: z.string().min(1),
   assetId: z.string().uuid(),
   label: z.string().min(1).max(120),

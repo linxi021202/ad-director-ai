@@ -132,22 +132,28 @@ export function replaceVisualAnchorCandidates(
   kind: VisualAnchorCandidateKind,
   targetId: string,
   candidates: VisualAnchorCandidate[],
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  preserveUnreplaced = false
 ): GenerationProject {
   const normalized = ensureVisualAnchorWorkspace(project, now);
   const workspace = normalized.visualAnchorWorkspace!;
   const key = kind === "character" ? "characterCandidates" : "sceneCandidates";
+  const replacedIndexes = new Set(candidates.map((candidate) => candidate.candidateIndex ?? Number(candidate.label.match(/方案\s*(\d+)/)?.[1])));
   const previous = workspace[key].map((candidate) => candidate.targetId === targetId
+    && (!preserveUnreplaced || replacedIndexes.has(candidate.candidateIndex ?? Number(candidate.label.match(/方案\s*(\d+)/)?.[1])))
     ? { ...candidate, status: "outdated" as const }
     : candidate);
   const selectionKey = kind === "character" ? "characterSelections" : "sceneSelections";
   const setVersion = Math.max(...candidates.map((candidate) => candidate.setVersion ?? candidate.version));
+  const priorSelection = workspace[selectionKey]?.find((item) => item.targetId === targetId);
+  const selectedStillActive = preserveUnreplaced && previous.some((item) => item.id === priorSelection?.selectedCandidateId && item.status !== "outdated");
   const selections = upsertSelection(workspace[selectionKey] ?? [], {
     kind,
     targetId,
-    status: "generated",
+    status: selectedStillActive ? priorSelection!.status : "generated",
     setVersion,
-    confirmedCandidateId: workspace[selectionKey]?.find((item) => item.targetId === targetId)?.confirmedCandidateId,
+    ...(selectedStillActive ? { selectedCandidateId: priorSelection!.selectedCandidateId } : {}),
+    confirmedCandidateId: priorSelection?.confirmedCandidateId,
     updatedAt: now
   });
   return applyVisualAnchorReadiness({

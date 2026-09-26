@@ -1010,7 +1010,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }
 
-  async function generateVisualAnchorCandidates(kind: VisualAnchorCandidateKind, targetId: string) {
+  async function generateVisualAnchorCandidates(kind: VisualAnchorCandidateKind, targetId: string, candidateIndex?: number) {
     if (!modelStatus?.qwenImage.configured) {
       const guidance = `生成${kind === "character" ? "人物" : "场景"}候选前需要配置 Qwen-Image。`;
       setError(guidance);
@@ -1018,7 +1018,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       return;
     }
     try {
-      await postAnchorAction({ action: "generate-candidates", kind, targetId, count: 3 }, `generate:${kind}:${targetId}`);
+      await postAnchorAction({ action: "generate-candidates", kind, targetId, count: candidateIndex ? 1 : 3,
+        ...(candidateIndex ? { candidateIndex } : {}) }, `generate:${kind}:${targetId}`);
       setTraceLabel(`${kind === "character" ? "人物" : "场景"}候选已生成，等待选择`);
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "视觉候选生成失败。");
@@ -1346,7 +1347,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               onConfirmProduct={() => void lockVisualMaster("product")}
               onSetMainProduct={(imageId) => void updateAnchorProductImages(setMainProductImage(activeProject.brief.productImages ?? [], imageId))}
               onRemoveProductReference={(imageId) => void updateAnchorProductImages(removeProductImage(activeProject.brief.productImages ?? [], imageId))}
-              onGenerateCandidates={(kind, targetId) => void generateVisualAnchorCandidates(kind, targetId)}
+              onGenerateCandidates={(kind, targetId, candidateIndex) => void generateVisualAnchorCandidates(kind, targetId, candidateIndex)}
               onSetCurrent={(kind, targetId, candidateId) => void setCurrentVisualAnchor(kind, targetId, candidateId)}
               onConfirmTarget={(kind, targetId) => void lockVisualMaster(kind, targetId)}
               onConfirmSelection={() => void confirmVisualSelection()}
