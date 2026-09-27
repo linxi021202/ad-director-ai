@@ -68,7 +68,7 @@ describe("stage-gated quality fix", () => {
 
   it("keeps successful visual assets when sibling requests fail", () => {
     const route = readFileSync("app/api/projects/[projectId]/visual-anchors/route.ts", "utf8");
-    expect(route).toContain("Promise.all(requested.map((candidate)");
+    expect(route).toContain("for (const candidate of requested) results.push(await runCandidate(candidate))");
     expect(route).toContain(".catch((error) =>");
     expect(route).toContain("successful.length === 0");
     expect(route).toContain("成功候选");

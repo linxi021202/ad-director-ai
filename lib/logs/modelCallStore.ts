@@ -16,6 +16,7 @@ const modelCallLogSchema = z.object({
   projectId: z.string().uuid(),
   stage: z.string().min(1).max(40),
   provider: z.string().min(1).max(40),
+  taskType: z.enum(["character_candidate", "scene_candidate_text_only", "scene_candidate_with_product_reference", "keyframe_generation", "keyframe_regeneration"]).optional(),
   model: z.string().max(100).optional(),
   mode: z.string().max(80).optional(),
   pass: z.enum(["A", "B", "C", "D"]).optional(),

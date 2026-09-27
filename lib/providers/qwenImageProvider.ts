@@ -1,5 +1,5 @@
-import { callQwenImage } from "../image/qwenImageClient";
 import { generateQwenImageAdaptive } from "../image/qwenImageModelRouter";
+import { qwenImageUserMessage } from "../image/qwenImageErrors";
 import { hasDuplicatedFramePrompts } from "../storyboard/keyframePlan";
 import { composeExactProductAsset } from "../image/exactProductComposite";
 import { estimateQwenImageCost } from "../image/imageCostEstimate";
@@ -41,7 +41,7 @@ function shotFallbackImage(shot: StoryboardShot) {
 }
 
 function getDefaultModel() {
-  return process.env.QWEN_IMAGE_MODEL || "qwen-image";
+  return "qwen-image-edit-max-2026-01-16";
 }
 
 function getDefaultSize() {
@@ -216,6 +216,10 @@ async function generateShotImage(
     ...(continuityReferenceImage ? [{ image: continuityReferenceImage, role: "continuity" as const }] : [])
   ].slice(0, 3);
   const referenceImages = referenceEntries.map((entry) => entry.image);
+  if (!referenceImages.length) {
+    return fallbackShotImage(shot, buildShotPrompt(shot), "关键帧缺少已确认的参考图，请检查人物、场景或产品素材。",
+      Date.now() - startedAt, "REFERENCE_IMAGE_REQUIRED");
+  }
   const hasProductReference = referenceEntries.some((entry) => entry.role === "product");
   const productReferenceIndexes = referenceEntries
     .map((entry, index) => entry.role === "product" ? index + 1 : 0)
@@ -250,6 +254,8 @@ async function generateShotImage(
   ].filter(Boolean).join("\n");
 
   const result = await generateQwenImageAdaptive({
+    taskType: options?.imageTaskType ?? "keyframe_generation",
+    requiredCapabilities: { referenceImageInput: true, highConsistency: true },
     prompt,
     ...(referenceImages.length ? { referenceImages } : {}),
     negativePrompt: hasProductReference ? PRODUCT_REFERENCE_QWEN_NEGATIVE_PROMPT : DEFAULT_QWEN_NEGATIVE_PROMPT,
@@ -268,7 +274,7 @@ async function generateShotImage(
     return fallbackShotImage(
       shot,
       prompt,
-      `Qwen-Image keyframe generation failed for shot ${shot.index}: ${result.error ?? "unknown error"}. Used placeholder image fallback.`,
+      `镜头 ${shot.index} 的关键帧生成失败：${qwenImageUserMessage(result.errorCode)} 调用日志保留了真实错误。`,
       result.latencyMs || Date.now() - startedAt,
       result.errorCode,
       result.model
@@ -378,7 +384,8 @@ async function generateBatchShotImages(
 export const qwenImageProvider: ImageProvider = {
   provider: "qwenImageProvider",
   async generateImage(prompt: string, options: ImageGenerationOptions): Promise<ProviderResponse<ImageGenerationResult>> {
-    const result = await callQwenImage({
+    const result = await generateQwenImageAdaptive({
+      taskType: "scene_candidate_text_only",
       prompt: appendNoReadableTextRules([
         prompt,
         "9:16竖版广告关键帧，小红书/抖音短视频质感，产品外观清晰稳定，包装可读区域不得由模型重绘。"

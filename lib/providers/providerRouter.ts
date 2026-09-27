@@ -47,7 +47,7 @@ function getDeepSeekModel(): string {
 }
 
 function getQwenImageModel(): string {
-  return process.env.QWEN_IMAGE_MODEL || "qwen-image";
+  return "Qwen 自动路由";
 }
 
 function getQwenImageSize(): string {

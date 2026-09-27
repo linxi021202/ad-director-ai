@@ -46,6 +46,7 @@ export type ImageGenerationOptions = {
   costMode?: CostMode;
   qualityMode?: QualityMode;
   sessionId?: string;
+  imageTaskType?: "keyframe_generation" | "keyframe_regeneration";
   productImage?: ProductImage;
   productImages?: ProductImage[];
   continuityImageAssetId?: string;
@@ -53,6 +54,7 @@ export type ImageGenerationOptions = {
   masterReferenceAssetIdsByShot?: Record<string, string[]>;
   productVisualSpec?: ProductVisualSpec;
   onModelAttempt?: (attempt: {
+    taskType: import("../image/types").QwenImageTaskType;
     model: string; attempt: number; status: "completed" | "failed" | "blocked" | "running";
     startedAt: number; completedAt: number; errorCode?: string; error?: string;
     providerErrorCode?: string; httpStatus?: number; requestId?: string; taskId?: string;

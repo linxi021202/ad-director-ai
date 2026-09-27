@@ -5,6 +5,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { generateQwenImageAdaptive, type QwenModelAttempt } from "@/lib/image/qwenImageModelRouter";
+import { qwenImageUserMessage } from "@/lib/image/qwenImageErrors";
+import { readProductReferenceDataUrl, selectPrimaryProductImage } from "@/lib/image/productReference";
 import type { QwenImageResult } from "@/lib/image/types";
 import { upsertModelCallLog } from "@/lib/logs/modelCallStore";
 import {
@@ -27,7 +29,7 @@ import type {
 } from "@/lib/schemas/project";
 import { getAnonymousApiSession } from "@/lib/session/api";
 import { StageGateError, createResourceVersionInProject, currentResourceVersion } from "@/lib/workflow/stageGates";
-import { buildCharacterCandidatePrompt, buildSceneCandidatePrompt, VISUAL_ANCHOR_NEGATIVE_PROMPT } from "@/lib/visual/anchorPrompts";
+import { buildCharacterCandidatePrompt, buildSceneCandidatePrompt, sceneRequiresProductReference, PRODUCT_SCENE_NEGATIVE_PROMPT, VISUAL_ANCHOR_NEGATIVE_PROMPT } from "@/lib/visual/anchorPrompts";
 import { resolveProjectProductVisualSpec } from "@/lib/visual/productVisualSpec";
 import { fallbackCharacterDirections, fallbackSceneDirections, inspectCandidateDiversity } from "@/lib/visual/candidateDirections";
 import {
@@ -177,6 +179,7 @@ async function generateCandidates(
     ? project.visualAnchorWorkspace!.characterBriefs.find((item) => item.id === body.targetId)
     : project.sceneVisualSpecs?.find((item) => item.id === body.targetId);
   if (!target) return failure("VISUAL_ANCHOR_TARGET_NOT_FOUND", "没有找到对应的视觉基准需求。", 404);
+  const needsProductReference = body.kind === "scene" && sceneRequiresProductReference(target as SceneVisualSpec, project.brief.productName);
 
   const event = await startGenerationEvent(sessionId, projectId, {
     stage: "anchors",
@@ -197,6 +200,7 @@ async function generateCandidates(
     const directions = planned.success && planned.data ? planned.data : body.kind === "character"
       ? fallbackCharacterDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number])
       : fallbackSceneDirections(target as SceneVisualSpec);
+    let productReference: Promise<string | undefined> | undefined;
     const requested = indexes.map((index) => ({ id: candidateIds.get(index)!, index, direction: directions[index - 1] }));
     const runCandidate = async (candidate: (typeof requested)[number], repair = false, repairPrompt?: string) => {
       const startedAt = Date.now();
@@ -205,52 +209,69 @@ async function generateCandidates(
         if (!candidate.direction) throw new Error(`候选 ${candidate.index} 缺少创意方向。`);
         prompt = repairPrompt ?? (body.kind === "character"
           ? buildCharacterCandidatePrompt(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], candidate.direction as CharacterCandidateDirection)
-          : buildSceneCandidatePrompt(target as SceneVisualSpec, candidate.direction as SceneCandidateDirection));
+          : buildSceneCandidatePrompt(target as SceneVisualSpec, candidate.direction as SceneCandidateDirection,
+            needsProductReference ? project.brief.productName : undefined));
       } catch (error) {
-        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, "PROMPT_BUILD_FAILED", error, startedAt, repair);
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, "PROMPT_BUILD_FAILED", error, startedAt, repair, needsProductReference);
         return { requestItem: { ...candidate, prompt: "" }, result: null };
       }
       const requestItem = { ...candidate, prompt };
+      let referenceImage: string | undefined;
+      try {
+        referenceImage = needsProductReference
+          ? await (productReference ??= readProductReferenceDataUrl(selectPrimaryProductImage(project.brief.productImages), { sessionId, projectId }))
+          : undefined;
+        if (needsProductReference && !referenceImage) throw new Error("场景需要真实商品参考图，但主产品图未保存。");
+      } catch (error) {
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index,
+          "REFERENCE_ASSET_LOAD_FAILED", error, startedAt, repair, needsProductReference);
+        return { requestItem, result: null };
+      }
       let modelAttemptSeen = false;
       try {
         const result = await generateQwenImageAdaptive({
-          prompt, negativePrompt: VISUAL_ANCHOR_NEGATIVE_PROMPT, projectId,
+          taskType: body.kind === "character" ? "character_candidate" : needsProductReference ? "scene_candidate_with_product_reference" : "scene_candidate_text_only",
+          requiredCapabilities: { textToImage: !needsProductReference, referenceImageInput: needsProductReference, highConsistency: needsProductReference },
+          prompt, ...(referenceImage ? { referenceImages: [referenceImage] } : {}),
+          negativePrompt: needsProductReference ? PRODUCT_SCENE_NEGATIVE_PROMPT : VISUAL_ANCHOR_NEGATIVE_PROMPT,
+          projectId,
           shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}${repair ? "-repair" : ""}`,
           sessionId, size: body.kind === "character" ? "1152*2048" : "2048*1152", watermark: false
         }, (attempt) => {
           modelAttemptSeen = true;
           return logAnchorModelAttempt(sessionId, projectId, event, body.kind, candidate.id, candidate.index, attempt, repair);
         });
-        if (!modelAttemptSeen) await logAnchorCandidateResult(sessionId, projectId, event, body.kind, candidate.id, candidate.index, result, startedAt, repair);
+        if (!modelAttemptSeen) await logAnchorCandidateResult(sessionId, projectId, event, body.kind, candidate.id, candidate.index, result, startedAt, repair, needsProductReference);
         return { requestItem, result };
       } catch (error) {
         const phase = error instanceof Error && error.message === "SUBMISSION_STATE_UNKNOWN" ? "MODEL_SUBMISSION_FAILED"
           : modelAttemptSeen ? "UNKNOWN" : "MODEL_ROUTING_FAILED";
-        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, phase, error, startedAt, repair);
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, phase, error, startedAt, repair, needsProductReference);
         return { requestItem, result: null };
       }
     };
     candidatesStarted = true;
-    let results = await Promise.all(requested.map((candidate) => runCandidate(candidate)));
+    const results = [] as Awaited<ReturnType<typeof runCandidate>>[];
+    for (const candidate of requested) results.push(await runCandidate(candidate));
     const initialAssetIds = results.flatMap(({ result }) => result?.success && result.assetId ? [result.assetId] : []);
     const diversity = await inspectCandidateDiversity({ kind: body.kind, assetIds: initialAssetIds, sessionId, projectId });
     if (!diversity.passed && initialAssetIds.length === body.count) {
       const repairIndexes = new Set(diversity.tooSimilarIndexes.slice(0, 2));
-      results = await Promise.all(results.map(async (result, index) => {
-        if (!repairIndexes.has(index + 1)) return result;
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index]!;
+        if (!repairIndexes.has(index + 1)) continue;
         const candidate = requested[index]!;
         const repaired = await runCandidate(candidate,
           true, `${result.requestItem.prompt}\n多样性修复：上一版与其他方案过于相似。必须强化本方向的独有脸型/空间拓扑、轮廓、材质和构图差异，同时保持角色或场景功能不变。`);
-        return repaired.result?.success && repaired.result.assetId ? { ...result, result: repaired.result } : result;
-      }));
+        if (repaired.result?.success && repaired.result.assetId) results[index] = { ...result, result: repaired.result };
+      }
     }
     const successful = results.filter((item): item is { requestItem: (typeof results)[number]["requestItem"]; result: QwenImageResult } => Boolean(item.result?.success && item.result.assetId));
     if (successful.length === 0) {
       const firstCode = results.find((item) => item.result?.errorCode)?.result?.errorCode;
       await failGenerationEvent(sessionId, projectId, event.id, "本次候选均未生成成功，已有候选保持不变。", "PROVIDER_REQUEST_FAILED");
-      const guidance = firstCode === "INSUFFICIENT_BALANCE" ? "模型服务账户余额不足，请检查当前 Qwen 密钥对应账户。"
-        : firstCode === "AUTH_FAILED" ? "Qwen 密钥未通过验证，请在模型设置中检查。"
-        : "本次候选均未生成成功，请查看对应候选的调用日志。";
+      const guidance = results.every((item) => !item.result) && needsProductReference
+        ? "真实商品参考图无法读取，请重新上传主产品图后重试。" : qwenImageUserMessage(firstCode);
       return failure("VISUAL_ANCHOR_GENERATION_FAILED", guidance, 502);
     }
     const now = new Date().toISOString();
@@ -287,7 +308,7 @@ async function generateCandidates(
     return NextResponse.json({ success: true, data: publicAnonymousProject(final) });
   } catch (error) {
     if (!candidatesStarted) await Promise.all(indexes.map((index) => logAnchorCandidateFailure(sessionId, projectId, event, body.kind,
-      candidateIds.get(index)!, index, "PROMPT_BUILD_FAILED", error, event.startedAt).catch(() => undefined)));
+      candidateIds.get(index)!, index, "PROMPT_BUILD_FAILED", error, event.startedAt, false, needsProductReference).catch(() => undefined)));
     await failGenerationEvent(sessionId, projectId, event.id, "视觉候选生成失败。", "PROVIDER_REQUEST_FAILED").catch(() => undefined);
     throw error;
   }
@@ -315,7 +336,7 @@ async function logAnchorModelAttempt(sessionId: string, projectId: string, event
   const logId = anchorAttemptId(event.id, candidateId, `${repair ? "repair" : "initial"}:${attempt.model}:${attempt.attempt}`);
   await upsertModelCallLog(sessionId, {
     id: logId, kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
-    anchorType, candidateId, candidateIndex, model: attempt.model, attempt: attempt.attempt, mode: attempt.mode,
+    taskType: attempt.taskType, anchorType, candidateId, candidateIndex, model: attempt.model, attempt: attempt.attempt, mode: attempt.mode,
     status: attempt.status, startedAt: attempt.startedAt, completedAt: attempt.completedAt,
     requestStartedAt: attempt.status === "blocked" ? undefined : attempt.submissionDiagnostic?.requestStartedAt ?? attempt.startedAt,
     requestCompletedAt: attempt.status === "blocked" ? undefined : attempt.completedAt,
@@ -345,10 +366,11 @@ async function logAnchorModelAttempt(sessionId: string, projectId: string, event
 
 async function logAnchorCandidateResult(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
   anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, result: QwenImageResult,
-  startedAt: number, repair: boolean) {
+  startedAt: number, repair: boolean, productReference = false) {
   await upsertModelCallLog(sessionId, {
     id: anchorAttemptId(event.id, candidateId, repair ? "repair:summary" : "initial:summary"),
     kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
+    taskType: anchorType === "character" ? "character_candidate" : productReference ? "scene_candidate_with_product_reference" : "scene_candidate_text_only",
     anchorType, candidateId, candidateIndex, model: result.model, attempt: 1, mode: "anchor-candidate",
     status: result.success && result.assetId ? "completed" : "failed", startedAt,
     completedAt: Date.now(), durationMs: Date.now() - startedAt,
@@ -364,13 +386,14 @@ async function logAnchorCandidateResult(sessionId: string, projectId: string, ev
 
 async function logAnchorCandidateFailure(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
   anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, failurePhase: AnchorFailurePhase,
-  error: unknown, startedAt: number, repair = false) {
+  error: unknown, startedAt: number, repair = false, productReference = false) {
   const cause = error instanceof Error && "cause" in error && error.cause && typeof error.cause === "object"
     ? error.cause as { code?: unknown } : undefined;
   const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : failurePhase;
   await upsertModelCallLog(sessionId, {
     id: anchorAttemptId(event.id, candidateId, repair ? "repair:exception" : "initial:exception"),
     kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
+    taskType: anchorType === "character" ? "character_candidate" : productReference ? "scene_candidate_with_product_reference" : "scene_candidate_text_only",
     anchorType, candidateId, candidateIndex, model: "未调用", attempt: 1, mode: "anchor-candidate",
     status: "failed", startedAt, completedAt: Date.now(), durationMs: Date.now() - startedAt,
     referenceImageCount: 0, referenceImagesIncluded: false, failurePhase,

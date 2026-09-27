@@ -260,7 +260,7 @@ describe("providerRouter", () => {
     const result = await generateShotImage(coldBrewDemo.id, coldBrewDemo.shots[0]);
 
     expect(route.provider).toBe("qwenImageProvider");
-    expect(route.model).toBe("qwen-image");
+    expect(route.model).toBe("Qwen 自动路由");
     expect(spy).toHaveBeenCalled();
     expect(result.provider).toBe("dashscope");
     expect(result.fallbackUsed).toBe(false);

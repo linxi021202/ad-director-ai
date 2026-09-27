@@ -21,14 +21,14 @@ export function buildQwenImageContent(input: Pick<QwenImageRequest, "prompt" | "
 }
 
 export function buildQwenImageRequestBody(input: QwenImageRequest, model: string, size: string, defaults: { promptExtend: boolean; watermark: boolean }) {
+  const isBasicEdit = model === "qwen-image-edit";
   return {
     model,
     input: { messages: [{ role: "user", content: buildQwenImageContent(input) }] },
     parameters: {
       negative_prompt: input.negativePrompt,
-      prompt_extend: input.promptExtend ?? defaults.promptExtend,
-      watermark: input.watermark ?? defaults.watermark,
-      size,
+      ...(!isBasicEdit ? { prompt_extend: input.promptExtend ?? defaults.promptExtend,
+        watermark: input.watermark ?? defaults.watermark, size } : {}),
       n: 1 as const
     }
   };
@@ -327,7 +327,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
   let requestStartedAt: number | undefined;
   let requestCompletedAt: number | undefined;
   let submissionElapsedMs: number | undefined;
-  let model = input.model || "qwen-image";
+  let model = input.model || "qwen-image-max-2025-12-30";
   let size = input.size || "1152*2048";
   let knownTaskId = input.resumeTaskId;
   let submissionDiagnostic: QwenSubmissionDiagnostic | undefined;
@@ -337,7 +337,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
   try {
     const config = getAIConfig({ allowSessionSecrets: true });
     model = hasImageReference(input)
-      ? input.model || process.env.QWEN_IMAGE_EDIT_MODEL || "qwen-image-2.0"
+      ? input.model || process.env.QWEN_IMAGE_EDIT_MODEL || "qwen-image-edit-max-2026-01-16"
       : input.model || config.qwenImage.imageModel;
     size = input.size || config.qwenImage.size;
 

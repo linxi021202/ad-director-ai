@@ -378,7 +378,7 @@ describe("Phase 2 visual anchors", () => {
 
   it("uses the adaptive Qwen router for each candidate instead of asking for a contact sheet", async () => {
     const source = await readFile("app/api/projects/[projectId]/visual-anchors/route.ts", "utf8");
-    expect(source).toContain("Promise.all(requested.map((candidate) => runCandidate(candidate)))");
+    expect(source).toContain("for (const candidate of requested) results.push(await runCandidate(candidate))");
     expect(source).toContain("generateQwenImageAdaptive({");
     expect(source).toContain("shotId: `anchor-${body.kind}-${body.targetId}-${candidate.id}${repair ? \"-repair\" : \"\"}`");
     expect(source).toContain("count: z.number().int().min(1).max(3)");

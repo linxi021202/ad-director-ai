@@ -59,7 +59,7 @@ const envSchema = z.object({
   DASHSCOPE_API_KEY: optionalSecretSchema,
   DASHSCOPE_BASE_URL: optionalUrlEnvSchema(DEFAULT_DASHSCOPE_BASE_URL),
   DASHSCOPE_SUBMISSION_TIMEOUT_MS: positiveIntEnvSchema(30_000),
-  QWEN_IMAGE_MODEL: z.string().min(1).default("qwen-image"),
+  QWEN_IMAGE_MODEL: z.string().min(1).default("qwen-image-max-2025-12-30"),
   VISUAL_INSPECTOR_MODEL: z.string().min(1).default("qwen3.7-plus"),
   QWEN_IMAGE_SIZE: z.string().min(1).default("1152*2048"),
   QWEN_IMAGE_PROMPT_EXTEND: booleanEnvSchema,

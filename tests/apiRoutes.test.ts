@@ -420,25 +420,24 @@ describe("second-stage API routes", () => {
     expect(saved.project.keyframes?.find((frame) => frame.frameId === failedFrame?.frameId)?.imageUrl).toBeUndefined();
     const imageEvents = saved.project.generationEvents?.filter((event) => event.provider === "qwen-image") ?? [];
     expect(imageEvents.some((event) => event.status === "running")).toBe(false);
-    expect(imageEvents.some((event) => event.status === "failed" && event.message.includes("provider failed"))).toBe(true);
+    expect(imageEvents.some((event) => event.status === "failed" && event.message.includes("关键帧"))).toBe(true);
   }, 12_000);
 
 
-  it("generate-images uses the async endpoint for reference-driven qwen-image-3.0", async () => {
+  it("generate-images uses the synchronous edit endpoint for reference-driven keyframes", async () => {
     process.env.AI_MODE = "real";
     process.env.ENABLE_REAL_IMAGE = "true";
     process.env.DASHSCOPE_API_KEY = "sk-dashscope-secret-test-key";
 
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.includes("/image-generation/generation")) {
+      if (url.includes("/multimodal-generation/generation")) {
         const headers = new Headers(init?.headers);
-        expect(headers.get("X-DashScope-Async")).toBe("enable");
+        expect(headers.has("X-DashScope-Async")).toBe(false);
         return new Response(
-          JSON.stringify({ request_id: "req-async", output: { task_id: "task-async", task_status: "PENDING" } }),
+          JSON.stringify({ request_id: "req-sync", output: { results: [{ image_url: "https://example.com/sync-shot.png" }] } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url.includes("/tasks/task-async")) return new Response(JSON.stringify({ request_id: "req-poll", output: { task_status: "SUCCEEDED", results: [{ image_url: "https://example.com/sync-shot.png" }] } }), { status: 200 });
       return new Response(VALID_PNG_BYTES, {
         status: 200,
         headers: { "Content-Type": "image/png" }
@@ -523,7 +522,7 @@ describe("second-stage API routes", () => {
     const text = JSON.stringify(await completedImageResponse(response));
 
     expect(text).not.toContain("sk-dashscope-secret-test-key");
-    expect(text).toContain("[redacted]");
+    expect(text).toContain("百炼图像模型账户不可用");
     expect(text).toContain("fallbackUsed");
   });
   it("render-video no longer returns mock or planned final video URLs", async () => {
@@ -548,30 +547,29 @@ describe("second-stage API routes", () => {
     const requestedModels: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://example.com/fallback-frame.png") return new Response(VALID_PNG_BYTES, { status: 200, headers: { "Content-Type": "image/png" } });
-      if (url.includes("/api/v1/tasks/quota-task")) return new Response(JSON.stringify({ code: "QuotaExceeded", message: "Free allocated quota exceeded", output: { task_status: "FAILED" } }), { status: 200 });
       const body = JSON.parse(String(init?.body)) as { model: string; input: { messages: Array<{ content: unknown[] }> } };
       requestedModels.push(body.model);
       expect(body.input.messages[0]?.content.some((item) => typeof item === "object" && item !== null && "image" in item)).toBe(true);
-      if (body.model === "qwen-image-3.0") return new Response(JSON.stringify({ request_id: "req-quota", output: { task_id: "quota-task", task_status: "PENDING" } }), { status: 200 });
+      if (body.model === "qwen-image-edit-max-2026-01-16") return new Response(JSON.stringify({ code: "AllocationQuota.FreeTierOnly", message: "Free allocated quota exceeded" }), { status: 400 });
       return new Response(JSON.stringify({ request_id: "req-2", output: { results: [{ image_url: "https://example.com/fallback-frame.png" }] } }), { status: 200 });
     }));
     const response = await generateImagesPOST(jsonRequest({ projectId: testProjectId, shots: [shot], mode: "all-shots", frameIds: [frameId] }));
     const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ model: string; assetId?: string; referenceUsed: boolean; fallbackUsed: boolean }> };
-    expect(requestedModels).toEqual(["qwen-image-3.0", "qwen-image-2.0"]);
-    expect(data.images[0]).toMatchObject({ model: "qwen-image-2.0", referenceUsed: true, fallbackUsed: false });
+    expect(requestedModels).toEqual(["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22"]);
+    expect(data.images[0]).toMatchObject({ model: "qwen-image-2.0-pro-2026-06-22", referenceUsed: true, fallbackUsed: false });
     expect(data.images[0]?.assetId).toBeTruthy();
     const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
-    expect(saved.project.keyframes?.find((frame) => frame.frameId === frameId)).toMatchObject({ model: "qwen-image-2.0", assetId: data.images[0]?.assetId });
+    expect(saved.project.keyframes?.find((frame) => frame.frameId === frameId)).toMatchObject({ model: "qwen-image-2.0-pro-2026-06-22", assetId: data.images[0]?.assetId });
     const entries = await listModelCallLogs("test-session", { projectId: testProjectId, stage: "keyframes", shotId: shot.id, frameId });
     expect(entries.filter((entry) => entry.kind === "call").map((entry) => [entry.model, entry.status, entry.errorCode])).toEqual([
-      ["qwen-image-2.0", "completed", undefined], ["qwen-image-3.0", "failed", "QUOTA_EXHAUSTED"], ["qwen-image", "blocked", "MODEL_SKIPPED_CAPABILITY_MISMATCH"]
+      ["qwen-image-2.0-pro-2026-06-22", "completed", undefined], ["qwen-image-edit-max-2026-01-16", "failed", "QUOTA_EXHAUSTED"]
     ]);
     const taskId = entries.find((entry) => entry.kind === "task")!.taskId;
     const reportResponse = await exportCallLogs(new Request(`http://localhost/api/call-logs/export?projectId=${testProjectId}&taskId=${taskId}&format=json`));
     const report = await reportResponse.json() as { summary: { failedCalls: number }; entries: Array<{ model: string }> };
     expect(report.summary.failedCalls).toBe(1);
-    expect(report.entries.some((entry) => entry.model === "qwen-image-2.0")).toBe(true);
+    expect(report.entries.some((entry) => entry.model === "qwen-image-2.0-pro-2026-06-22")).toBe(true);
   });
 
   it("generate-strategy can call DeepSeek through providerRouter in real text mode", async () => {

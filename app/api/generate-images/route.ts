@@ -73,6 +73,7 @@ type ImageBatchInput = {
   batchEventId: string;
   batchRunId: string;
   shotEvents: Map<string, string>;
+  regenerationFrameIds?: Set<string>;
   resumeTaskIdsByFrame?: Map<string, string>;
 };
 
@@ -204,7 +205,8 @@ export async function POST(request: Request) {
       ])),
       batchEventId: batchEvent.id,
       batchRunId: batchEvent.runId,
-      shotEvents
+      shotEvents,
+      regenerationFrameIds: new Set(targetFrames.filter(({ frame }) => owned.project.keyframeVersions?.some((version) => version.frameId === frame.id)).map(({ frame }) => frame.id))
     };
 
     if (imageRoute.provider === "qwenImageProvider") {
@@ -411,7 +413,7 @@ async function executeImageBatch(input: ImageBatchInput) {
         await upsertModelCallLog(input.sessionId, {
           id: logId,
           kind: "call", taskId: eventId, jobId: input.batchRunId, projectId: input.projectId,
-          stage: "keyframes", provider: "qwen-image", model: attempt.model, mode: attempt.mode,
+          stage: "keyframes", provider: "qwen-image", model: attempt.model, mode: attempt.mode, taskType: attempt.taskType,
           shotId: shot.id, frameId: frame.id, attempt: attempt.attempt, status: attempt.status,
           startedAt: attempt.startedAt, completedAt: attempt.completedAt,
           durationMs: Math.max(0, attempt.completedAt - attempt.startedAt),
@@ -451,6 +453,7 @@ async function executeImageBatch(input: ImageBatchInput) {
         aspectRatio: input.aspectRatio,
         hasChineseText: true,
         sessionId: input.sessionId,
+        imageTaskType: input.regenerationFrameIds?.has(frame.id) ? "keyframe_regeneration" : "keyframe_generation",
         productImage: input.productImage,
         productImages: references.productImages,
         productVisualSpec: input.productVisualSpec,

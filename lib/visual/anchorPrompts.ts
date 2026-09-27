@@ -20,9 +20,18 @@ export const VISUAL_ANCHOR_NEGATIVE_PROMPT = [
   "watermark",
   "product package"
 ].join(", ");
+export const PRODUCT_SCENE_NEGATIVE_PROMPT = VISUAL_ANCHOR_NEGATIVE_PROMPT
+  .replace("readable text, letters, numbers, logo, ", "new readable text, added lettering, ")
+  .replace(", product package", "");
+
+export function sceneRequiresProductReference(spec: SceneVisualSpec, productName: string): boolean {
+  const props = [...spec.heroProps, ...(spec.layout?.anchors.map((anchor) => anchor.semanticPosition) ?? [])];
+  return props.some((value) => /真实产品|真实商品|主产品|主商品|产品包装|商品包装/.test(value)
+    || (productName.trim().length >= 2 && value.includes(productName.trim())));
+}
 
 export function buildCharacterCandidatePrompt(brief: CharacterAnchorBrief, direction: CharacterCandidateDirection) {
-  return appendNoReadableTextRules(appendSingleFrameConstraint([
+  const prompt = appendSingleFrameConstraint([
     `人物候选方向：${direction.title}。`,
     "生成一个且只能一个独立人物候选，不得出现第二个人、群像、人物对比、拼图或多视图。",
     "商业广告选角参考照，平视，四分之三角度上半身，脸部无遮挡，完整显示发型、服装和配饰，背景干净中性。",
@@ -36,15 +45,18 @@ export function buildCharacterCandidatePrompt(brief: CharacterAnchorBrief, direc
     `与另外两案的显著区分：${direction.differentiation}。连续性稳定策略：${direction.continuityStability}。`,
     "本图只建立 Identity，不表现多个剧情时刻；状态变化将在后续镜头中通过同一个人的表情和姿态完成。",
     "画面不得出现产品、包装、品牌、字幕、标题、数字、标牌或任何可读文字。"
-  ].join("\n")));
+  ].join("\n"));
+  return appendNoReadableTextRules(prompt);
 }
 
-export function buildSceneCandidatePrompt(spec: SceneVisualSpec, direction: SceneCandidateDirection) {
+export function buildSceneCandidatePrompt(spec: SceneVisualSpec, direction: SceneCandidateDirection, productName?: string) {
   const states = spec.states?.map((state) => `${state.label}: ${state.lighting}, ${state.mood}`).join("；") ?? spec.timeOfDay;
   const layout = spec.layout?.anchors.map((anchor) => `${anchor.id}=${anchor.semanticPosition}`).join("；") ?? "保持主要空间关系稳定";
-  return appendNoReadableTextRules(appendSingleFrameConstraint([
+  const prompt = appendSingleFrameConstraint([
     `场景候选方向：${direction.title}。`,
-    "生成一个且只能一个完整空场候选，不得出现分屏、拼图、多视图、多个时刻或 Storyboard。",
+    productName
+      ? "生成一个且只能一个完整场景候选，真实商品自然融入空间；不得出现分屏、拼图、多视图或多个时刻。"
+      : "生成一个且只能一个完整空场候选，不得出现分屏、拼图、多视图、多个时刻或 Storyboard。",
     `场景身份：${spec.name}；空间结构：${spec.architecture}。`,
     `家具：${spec.furniture.join("、") || "保持简洁"}；主要道具：${spec.heroProps.join("、") || "无"}。`,
     `固定空间锚点：${layout}。这些相对位置属于 Scene Identity，不得随意交换。`,
@@ -54,6 +66,9 @@ export function buildSceneCandidatePrompt(spec: SceneVisualSpec, direction: Scen
     `空间概念：${direction.spatialConcept}；机位：${direction.cameraPosition}；景深层次：${direction.depthStructure}。`,
     `主导材质：${direction.dominantMaterials}；核心道具布局：${direction.heroPropArrangement}；光线设计：${direction.lightingDesign}。`,
     `与另外两案的显著区分：${direction.differentiation}。连续性稳定策略：${direction.continuityStability}。`,
-    "不得出现人物、产品、包装、品牌、字幕、标题、数字、屏幕内容、招牌或任何可读文字。"
-  ].join("\n")));
+    productName
+      ? `图1是用户真实商品“${productName}”。只保留图1的产品身份、外形、材质与原有包装纹理，在场景中自然呈现；不得重新设计或凭空添加其它商品。除原图包装纹理外，不得出现人物、字幕、标题、数字、屏幕内容、招牌或新增文字。`
+      : "不得出现人物、产品、包装、品牌、字幕、标题、数字、屏幕内容、招牌或任何可读文字。"
+  ].join("\n"));
+  return productName ? prompt : appendNoReadableTextRules(prompt);
 }

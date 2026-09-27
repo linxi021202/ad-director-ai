@@ -1,6 +1,11 @@
 export type QwenImageCacheStatus = "cached" | "remote-only" | "not-requested";
 
+export type QwenImageTaskType = "character_candidate" | "scene_candidate_text_only"
+  | "scene_candidate_with_product_reference" | "keyframe_generation" | "keyframe_regeneration";
+
 export type QwenImageRequest = {
+  taskType?: QwenImageTaskType;
+  requiredCapabilities?: { textToImage?: boolean; referenceImageInput?: boolean; highConsistency?: boolean };
   prompt: string;
   referenceImage?: string;
   referenceImages?: string[];
