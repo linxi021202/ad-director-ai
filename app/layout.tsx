@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { SiteVideoBackdrop } from "@/components/SiteVideoBackdrop";
+import { TemporaryWorkspaceGate } from "@/components/TemporaryWorkspaceGate";
 import "./globals.css";
 import "./auth.css";
 import "./workspace-v3.css";
@@ -24,8 +25,10 @@ export default function RootLayout({
         <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&display=swap" rel="stylesheet" />
       </head>
       <body className="site-body">
-        <SiteVideoBackdrop />
-        {children}
+        <TemporaryWorkspaceGate>
+          <SiteVideoBackdrop />
+          {children}
+        </TemporaryWorkspaceGate>
       </body>
     </html>
   );

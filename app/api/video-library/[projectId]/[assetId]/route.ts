@@ -7,6 +7,7 @@ import { serveProjectAsset } from "@/lib/assets/http";
 import { authorizeOwnedProject } from "@/lib/projects/api";
 import { getAnonymousApiSession } from "@/lib/session/api";
 import { isVideoLibraryAsset } from "@/lib/video/videoLibrary";
+import { getArchivedVideo } from "@/lib/projects/temporaryWorkspace";
 
 type RouteContext = { params: Promise<{ projectId: string; assetId: string }> };
 
@@ -23,9 +24,9 @@ async function handle(request: Request, context: RouteContext) {
   if (!sessionResult.initialized) return sessionResult.response;
   const { projectId, assetId } = await context.params;
   const authorization = await authorizeOwnedProject(sessionResult.session.id, projectId);
-  if (!authorization.authorized) return notFound();
-
-  const asset = await getPrivateAsset(sessionResult.session.id, authorization.projectId, assetId).catch(() => null);
+  const asset = authorization.authorized
+    ? await getPrivateAsset(sessionResult.session.id, authorization.projectId, assetId).catch(() => null)
+    : await getArchivedVideo(sessionResult.session.id, projectId, assetId).catch(() => null);
   if (!asset || !isVideoLibraryAsset(asset.kind) || asset.lifecycle === "pending-cleanup") return notFound();
 
   try {

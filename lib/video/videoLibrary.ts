@@ -6,6 +6,7 @@ import {
 } from "@/lib/assets/assetStore";
 import type { ProjectAssetKind, ProjectAssetSource } from "@/lib/assets/types";
 import { listAnonymousProjects } from "@/lib/projects/anonymousProjectStore";
+import { listArchivedVideos } from "@/lib/projects/temporaryWorkspace";
 
 const videoKinds = new Set<ProjectAssetKind>(["hero-video", "final-video"]);
 
@@ -56,6 +57,19 @@ export async function listSessionVideoLibrary(sessionId: string): Promise<VideoL
     return videos.filter((item): item is VideoLibraryItem => Boolean(item));
   }));
 
+  const archives = await listArchivedVideos(sessionId);
+  for (const archive of archives) {
+    const items: VideoLibraryItem[] = [];
+    for (const asset of archive.assets) {
+      if (!isVideoLibraryAsset(asset.kind) || !(await assertPrivateAssetReadable(asset).then(() => true).catch(() => false))) continue;
+      const base = `/api/video-library/${archive.projectId}/${asset.id}`;
+      items.push({ id: asset.id, projectId: archive.projectId, projectName: archive.projectName,
+        kind: asset.kind as "hero-video" | "final-video", source: asset.source, fileName: asset.fileName,
+        mimeType: asset.mimeType, sizeBytes: asset.sizeBytes, width: asset.width, height: asset.height,
+        durationSec: asset.durationSec, createdAt: asset.createdAt, url: base, downloadUrl: `${base}?download=1` });
+    }
+    groups.push(items);
+  }
   return groups.flat().sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
