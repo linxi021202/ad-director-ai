@@ -24,12 +24,17 @@ type Entry = {
   payloadBytes?: number; submissionTimeoutMs?: number; referenceSourceTypes?: string[]; failurePhase?: string;
   networkErrorName?: string; networkErrorMessage?: string; networkCauseCode?: string; networkCauseErrno?: number; networkCauseSyscall?: string;
   errorName?: string; causeCode?: string; requestStartedAt?: number; requestCompletedAt?: number;
+  errorStack?: string; projectVersionBefore?: number; projectVersionExpected?: number; projectVersionActual?: number;
   message?: string;
 };
 
 const providerOptions = ["全部", "DeepSeek", "Qwen-Image", "Wan", "TTS", "Remotion"];
 const statusOptions = ["全部", "运行中", "成功", "失败", "已取消", "已降级", "已跳过"];
-const providerNames: Record<string, string> = { deepseek: "DeepSeek", "qwen-image": "Qwen-Image", wan: "Wan", tts: "TTS", remotion: "Remotion" };
+const providerNames: Record<string, string> = { system: "系统处理", deepseek: "DeepSeek", "qwen-image": "Qwen-Image", wan: "Wan", tts: "TTS", remotion: "Remotion" };
+const commitModeNames: Record<string, string> = { "prompt-bundle-building": "组装最终提示词", "prompt-bundle-validated": "最终提示词校验通过",
+  "prompt-bundle-persisting": "正在保存提示词", "prompt-bundle-persisted": "提示词保存成功", "shot-status-updating": "正在提交镜头状态",
+  "shot-status-ready": "镜头提示词已就绪", "task-completing": "正在完成任务", "task-completed": "任务已完成",
+  "prompt-commit-failed": "提示词提交失败", "prompt-pipeline-exception": "提示词处理异常" };
 const statusNames: Record<string, string> = { queued: "排队中", running: "运行中", "qa-review": "校验中", completed: "成功", "needs-review": "待检查", failed: "失败", fallback: "已降级", cancelled: "已取消", blocked: "已跳过", interrupted: "已中断" };
 const anchorLabel = (entry: Entry) => entry.anchorType && entry.candidateIndex
   ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : undefined;
@@ -171,7 +176,8 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
           ["规范结构", selected.canonicalValid === undefined ? undefined : selected.canonicalValid ? "有效" : "无效"],
           ["最终采用", selected.finalUsed === undefined ? undefined : selected.finalUsed ? "是" : "否"],
           ["质量问题", selected.qualityIssues?.map((issue) => `${issue.path}：${issue.reason}；建议：${issue.suggestion}`).join("\n")],
-          ["调用编号", selected.id], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["候选", anchorLabel(selected)], ["候选编号", selected.candidateId], ["模型", selected.model], ["生成模式", selected.mode], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
+          ["调用编号", selected.id], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["候选", anchorLabel(selected)], ["候选编号", selected.candidateId], ["模型", selected.model], ["生成模式", selected.mode ? commitModeNames[selected.mode] ?? selected.mode : undefined], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
+          ["保存前项目版本", selected.projectVersionBefore], ["预期项目版本", selected.projectVersionExpected], ["实际项目版本", selected.projectVersionActual], ["内部异常堆栈", selected.errorStack],
           ["模型调用耗时", selected.kind === "call" && selected.durationMs !== undefined ? `${selected.durationMs} 毫秒` : undefined], ["任务跨度", selected.kind === "task" && selected.jobElapsedMs !== undefined ? `${selected.jobElapsedMs} 毫秒` : undefined], ["最后活动", selected.lastHeartbeatAt ? new Date(selected.lastHeartbeatAt).toLocaleString("zh-CN") : undefined], ["中断发现", selected.interruptedAt ? new Date(selected.interruptedAt).toLocaleString("zh-CN") : undefined],
           ["重试序号", selected.attempt], ["错误类型", selected.errorCode], ["异常类型", selected.errorName], ["底层异常码", selected.causeCode], ["请求开始", selected.requestStartedAt ? new Date(selected.requestStartedAt).toLocaleString("zh-CN") : undefined], ["请求完成", selected.requestCompletedAt ? new Date(selected.requestCompletedAt).toLocaleString("zh-CN") : undefined], ["服务商错误码", selected.providerErrorCode], ["错误详情", selected.errorSummary], ["校验路径", selected.validationPath], ["字段问题", selected.validationIssues?.map((issue) => `${issue.path}: ${issue.message}`).join("；")],
           ["HTTP 状态", selected.httpStatus], ["请求域名", selected.requestHost], ["接口路径", selected.requestPath], ["区域", selected.region], ["工作空间", selected.workspaceIdMasked], ["接口模式", selected.apiMode], ["请求体字节", selected.payloadBytes], ["提交超时", selected.submissionTimeoutMs === undefined ? undefined : `${selected.submissionTimeoutMs} 毫秒`], ["参考图来源", selected.referenceSourceTypes?.join("、")], ["失败阶段", selected.failurePhase], ["网络错误名", selected.networkErrorName], ["网络错误详情", selected.networkErrorMessage], ["底层错误码", selected.networkCauseCode], ["底层错误号", selected.networkCauseErrno], ["系统调用", selected.networkCauseSyscall],

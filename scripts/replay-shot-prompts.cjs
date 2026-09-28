@@ -1,4 +1,4 @@
-/* Server-side diagnostic replay. Read-only unless --image explicitly creates an isolated test copy. */
+/* Server-side diagnostic replay. --commit or --image explicitly creates an isolated test copy. */
 const fs = require("node:fs");
 const path = require("node:path");
 const Module = require("node:module");
@@ -46,7 +46,7 @@ async function main() {
     frameIds: result.data?.framePrompts.map((frame) => frame.frameId), qualityIssues: result.qualityIssues,
     qaPassed: result.data ? reviewDetailedPromptPackage(result.data).passed : false,
     error: result.error, calls, imageRequested: false };
-  if (result.success && result.data && args.includes("--image")) {
+  if (result.success && result.data && (args.includes("--commit") || args.includes("--image"))) {
     const store = require("../lib/projects/anonymousProjectStore.ts");
     const { importPrivateAssetFile, getPrivateAsset } = require("../lib/assets/assetStore.ts");
     const { selectImageReferencesForShot } = require("../lib/image/referenceSelector.ts");
@@ -54,6 +54,7 @@ async function main() {
     const { startGenerationEvent, completeGenerationEvent, failGenerationEvent } = require("../lib/projects/generationEvents.ts");
     const { upsertModelCallLog } = require("../lib/logs/modelCallStore.ts");
     const { isShotPromptReady } = require("../lib/prompts/shotPromptReadiness.ts");
+    const { commitFinalPromptBundle } = require("../lib/prompts/promptCommit.ts");
     const sessionId = randomUUID();
     const copy = await store.createAnonymousProject(sessionId, { name: "镜头提示词诊断副本" });
     const sourceProjectId = project.id;
@@ -69,8 +70,8 @@ async function main() {
     const references = selectImageReferencesForShot(project, clonedShot);
     const referenceIds = new Set([...references.masterReferenceAssetIds, ...references.productImages.map((image) => image.assetId)]);
     if (project.productVisualSpec?.sourceAssetId) referenceIds.add(project.productVisualSpec.sourceAssetId);
-    const manifest = JSON.parse(fs.readFileSync(path.join(sourceDirectory, "assets.json"), "utf8"));
-    for (const assetId of referenceIds) {
+    const manifest = args.includes("--image") ? JSON.parse(fs.readFileSync(path.join(sourceDirectory, "assets.json"), "utf8")) : undefined;
+    for (const assetId of args.includes("--image") ? referenceIds : []) {
       const asset = manifest.assets.find((item) => item.id === assetId);
       if (!asset) throw new Error(`Reference asset missing: ${assetId}`);
       const storageRoot = path.resolve(process.env.STORAGE_ROOT || path.join(root, "storage"));
@@ -83,7 +84,15 @@ async function main() {
       visualContinuityBible: project.visualContinuityBible, referencePack: project.referencePack };
     const promptPackage = detailedShotPromptPackageSchema.parse({ ...result.data, schemaVersion: 2,
       inputFingerprint: buildShotPromptInputFingerprint(copyInput) });
-    project = (await store.saveOwnedShotPromptPackage(sessionId, copy.id, promptPackage, project.productVisualSpec)).project;
+    const promptEvent = await startGenerationEvent(sessionId, copy.id, { stage: "prompts", provider: "deepseek", shotId,
+      action: "验证提示词最终提交", message: "复用已保存结果，只验证最终组装、保存和任务完成。" });
+    const committed = await commitFinalPromptBundle({ sessionId, projectId: copy.id, shotId, taskId: promptEvent.id, jobId: promptEvent.runId },
+      promptPackage, promptPackage.inputFingerprint, project.productVisualSpec, result.latencyMs);
+    project = (await store.requireOwnedAnonymousProject(sessionId, copy.id)).project;
+    report.commit = { taskId: promptEvent.id, status: project.generationEvents.find((event) => event.id === promptEvent.id)?.status,
+      promptReady: isShotPromptReady(project, project.shots.find((item) => item.id === shotId)), warnings: committed.warnings };
+    report.diagnosticProjectId = copy.id;
+    if (args.includes("--image")) {
     const readyShot = project.shots.find((item) => item.id === shotId);
     if (!isShotPromptReady(project, readyShot)) throw new Error("Final QA must pass before requesting an image.");
     const frame = readyShot.frames[0];
@@ -118,6 +127,7 @@ async function main() {
     report.diagnosticProjectId = copy.id;
     if (report.image.success) await completeGenerationEvent(sessionId, copy.id, event.id, "诊断图片已生成并保存。", { latencyMs: image.latencyMs });
     else await failGenerationEvent(sessionId, copy.id, event.id, image.error || "诊断图片未生成成功。", image.errorCode);
+    }
   }
   const output = args.find((arg) => arg.startsWith("--output="))?.slice(9);
   if (output) fs.writeFileSync(output, JSON.stringify(report, null, 2));

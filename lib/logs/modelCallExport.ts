@@ -26,6 +26,13 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     errorCode: entry.errorCode ?? null,
     providerErrorCode: entry.providerErrorCode ?? null,
     errorSummary: entry.errorSummary ?? null,
+    failurePhase: entry.failurePhase ?? null,
+    errorName: entry.errorName ?? null,
+    errorStack: entry.errorStack ?? null,
+    causeCode: entry.causeCode ?? null,
+    projectVersionBefore: entry.projectVersionBefore ?? null,
+    projectVersionExpected: entry.projectVersionExpected ?? null,
+    projectVersionActual: entry.projectVersionActual ?? null,
     httpStatus: entry.httpStatus ?? null,
     inputTokens: entry.inputTokens ?? null,
     outputTokens: entry.outputTokens ?? null,
@@ -94,6 +101,9 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
   for (const entry of report.entries.filter((item) => item.kind === "call" && item.status === "failed")) {
     lines.push(`### 调用 ${entry.id}`, `任务：${entry.taskId}；${entry.anchorType && entry.candidateIndex ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : `镜头：${safe(entry.shotId ?? "未关联")}`}`, `失败阶段：${safe(entry.failurePhase ?? "未采集")}；错误代码：${safe(entry.errorCode ?? "未采集")}；服务商代码：${safe(entry.providerErrorCode ?? "未返回")}`,
       `错误详情：${safe(entry.errorSummary ?? "未采集")}`, `finish_reason：${safe(entry.finishReason ?? "未返回")}`, `JSON 解析：${entry.jsonParsed === null ? "未知" : entry.jsonParsed ? "成功" : "失败"}`, `Schema 校验：${entry.schemaValid === null ? "未知" : entry.schemaValid ? "通过" : "失败"}`,
+      `异常类型：${safe(entry.errorName ?? "未采集")}；底层异常码：${safe(entry.causeCode ?? "未采集")}`,
+      `项目版本：开始 ${entry.projectVersionBefore ?? "未采集"}；预期 ${entry.projectVersionExpected ?? "未指定（按最新项目原子更新）"}；实际 ${entry.projectVersionActual ?? "未采集"}`,
+      `异常堆栈：${safe(entry.errorStack ?? "未采集")}`,
       `字段问题：${entry.validationIssues?.map((issue) => `${safe(issue.path)} (${safe(issue.code)}: ${safe(issue.message)})`).join("；") || "未采集"}`,
       `质量证据：${entry.qualityIssues?.map((issue) => `${safe(issue.path)}：${safe(issue.reason)}；建议：${safe(issue.suggestion)}`).join("；") || "无"}`, "");
   }

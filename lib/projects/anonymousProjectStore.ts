@@ -10,6 +10,7 @@ import { ensureProjectContinuity } from "@/lib/continuity/projectContinuity";
 import { buildPartialNarrationPlan } from "@/lib/audio/narrationPlan";
 import { ensureStoryboardArchitecture } from "@/lib/storyboard/shotArchitecture";
 import { planShotKeyframeMoments } from "@/lib/storyboard/keyframePlan";
+import { buildShotPromptInputFingerprint } from "@/lib/prompts/shotPromptFingerprint";
 import {
   adStrategySchema,
   aspectRatioSchema,
@@ -621,9 +622,16 @@ export async function saveOwnedShotPromptPackage(
 ): Promise<AnonymousProjectRecord> {
   const parsedPackage = detailedShotPromptPackageSchema.parse(promptPackage);
   return mutateOwnedAnonymousProject(sessionId, projectId, (project) => {
-    if (!project.shots.some((shot) => shot.id === parsedPackage.shotId)) {
+    const targetShot = project.shots.find((shot) => shot.id === parsedPackage.shotId);
+    if (!targetShot) {
       throw new Error("PROMPT_PACKAGE_SHOT_NOT_FOUND");
     }
+    if (parsedPackage.inputFingerprint && parsedPackage.inputFingerprint !== buildShotPromptInputFingerprint({
+      brief: project.brief, strategy: project.strategy, shot: targetShot,
+      previousShot: project.shots.find((shot) => shot.index === targetShot.index - 1),
+      productVisualSpec: project.productVisualSpec ?? productVisualSpec,
+      visualContinuityBible: project.visualContinuityBible, referencePack: project.referencePack
+    })) throw new AnonymousProjectVersionConflictError();
     const shots = project.shots.map((shot) => shot.id === parsedPackage.shotId
       ? applyDetailedPromptPackage(shot, parsedPackage)
       : shot);
@@ -1068,13 +1076,16 @@ function applyDetailedPromptPackage(shot: StoryboardShot, promptPackage: Detaile
     negativePromptCn: promptPackage.negativePromptCn,
     negativePromptEn: promptPackage.negativePromptEn,
     continuityConstraints: promptPackage.continuityContext.immutableElements,
-    frames: shot.frames?.map((frame, index) => {
-      const expanded = promptPackage.framePrompts.find((item) => item.frameId === frame.id) ?? promptPackage.framePrompts[index];
+    frames: shot.frames?.map((frame) => {
+      const expanded = promptPackage.framePrompts.find((item) => item.frameId === frame.id);
       const moment = moments.find((item) => item.frameId === frame.id);
       return expanded ? {
         ...frame,
         ...(moment ? { keyframeMoment: {
-          ...moment, characterPose: expanded.characterPose, handState: expanded.handState,
+          timestampSec: moment.timestampSec, microBeatId: moment.microBeatId,
+          narrativePurpose: moment.narrativePurpose, momentDescription: moment.momentDescription,
+          continuityFromPreviousFrame: moment.continuityFromPreviousFrame,
+          characterPose: expanded.characterPose, handState: expanded.handState,
           gazeDirection: expanded.gazeDirection, facialExpression: expanded.facialExpression,
           productPosition: expanded.productPosition, productOrientation: expanded.productOrientation,
           cameraAngle: expanded.cameraAngle, environment: expanded.environment

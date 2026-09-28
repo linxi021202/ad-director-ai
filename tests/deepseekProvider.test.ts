@@ -8,6 +8,11 @@ import { detailedFramePromptSchema, detailedShotPromptFoundationSchema } from ".
 import { reviewDetailedPromptPackage } from "../lib/director/promptQualityReview";
 import { isShotPromptReady } from "../lib/prompts/shotPromptReadiness";
 import { buildShotPromptInputFingerprint } from "../lib/prompts/shotPromptFingerprint";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { createAnonymousProject, mutateOwnedAnonymousProject, requireOwnedAnonymousProject, saveOwnedShotPromptPackage } from "../lib/projects/anonymousProjectStore";
 
 const originalEnv = { ...process.env };
 
@@ -484,6 +489,43 @@ describe("deepseekProvider", () => {
     expect(isShotPromptReady({ ...readyProject, shots: [{ ...shot, visualDescription: "改动已确认的画面描述" }] },
       { ...shot, visualDescription: "改动已确认的画面描述" })).toBe(false);
     expect(isShotPromptReady({ ...readyProject, shotPromptPackages: [] }, shot)).toBe(false);
+  });
+
+  it("persists the final canonical shot-03 bundle after all model steps and QA succeed", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "prompt-final-commit-"));
+    process.env.STORAGE_ROOT = directory;
+    try {
+      const sessionId = randomUUID();
+      const record = await createAnonymousProject(sessionId);
+      const shot = ensureShotArchitecture({ ...coldBrewDemo.shots[2]!, id: "shot-03" });
+      shot.frames = shot.frames!.slice(0, 3);
+      const foundation = promptFoundation(shot.id, shot.durationSec);
+      const framePrompts = shot.frames!.map((frame) => expandedFrame(frame, shot));
+      const project = { ...coldBrewDemo, id: record.id, shots: coldBrewDemo.shots.map((item, index) => index === 2 ? shot : item), productVisualSpec: undefined,
+        visualContinuityBible: undefined, referencePack: undefined };
+      await mutateOwnedAnonymousProject(sessionId, record.id, () => project);
+      const baseline = await requireOwnedAnonymousProject(sessionId, record.id);
+      const input = { brief: baseline.project.brief, strategy: baseline.project.strategy, shot: baseline.project.shots[2]!,
+        previousShot: baseline.project.shots[1], productVisualSpec: baseline.project.productVisualSpec,
+        visualContinuityBible: baseline.project.visualContinuityBible, referencePack: baseline.project.referencePack };
+      const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+      const result = await expandShotPrompts(input, { resumeShotPromptDraft: {
+        shotId: shot.id, schemaVersion: 2, inputFingerprint: buildShotPromptInputFingerprint(input), foundation, framePrompts
+      } });
+      expect(result.success, result.error ?? undefined).toBe(true);
+      expect(reviewDetailedPromptPackage(result.data!).passed).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      const saved = await saveOwnedShotPromptPackage(sessionId, record.id, { ...result.data!, schemaVersion: 2,
+        inputFingerprint: buildShotPromptInputFingerprint(input) });
+      expect(saved.project.visualContinuityBible).toEqual(input.visualContinuityBible);
+      expect(saved.project.referencePack).toEqual(input.referencePack);
+      expect(saved.project.brief).toEqual(input.brief);
+      expect(saved.project.shots[1]).toEqual(input.previousShot);
+      expect(isShotPromptReady(saved.project, saved.project.shots[2]!)).toBe(true);
+      expect(saved.project.shots[2]!.frames![0]!.keyframeMoment).not.toHaveProperty("frameId");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("repairs only the vague camera field and retains every successful frame and foundation", async () => {

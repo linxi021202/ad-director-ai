@@ -5,9 +5,7 @@ import { projectStoreErrorResponse } from "../../../lib/projects/api";
 import {
   anonymousProjectIdSchema,
   requireOwnedAnonymousProject,
-  saveOwnedShotPromptDraft,
-  saveOwnedShotPromptPackage,
-  updateOwnedAnonymousProject
+  saveOwnedShotPromptDraft
 } from "../../../lib/projects/anonymousProjectStore";
 import { completeGenerationEvent, failGenerationEvent, startGenerationEvent, updateGenerationEventProgress } from "../../../lib/projects/generationEvents";
 import { selectProviderModel } from "../../../lib/providers/providerRouter";
@@ -20,7 +18,7 @@ import { validateDetailedKeyframePlan } from "../../../lib/storyboard/keyframePl
 import { adStrategySchema, productBriefSchema, storyboardShotSchema, type DetailedShotPromptDraft, type DetailedShotPromptPackage, type StoryboardShot } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
-import { upsertModelCallLog } from "../../../lib/logs/modelCallStore";
+import { bestEffortPromptLog, commitFinalPromptBundle, PromptCommitError, promptErrorDetails, promptCommitPublicMessage, type PromptFailurePhase } from "../../../lib/prompts/promptCommit";
 
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
@@ -37,6 +35,10 @@ export async function POST(request: Request) {
   let eventId: string | undefined;
   let activeShotEventId: string | undefined;
   let projectId: string | undefined;
+  let activeShotId: string | undefined;
+  let failurePhase: PromptFailurePhase = "UNKNOWN_INTERNAL_ERROR";
+  const completedEvents = new Set<string>();
+  const warnings: string[] = [];
 
   try {
     const parsed = requestSchema.safeParse(await request.json());
@@ -105,6 +107,8 @@ export async function POST(request: Request) {
         runId: event.runId, message: `正在生成镜头 ${shot.index} 的详细提示词。`
       });
       activeShotEventId = shotEvent.id;
+      activeShotId = shot.id;
+      failurePhase = "MODEL_REQUEST_FAILED";
       const inputFingerprint = buildShotPromptInputFingerprint(input);
       let checkpoint: DetailedShotPromptDraft = owned.project.shotPromptDrafts?.find((item) =>
         item.shotId === shot.id
@@ -121,7 +125,7 @@ export async function POST(request: Request) {
         resumeShotPromptDraft: checkpoint,
         onModelCall: async (details) => {
           const endedAt = Date.now();
-          await upsertModelCallLog(session.id, {
+          await bestEffortPromptLog(session.id, {
             kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId: projectId!, stage: "prompts", provider: details.promptStage === "qa" || details.mode?.endsWith("canonical-selected") ? "system" : "deepseek",
             model: details.model, pass: details.pass, shotId: details.shotId, frameId: details.frameId,
             mode: details.mode, attempt: details.attempt,
@@ -142,18 +146,23 @@ export async function POST(request: Request) {
         },
         onShotPromptFoundation: async (foundation) => {
           checkpoint = { ...checkpoint, foundation };
-          await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
+          try { await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint); }
+          catch (error) { throw new PromptCommitError("PROJECT_PERSIST_FAILED", error, {}); }
         },
         onShotPromptFrame: async (frame) => {
           const framesById = new Map([...checkpoint.framePrompts, frame].map((item) => [item.frameId, item]));
           checkpoint = { ...checkpoint, framePrompts: [...framesById.values()] };
-          await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
+          try { await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint); }
+          catch (error) { throw new PromptCommitError("PROJECT_PERSIST_FAILED", error, {}); }
         },
         onShotPromptPlanReset: async () => {
           checkpoint = { ...checkpoint, framePrompts: [] };
-          await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint);
+          try { await saveOwnedShotPromptDraft(session.id, projectId!, checkpoint); }
+          catch (error) { throw new PromptCommitError("PROJECT_PERSIST_FAILED", error, {}); }
         }
       });
+      failurePhase = "PROMPT_BUNDLE_BUILD_FAILED";
+      if (!result) throw new Error("FINAL_PROMPT_RESULT_MISSING");
       totalLatencyMs += result.latencyMs;
       let shotFailure: string | undefined;
       let shotErrorCode: string | undefined;
@@ -165,12 +174,15 @@ export async function POST(request: Request) {
         };
         const review = reviewDetailedPromptPackage(promptPackage);
         if (review.passed) {
-          packages.push(promptPackage);
-          await saveOwnedShotPromptPackage(session.id, projectId, promptPackage, productSpec.spec);
+          const committed = await commitFinalPromptBundle({ sessionId: session.id, projectId, shotId: shot.id,
+            taskId: shotEvent.id, jobId: event.runId }, promptPackage, inputFingerprint, productSpec.spec, result.latencyMs);
+          packages.push(committed.bundle);
+          warnings.push(...committed.warnings);
+          completedEvents.add(shotEvent.id);
         } else {
           shotFailure = "详细提示词未通过完整性检查，请单独重试。";
           shotErrorCode = "PROMPT_QUALITY_REVIEW_FAILED";
-          await upsertModelCallLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
+          await bestEffortPromptLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
             stage: "prompts", provider: "system", mode: "quality-review", shotId: shot.id, status: "failed",
             startedAt: Date.now(), errorCode: shotErrorCode, errorSummary: review.issues.join("；").slice(0, 500),
             promptStage: "qa", resultVersion: "final", canonicalValid: true, finalUsed: false, qualityIssues: review.qualityIssues });
@@ -178,7 +190,7 @@ export async function POST(request: Request) {
       } else {
         shotFailure = promptExpansionPublicError(result.error);
         shotErrorCode = promptFailureCode(result.error);
-        await upsertModelCallLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
+        await bestEffortPromptLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
           stage: "prompts", provider: "system", mode: "prompt-stage-validation", shotId: shot.id,
           status: "failed", startedAt: Date.now(), errorCode: shotErrorCode,
           errorSummary: result.error ?? "详细提示词在最终组装时未通过检查。",
@@ -187,8 +199,9 @@ export async function POST(request: Request) {
       if (shotFailure) {
         failures.push(`镜头 ${shot.index}：${shotFailure}`);
         await failGenerationEvent(session.id, projectId, shotEvent.id, `镜头 ${shot.index} 详细提示词失败：${shotFailure}`, shotErrorCode);
-      } else await completeGenerationEvent(session.id, projectId, shotEvent.id, `镜头 ${shot.index} 的图片与视频提示词已保存。`, { latencyMs: result.latencyMs });
+      }
       activeShotEventId = undefined;
+      failurePhase = "TASK_STATE_TRANSITION_FAILED";
       await updateGenerationEventProgress(
         session.id,
         projectId,
@@ -198,19 +211,13 @@ export async function POST(request: Request) {
         failures.length
           ? `本次有 ${failures.length} 个镜头等待重试，之前成功内容已经保留。`
           : `已完成 ${completedAtStart.size + packages.length} / ${promptInputs.length} 个镜头的详细提示词。`
-      );
+      ).catch((error) => { warnings.push("task-progress-update"); console.warn("PROMPT_PROGRESS_WARNING", sanitizeApiError(error)); });
     }
     const current = await requireOwnedAnonymousProject(session.id, projectId);
     const refreshedInputs = buildPromptInputs(current.project, productSpec.spec, requestedShotIds);
     const completedIds = validPromptPackageIds(current.project.shotPromptPackages ?? [], refreshedInputs);
     const remainingShotIds = refreshedInputs.filter((input) => !completedIds.has(input.shot.id)).map((input) => input.shot.id);
-    const updated = await updateOwnedAnonymousProject(session.id, projectId, {
-      ...(productSpec.spec ? { productVisualSpec: productSpec.spec } : {}),
-      workflowSteps: {
-        ...(current.project.workflowSteps ?? defaultWorkflow()),
-        storyboard: current.project.workflowSteps?.storyboard ?? "completed"
-      }
-    });
+    const updated = current;
     const shots = updated.project.shots;
     const completedCount = refreshedInputs.length - remainingShotIds.length;
 
@@ -247,27 +254,34 @@ export async function POST(request: Request) {
         imageProvider: imageRoute.model,
         videoProvider: videoRoute.model,
         realImageCalled: false,
-        realVideoCalled: false
+        realVideoCalled: false,
+        warnings
       },
       fallbackUsed: false,
       fallbackReason: null,
       error: failures.length ? `${failures.length} 个镜头的详细提示词尚未完成，已保留成功结果。请重试当前步骤。` : null
     }, failures.length ? 207 : 200);
   } catch (error) {
-    if (activeShotEventId && projectId) {
-      await failGenerationEvent(session.id, projectId, activeShotEventId, "当前镜头详细提示词生成中断。", promptFailureCode(sanitizeApiError(error))).catch(() => undefined);
+    const diagnostic = promptErrorDetails(error, failurePhase);
+    const code = diagnostic.failurePhase as PromptFailurePhase;
+    if (eventId && projectId) await bestEffortPromptLog(session.id, { kind: "call", taskId: activeShotEventId ?? eventId,
+      jobId: eventId, projectId, shotId: activeShotId, stage: "prompts", provider: "system", mode: "prompt-pipeline-exception",
+      status: "failed", startedAt: Date.now(), ...diagnostic });
+    if (activeShotEventId && projectId && !completedEvents.has(activeShotEventId)) {
+      await failGenerationEvent(session.id, projectId, activeShotEventId, promptCommitPublicMessage(code), code).catch(() => undefined);
     }
     if (eventId && projectId) {
-      if (eventId !== activeShotEventId) await failGenerationEvent(session.id, projectId, eventId, "提示词生成失败，请检查模型配置后重试。").catch(() => undefined);
+      if (eventId !== activeShotEventId && !completedEvents.has(eventId)) await failGenerationEvent(session.id, projectId, eventId, promptCommitPublicMessage(code), code).catch(() => undefined);
     }
-    const projectError = projectStoreErrorResponse(error);
+    const projectError = error instanceof PromptCommitError ? null : projectStoreErrorResponse(error);
     if (projectError) return projectError;
-    return apiJson({ success: false, data: null, trace: { route: "generate-assets", stage: "exception" }, fallbackUsed: false, error: promptExpansionPublicError(sanitizeApiError(error)) }, 500);
+    return apiJson({ success: false, data: null, trace: { route: "generate-assets", stage: "exception", failurePhase: code }, fallbackUsed: false,
+      error: promptCommitPublicMessage(code) }, code === "VERSION_CONFLICT" ? 409 : 500);
   }
 }
 
 function promptFailureCode(error?: string | null) {
-  return error?.match(/(?:DEEPSEEK_[A-Z_]+|MODEL_SCHEMA_DRIFT|JSON_PARSE_FAILED|SCHEMA_VALIDATION_FAILED|KEYFRAME_PLAN_DUPLICATED|KEYFRAME_TRANSITION_IMPLAUSIBLE|VAGUE_PROMPT)/)?.[0] ?? "PROVIDER_REQUEST_FAILED";
+  return error?.match(/(?:DEEPSEEK_[A-Z_]+|MODEL_SCHEMA_DRIFT|JSON_PARSE_FAILED|SCHEMA_VALIDATION_FAILED|KEYFRAME_PLAN_DUPLICATED|KEYFRAME_TRANSITION_IMPLAUSIBLE|VAGUE_PROMPT)/)?.[0] ?? "MODEL_REQUEST_FAILED";
 }
 
 function promptExpansionPublicError(error?: string | null) {
@@ -315,15 +329,4 @@ function validPromptPackageIds(packages: DetailedShotPromptPackage[], inputs: Sh
     && reviewDetailedPromptPackage(item).passed
     && validateDetailedKeyframePlan(ensureShotArchitecture(inputs.find((input) => input.shot.id === item.shotId)!.shot), item.framePrompts).passed
   ).map((item) => item.shotId));
-}
-
-function defaultWorkflow() {
-  return {
-    brief: "completed" as const,
-    strategy: "completed" as const,
-    storyboard: "completed" as const,
-    keyframes: "pending" as const,
-    heroShot: "pending" as const,
-    render: "pending" as const
-  };
 }

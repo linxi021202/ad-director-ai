@@ -33,6 +33,11 @@ export function KeyframeStageWorkspace({ project, selectedShotId, keyframes, bus
   const pipelineState = deriveShotGenerationState(project, shot.id, busy);
   const promptPending = pipelineState.startsWith("prompt_") && pipelineState !== "prompt_ready";
   const promptFailed = pipelineState === "prompt_failed" || pipelineState === "prompt_partial";
+  const promptErrorCode = project.generationEvents?.filter((event) => event.stage === "prompts" && event.shotId === shot.id)
+    .sort((a, b) => b.startedAt - a.startedAt)[0]?.errorCode;
+  const promptFailureTitle = promptErrorCode === "PROJECT_PERSIST_FAILED" ? "镜头详细提示词保存失败"
+    : ["PROMPT_BUNDLE_BUILD_FAILED", "PROMPT_BUNDLE_VALIDATION_FAILED", "TASK_STATE_TRANSITION_FAILED", "UNKNOWN_INTERNAL_ERROR", "VERSION_CONFLICT"].includes(promptErrorCode ?? "")
+      ? "镜头提示词处理异常" : "关键帧规划未完成";
   const status = frame?.isLocked ? "已确认" : busy || keyframe?.status === "loading" ? "生成中" : imageUrl && keyframe?.status === "ready" ? "待确认" : keyframe?.status === "failed" || keyframe?.status === "fallback" || keyframe?.status === "needs-review" ? "需要检查" : "待生成";
   const pendingCount = frames.filter((item) => !item.isLocked).length;
   const earlierVersions = (project.keyframeVersions ?? []).filter((item) => item.shotId === shot.id && item.frameId === frame?.id && (item.localUrl || item.imageUrl)).slice(-10).reverse();
@@ -45,7 +50,7 @@ export function KeyframeStageWorkspace({ project, selectedShotId, keyframes, bus
     {frame ? <div className="keyframe-workspace__moment"><strong>关键帧 {safeIndex + 1} · {(moment?.timestampSec ?? frame.timestampSec).toFixed(1)} 秒</strong><span>{moment?.narrativePurpose ?? frame.description}</span>{safeIndex > 0 && moment ? <small>与上一帧变化：{moment.continuityFromPreviousFrame}</small> : null}</div> : null}
     <div className="keyframe-workspace__preview">
       {imageUrl ? <AdaptiveMediaFrame aspectRatio={project.brief.aspectRatio} stage="keyframe" mediaType="image" src={imageUrl} fit="contain" showBlurredBackdrop={false} alt={`镜头 ${shot.index} 第 ${safeIndex + 1} 帧`} />
-        : <VisualAssetPlaceholder title={promptPending ? busy ? "镜头提示词生成中" : promptFailed ? "关键帧规划未完成" : "镜头提示词待完成" : busy ? "关键帧图片生成中" : status === "需要检查" ? "关键帧图片生成失败" : "关键帧待生成"} description={promptPending ? promptFailed ? "已保留成功的导演基础和逐帧提示词，请查看提示词日志后继续。" : "正在完善镜头提示词，通过检查后再制作图片。" : busy ? "正在制作当前镜头画面。" : status === "需要检查" ? "请查看对应镜头的调用日志后重试。" : "当前镜头还没有关键帧。"} aspectRatio={project.brief.aspectRatio} status={busy ? "running" : promptFailed || status === "需要检查" ? "failed" : "pending"} actionLabel="生成关键帧" onAction={generate} />}
+        : <VisualAssetPlaceholder title={promptPending ? busy ? "镜头提示词生成中" : promptFailed ? promptFailureTitle : "镜头提示词待完成" : busy ? "关键帧图片生成中" : status === "需要检查" ? "关键帧图片生成失败" : "关键帧待生成"} description={promptPending ? promptFailed ? "已保留成功的导演基础和逐帧提示词，请查看提示词日志后继续。" : "正在完善镜头提示词，通过检查后再制作图片。" : busy ? "正在制作当前镜头画面。" : status === "需要检查" ? "请查看对应镜头的调用日志后重试。" : "当前镜头还没有关键帧。"} aspectRatio={project.brief.aspectRatio} status={busy ? "running" : promptFailed || status === "需要检查" ? "failed" : "pending"} actionLabel="生成关键帧" onAction={generate} />}
     </div>
     {frames.length > 1 ? <nav className="keyframe-workspace__pager" aria-label="当前镜头帧导航"><button type="button" aria-label="上一帧" onClick={() => setFrameIndex((safeIndex - 1 + frames.length) % frames.length)}>←</button><span>{safeIndex + 1} / {frames.length}</span><button type="button" aria-label="下一帧" onClick={() => setFrameIndex((safeIndex + 1) % frames.length)}>→</button></nav> : null}
     {frame && imageUrl && keyframe?.status === "ready" ? <div className="keyframe-workspace__confirm"><span>{frame.isLocked ? "当前帧已确认" : "检查画面后确认当前帧"}</span><button type="button" className="button-secondary-v3" disabled={busy} onClick={() => onConfirm(shot.id, frame.id, !frame.isLocked)}>{frame.isLocked ? "取消确认" : "确认当前帧"}</button></div> : null}
