@@ -10,7 +10,7 @@ import {
 import { completeGenerationEvent, failGenerationEvent, startGenerationEvent, updateGenerationEventProgress } from "../../../lib/projects/generationEvents";
 import { selectProviderModel } from "../../../lib/providers/providerRouter";
 import { expandShotPrompts } from "../../../lib/providers/deepseekProvider";
-import { buildShotPromptInputFingerprint, SHOT_PROMPT_PACKAGE_SCHEMA_VERSION } from "../../../lib/prompts/shotPromptFingerprint";
+import { buildShotPromptInputFingerprint, matchesShotPromptInputFingerprint, SHOT_PROMPT_PACKAGE_SCHEMA_VERSION } from "../../../lib/prompts/shotPromptFingerprint";
 import type { ShotPromptExpansionInput } from "../../../lib/prompts/detailedDirectorPrompts";
 import { reviewDetailedPromptPackage } from "../../../lib/director/promptQualityReview";
 import { ensureShotArchitecture } from "../../../lib/storyboard/shotArchitecture";
@@ -113,7 +113,7 @@ export async function POST(request: Request) {
       let checkpoint: DetailedShotPromptDraft = owned.project.shotPromptDrafts?.find((item) =>
         item.shotId === shot.id
         && item.schemaVersion === SHOT_PROMPT_PACKAGE_SCHEMA_VERSION
-        && item.inputFingerprint === inputFingerprint
+        && matchesShotPromptInputFingerprint(item.inputFingerprint, input)
       ) ?? {
         shotId: shot.id,
         schemaVersion: SHOT_PROMPT_PACKAGE_SCHEMA_VERSION,
@@ -322,10 +322,11 @@ function buildPromptInputs(
 }
 
 function validPromptPackageIds(packages: DetailedShotPromptPackage[], inputs: ShotPromptExpansionInput[]) {
-  const expectedByShot = new Map(inputs.map((input) => [input.shot.id, buildShotPromptInputFingerprint(input)]));
+  const expectedByShot = new Map(inputs.map((input) => [input.shot.id, input]));
   return new Set(packages.filter((item) =>
     item.schemaVersion === SHOT_PROMPT_PACKAGE_SCHEMA_VERSION
-    && item.inputFingerprint === expectedByShot.get(item.shotId)
+    && expectedByShot.has(item.shotId)
+    && matchesShotPromptInputFingerprint(item.inputFingerprint, expectedByShot.get(item.shotId)!)
     && reviewDetailedPromptPackage(item).passed
     && validateDetailedKeyframePlan(ensureShotArchitecture(inputs.find((input) => input.shot.id === item.shotId)!.shot), item.framePrompts).passed
   ).map((item) => item.shotId));

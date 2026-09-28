@@ -9,7 +9,7 @@ import { detailedShotPromptPackageSchema, type DetailedShotPromptPackage, type P
 import { reviewDetailedPromptPackage } from "../director/promptQualityReview";
 import { ensureShotArchitecture } from "../storyboard/shotArchitecture";
 import { validateDetailedKeyframePlan } from "../storyboard/keyframePlan";
-import { buildShotPromptInputFingerprint } from "./shotPromptFingerprint";
+import { matchesShotPromptInputFingerprint } from "./shotPromptFingerprint";
 import { isShotPromptReady } from "./shotPromptReadiness";
 
 export type PromptFailurePhase = "MODEL_REQUEST_FAILED" | "SCHEMA_VALIDATION_FAILED" | "PROMPT_QA_FAILED"
@@ -82,11 +82,11 @@ export async function commitFinalPromptBundle(context: CommitContext, raw: Detai
     }
     await step("prompt-bundle-validated", { canonicalValid: true });
     phase = "VERSION_CONFLICT";
-    const currentFingerprint = buildShotPromptInputFingerprint({ brief: before.project.brief, strategy: before.project.strategy,
+    const fingerprintMatches = matchesShotPromptInputFingerprint(inputFingerprint, { brief: before.project.brief, strategy: before.project.strategy,
       shot, previousShot: before.project.shots.find((item) => item.index === shot.index - 1),
       productVisualSpec: before.project.productVisualSpec ?? productVisualSpec,
       visualContinuityBible: before.project.visualContinuityBible, referencePack: before.project.referencePack });
-    if (currentFingerprint !== inputFingerprint) throw new AnonymousProjectVersionConflictError();
+    if (!fingerprintMatches) throw new AnonymousProjectVersionConflictError();
     phase = "PROJECT_PERSIST_FAILED";
     await step("prompt-bundle-persisting");
     const saved = await saveOwnedShotPromptPackage(context.sessionId, context.projectId, bundle, productVisualSpec);

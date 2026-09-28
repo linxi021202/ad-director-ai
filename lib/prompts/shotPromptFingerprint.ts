@@ -17,6 +17,17 @@ export function buildShotPromptInputFingerprint(input: ShotPromptExpansionInput)
   })).digest("hex");
 }
 
+export function matchesShotPromptInputFingerprint(fingerprint: string | undefined, input: ShotPromptExpansionInput): boolean {
+  if (!fingerprint) return false;
+  if (fingerprint === buildShotPromptInputFingerprint(input)) return true;
+  // Project writes fill missing empty asset lists; this is not an upstream edit.
+  const images = input.brief.productImages?.length ? [input.brief.productImages] : [undefined, []];
+  const assets = input.brief.productAssetIds?.length ? [input.brief.productAssetIds] : [undefined, []];
+  return images.some((productImages) => assets.some((productAssetIds) => fingerprint === buildShotPromptInputFingerprint({
+    ...input, brief: { ...input.brief, productImages, productAssetIds }
+  })));
+}
+
 function promptSourceShot(shot: ShotPromptExpansionInput["shot"]) {
   const {
     imagePromptCn: _imagePromptCn,

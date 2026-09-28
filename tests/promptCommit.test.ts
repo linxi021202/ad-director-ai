@@ -199,4 +199,13 @@ describe("final prompt commit", () => {
     expect(result.success).toBe(true); expect(result.data?.framePrompts).toHaveLength(3);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("commits an already successful checkpoint when a task write fills missing empty asset lists", async () => {
+    const data = await fixture();
+    const legacyInput = { ...data.input, brief: { ...data.input.brief, productImages: undefined, productAssetIds: undefined } };
+    const fingerprint = buildShotPromptInputFingerprint(legacyInput);
+    const saved = await commitFinalPromptBundle(data.context, { ...data.bundle, inputFingerprint: fingerprint }, fingerprint);
+    expect(isShotPromptReady(saved.record.project, saved.record.project.shots[2]!)).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });

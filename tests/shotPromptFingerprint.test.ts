@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
-import { buildShotPromptInputFingerprint } from "../lib/prompts/shotPromptFingerprint";
+import { buildShotPromptInputFingerprint, matchesShotPromptInputFingerprint } from "../lib/prompts/shotPromptFingerprint";
 
 function input() {
   return {
@@ -32,6 +32,14 @@ function input() {
 }
 
 describe("shot prompt input fingerprint", () => {
+  it("treats absent and persisted empty asset lists as equivalent without accepting actual reference changes", () => {
+    const source = { ...input(), brief: { ...input().brief, productImages: undefined, productAssetIds: undefined } };
+    const fingerprint = buildShotPromptInputFingerprint(source);
+    expect(matchesShotPromptInputFingerprint(fingerprint, { ...source, brief: { ...source.brief, productImages: [], productAssetIds: [] } })).toBe(true);
+    expect(matchesShotPromptInputFingerprint(fingerprint, { ...source, brief: { ...source.brief,
+      productAssetIds: ["00000000-0000-4000-8000-000000000002"] } })).toBe(false);
+    expect(matchesShotPromptInputFingerprint(fingerprint, { ...source, shot: { ...source.shot, goal: "上游镜头目标已改变" } })).toBe(false);
+  });
   it("stays stable when only generated prompt text changes", () => {
     const source = input();
     const changed = {

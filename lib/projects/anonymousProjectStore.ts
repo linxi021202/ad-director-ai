@@ -10,7 +10,7 @@ import { ensureProjectContinuity } from "@/lib/continuity/projectContinuity";
 import { buildPartialNarrationPlan } from "@/lib/audio/narrationPlan";
 import { ensureStoryboardArchitecture } from "@/lib/storyboard/shotArchitecture";
 import { planShotKeyframeMoments } from "@/lib/storyboard/keyframePlan";
-import { buildShotPromptInputFingerprint } from "@/lib/prompts/shotPromptFingerprint";
+import { matchesShotPromptInputFingerprint } from "@/lib/prompts/shotPromptFingerprint";
 import {
   adStrategySchema,
   aspectRatioSchema,
@@ -626,7 +626,7 @@ export async function saveOwnedShotPromptPackage(
     if (!targetShot) {
       throw new Error("PROMPT_PACKAGE_SHOT_NOT_FOUND");
     }
-    if (parsedPackage.inputFingerprint && parsedPackage.inputFingerprint !== buildShotPromptInputFingerprint({
+    if (parsedPackage.inputFingerprint && !matchesShotPromptInputFingerprint(parsedPackage.inputFingerprint, {
       brief: project.brief, strategy: project.strategy, shot: targetShot,
       previousShot: project.shots.find((shot) => shot.index === targetShot.index - 1),
       productVisualSpec: project.productVisualSpec ?? productVisualSpec,
