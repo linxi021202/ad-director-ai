@@ -9,6 +9,7 @@
   | "no_image_url"
   | "task_timeout"
   | "provider_call_failed"
+  | "storage_capacity_low"
   | "unknown";
 
 export type ProviderDiagnostic = {
@@ -108,6 +109,12 @@ export function diagnoseProviderFallback(error: unknown): ProviderDiagnostic {
 
 export function diagnoseQwenImageFallback(error: unknown): ProviderDiagnostic {
   const { message, normalized } = normalizeMessage(error);
+
+  if (/enospc|edquot|no space left|storage_capacity_low|存储空间不足|存储暂不可用/.test(normalized)) {
+    return { code: "storage_capacity_low", title: "服务器素材存储不足",
+      detail: "服务器没有足够的可用存储空间保存生成图片，这不是图像模型或密钥问题。",
+      hint: "请先扩容存储或清理不需要的素材，再重试；不要继续重复生成图片。" };
+  }
 
   if (normalized.includes("enable_real_image")) {
     return {

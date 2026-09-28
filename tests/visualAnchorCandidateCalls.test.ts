@@ -26,6 +26,7 @@ import { listModelCallLogs } from "../lib/logs/modelCallStore";
 import { buildModelCallExport, modelCallExportMarkdown } from "../lib/logs/modelCallExport";
 import { ensureVisualAnchorWorkspace } from "../lib/visual/visualAnchors";
 import { sceneRequiresProductReference } from "../lib/visual/anchorPrompts";
+import * as storageCapacity from "../lib/assets/storageCapacity";
 
 const originalEnv = { ...process.env };
 let root = "";
@@ -39,12 +40,28 @@ beforeEach(async () => {
   vi.mocked(generateQwenImageAdaptive).mockReset();
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   resetAnonymousProjectQueuesForTests();
   await rm(root, { recursive: true, force: true });
   process.env = { ...originalEnv };
 });
 
 describe("visual anchor candidate calls", () => {
+  it("rejects a full-storage candidate batch before model calls or event writes", async () => {
+    const created = await createAnonymousProject(session.id, { templateId: "cold-brew-demo" });
+    const continuity = buildProjectContinuity({ brief: created.project.brief, strategy: created.project.strategy!, shots: created.project.shots });
+    const saved = await mutateOwnedAnonymousProject(session.id, created.id, (project) => ensureVisualAnchorWorkspace({ ...project, ...continuity }));
+    vi.spyOn(storageCapacity, "assertImageStorageCapacity").mockRejectedValue(new storageCapacity.StorageCapacityError("STORAGE_CAPACITY_LOW"));
+    const response = await POST(new Request(`http://localhost/api/projects/${created.id}/visual-anchors`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "generate-candidates", kind: "scene", targetId: saved.project.sceneVisualSpecs![0]!.id,
+        count: 3, expectedVersion: saved.version })
+    }), { params: Promise.resolve({ projectId: created.id }) });
+    expect(response.status).toBe(507);
+    expect((await response.json()).error).toContain("存储空间不足");
+    expect(generateQwenImageAdaptive).not.toHaveBeenCalled();
+    expect(await listModelCallLogs(session.id, { projectId: created.id, stage: "anchors" })).toHaveLength(0);
+  });
   it("distinguishes empty scenes from scenes that explicitly place the real product", async () => {
     const created = await createAnonymousProject(session.id, { templateId: "cold-brew-demo" });
     const spec = ensureVisualAnchorWorkspace({ ...created.project,

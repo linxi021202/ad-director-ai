@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 
 import { diagnoseQwenImageFallback } from "../../../lib/api/provider-diagnostics";
 import { upsertModelCallLog } from "../../../lib/logs/modelCallStore";
+import { assertImageStorageCapacity, StorageCapacityError } from "../../../lib/assets/storageCapacity";
 import type { QwenModelAttempt } from "../../../lib/image/qwenImageModelRouter";
 import { markPrivateAssetsLifecycle } from "../../../lib/assets/assetStore";
 import { apiJson, sanitizeApiError } from "../../../lib/api/response";
@@ -153,6 +154,12 @@ export async function POST(request: Request) {
     const targetFrames = selectTargetFrames(targetShots, parsed.data.frameIds);
     if (!targetFrames.length) {
       return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "frame-validation" }, fallbackUsed: false, error: "没有找到可生成的镜头帧。" }, 400);
+    }
+    try { await assertImageStorageCapacity(); }
+    catch (error) {
+      if (!(error instanceof StorageCapacityError)) throw error;
+      return apiJson({ success: false, data: null, fallbackUsed: false, error: error.message,
+        trace: { route: "generate-images", stage: "storage-preflight", errorCode: error.code } }, 507);
     }
     const fingerprintByFrame = new Map(targetFrames.map(({ shot, frame }) => {
       const version = owned.project.keyframeVersions?.filter((item) => item.shotId === shot.id && item.frameId === frame.id)

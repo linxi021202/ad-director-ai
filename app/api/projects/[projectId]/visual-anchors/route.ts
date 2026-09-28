@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { generateQwenImageAdaptive, type QwenModelAttempt } from "@/lib/image/qwenImageModelRouter";
 import { qwenImageUserMessage } from "@/lib/image/qwenImageErrors";
+import { assertImageStorageCapacity, StorageCapacityError } from "@/lib/assets/storageCapacity";
 import { readProductReferenceDataUrl, selectPrimaryProductImage } from "@/lib/image/productReference";
 import type { QwenImageResult } from "@/lib/image/types";
 import { upsertModelCallLog } from "@/lib/logs/modelCallStore";
@@ -179,6 +180,11 @@ async function generateCandidates(
     ? project.visualAnchorWorkspace!.characterBriefs.find((item) => item.id === body.targetId)
     : project.sceneVisualSpecs?.find((item) => item.id === body.targetId);
   if (!target) return failure("VISUAL_ANCHOR_TARGET_NOT_FOUND", "没有找到对应的视觉基准需求。", 404);
+  try { await assertImageStorageCapacity(body.count); }
+  catch (error) {
+    if (!(error instanceof StorageCapacityError)) throw error;
+    return failure(error.code, error.message, 507);
+  }
   const needsProductReference = body.kind === "scene" && sceneRequiresProductReference(target as SceneVisualSpec, project.brief.productName);
 
   const event = await startGenerationEvent(sessionId, projectId, {
@@ -269,9 +275,9 @@ async function generateCandidates(
     const successful = results.filter((item): item is { requestItem: (typeof results)[number]["requestItem"]; result: QwenImageResult } => Boolean(item.result?.success && item.result.assetId));
     if (successful.length === 0) {
       const firstCode = results.find((item) => item.result?.errorCode)?.result?.errorCode;
-      await failGenerationEvent(sessionId, projectId, event.id, "本次候选均未生成成功，已有候选保持不变。", "PROVIDER_REQUEST_FAILED");
       const guidance = results.every((item) => !item.result) && needsProductReference
         ? "真实商品参考图无法读取，请重新上传主产品图后重试。" : qwenImageUserMessage(firstCode);
+      await failGenerationEvent(sessionId, projectId, event.id, `已有候选保持不变。${guidance}`, firstCode ?? "PROVIDER_REQUEST_FAILED");
       return failure("VISUAL_ANCHOR_GENERATION_FAILED", guidance, 502);
     }
     const now = new Date().toISOString();
@@ -322,6 +328,7 @@ type AnchorFailurePhase = "PROMPT_BUILD_FAILED" | "REFERENCE_ASSET_LOAD_FAILED" 
 function anchorFailurePhase(result: QwenImageResult): AnchorFailurePhase | undefined {
   if (result.success && result.assetId) return undefined;
   if (result.errorCode === "ASSET_DOWNLOAD_FAILED") return "ASSET_DOWNLOAD_FAILED";
+  if (result.errorCode === "STORAGE_CAPACITY_LOW" || result.errorCode === "STORAGE_UNAVAILABLE") return "ASSET_PERSIST_FAILED";
   if (result.errorCode === "ASSET_PERSIST_FAILED" || (result.success && !result.assetId)) return "ASSET_PERSIST_FAILED";
   if (result.errorCode === "SUBMISSION_STATE_UNKNOWN") return "MODEL_SUBMISSION_FAILED";
   if (result.errorCode === "TASK_POLL_INTERRUPTED") return "MODEL_GENERATION_FAILED";

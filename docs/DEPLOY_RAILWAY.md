@@ -53,3 +53,9 @@ The submission timeout is independent of the image generation timeout. Keep the 
 5. Test the full workflow in two separate browser sessions.
 
 Deployments interrupt an active in-process render. After a restart, the project reports the interrupted render as failed and allows the visitor to retry.
+
+## Storage capacity
+
+Image generation requires at least 32 MiB free on `STORAGE_ROOT`; three-candidate batches require 64 MiB. The reserve protects project metadata and logs. Requests are rejected before paid model submission when capacity is insufficient.
+`/api/health` reports `status: degraded`, free/total bytes and `imageGenerationReady: false` when storage is low, while returning HTTP 200 so the service remains accessible for recovery. Deployment readiness failures still return HTTP 503.
+An `ENOSPC` or `EDQUOT` write failure is a storage problem, not a Qwen model or account failure. Expand the attached Railway volume or explicitly remove unneeded assets after checking their references; never delete the volume or active project files to free space. A plan upgrade and the attached volume size must both be checked in Railway; do not assume upgrading alone resized the existing volume.

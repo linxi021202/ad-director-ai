@@ -3,7 +3,7 @@ export type QwenFailureCode =
   | "MODEL_NOT_AVAILABLE" | "MODEL_TEMPORARILY_UNAVAILABLE" | "MODEL_NOT_SUPPORTED_IN_REGION" | "INVALID_PARAMETER"
   | "INVALID_PROMPT" | "INVALID_IMAGE" | "REFERENCE_IMAGE_NOT_SUPPORTED"
   | "REQUEST_TIMEOUT" | "SUBMISSION_STATE_UNKNOWN" | "TASK_POLL_INTERRUPTED" | "TEMPORARY_PROVIDER_ERROR" | "PROVIDER_ERROR"
-  | "ASSET_DOWNLOAD_FAILED" | "ASSET_PERSIST_FAILED" | "PROVIDER_NOT_CONFIGURED";
+  | "ASSET_DOWNLOAD_FAILED" | "ASSET_PERSIST_FAILED" | "PROVIDER_NOT_CONFIGURED" | "STORAGE_CAPACITY_LOW" | "STORAGE_UNAVAILABLE";
 
 export function classifyQwenFailure(httpStatus: number | undefined, providerCode: string | undefined, message: string): QwenFailureCode {
   const detail = `${providerCode ?? ""} ${message}`.toLowerCase();
@@ -32,6 +32,8 @@ export function shouldFallbackQwen(code: QwenFailureCode): boolean {
 }
 
 export function qwenImageUserMessage(code?: string): string {
+  if (code === "STORAGE_CAPACITY_LOW") return "服务器素材存储空间不足，图片无法保存。请先扩容存储或清理不需要的素材，再重试。";
+  if (code === "STORAGE_UNAVAILABLE") return "服务器素材存储暂不可用，已暂停图片生成，请稍后重试或联系管理员。";
   if (code === "QUOTA_EXHAUSTED" || code === "MODEL_NOT_AVAILABLE" || code === "MODEL_TEMPORARILY_UNAVAILABLE" || code === "MODEL_NOT_SUPPORTED_IN_REGION")
     return "当前图像模型免费额度已用尽或模型暂不可用，系统已尝试其它可用模型；请检查模型设置或更换可用模型账户。";
   if (code === "INSUFFICIENT_BALANCE" || code === "AUTH_FAILED" || code === "PROVIDER_NOT_CONFIGURED")

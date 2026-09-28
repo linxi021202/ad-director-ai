@@ -88,6 +88,7 @@ export type QwenTaskProgress = {
 };
 
 export type DownloadImageResult = {
+  errorCode?: "STORAGE_CAPACITY_LOW";
   success: boolean;
   assetId?: string;
   localUrl?: string;

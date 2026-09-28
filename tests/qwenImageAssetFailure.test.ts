@@ -38,4 +38,13 @@ describe("Qwen private asset failures", () => {
     expect(result.assetId).toBeUndefined();
     expect(createPrivateAsset).toHaveBeenCalledTimes(1);
   });
+
+  it("preserves a successful provider response but identifies ENOSPC as a storage problem", async () => {
+    vi.mocked(createPrivateAsset).mockRejectedValue(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url.includes("example.com")
+      ? new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { "Content-Type": "image/png" } })
+      : new Response(JSON.stringify({ output: { results: [{ image_url: "https://example.com/generated.png" }] } }))));
+    expect(await callQwenImage(input)).toMatchObject({ success: false, errorCode: "STORAGE_CAPACITY_LOW", httpStatus: 200,
+      cacheStatus: "remote-only", error: "ENOSPC: no space left on device, write" });
+  });
 });

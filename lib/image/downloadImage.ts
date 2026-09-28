@@ -1,5 +1,6 @@
 import { createPrivateAsset, getProjectAssetUrl } from "../assets/assetStore";
 import { validateGeneratedImage } from "../assets/media";
+import { isStorageFullError } from "../assets/storageCapacity";
 import type { DownloadImageInput, DownloadImageResult } from "./types";
 
 function assertServerOnly() {
@@ -43,6 +44,7 @@ export async function downloadGeneratedImage(input: DownloadImageInput): Promise
       cacheStatus: "cached"
     };
   } catch (error) {
-    return { success: false, cacheStatus: "remote-only", error: sanitizeDownloadError(error), failureStage };
+    return { success: false, cacheStatus: "remote-only", error: sanitizeDownloadError(error), failureStage,
+      ...(isStorageFullError(error) ? { errorCode: "STORAGE_CAPACITY_LOW" as const } : {}) };
   }
 }

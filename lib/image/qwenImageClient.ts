@@ -3,6 +3,7 @@ import { resolveProviderApiKey } from "../secrets/resolver";
 import { downloadGeneratedImage } from "./downloadImage";
 import { estimateQwenImageCost } from "./imageCostEstimate";
 import { classifyQwenFailure } from "./qwenImageErrors";
+import { assertImageStorageCapacity, StorageCapacityError } from "../assets/storageCapacity";
 import { classifySubmissionFailure, describeDashScopeEndpoint } from "./dashscopeDiagnostics";
 import type { QwenImageRequest, QwenImageResult, QwenNetworkFailure, QwenSubmissionDiagnostic, QwenTaskProgress } from "./types";
 
@@ -304,7 +305,7 @@ function taskMessage(payload: unknown) { return getStringProperty(payload, "mess
 async function cacheImageIfNeeded(
   input: QwenImageRequest,
   imageUrl: string
-): Promise<Pick<QwenImageResult, "assetId" | "localUrl" | "cacheStatus" | "error"> & { failureStage?: "download" | "persist" }> {
+): Promise<Pick<QwenImageResult, "assetId" | "localUrl" | "cacheStatus" | "error" | "errorCode"> & { failureStage?: "download" | "persist" }> {
   if (!input.projectId || !input.shotId) return { cacheStatus: "remote-only" };
   const download = await downloadGeneratedImage({
     imageUrl,
@@ -317,6 +318,7 @@ async function cacheImageIfNeeded(
     localUrl: download.localUrl,
     cacheStatus: download.cacheStatus,
     error: download.error,
+    errorCode: download.errorCode,
     failureStage: download.failureStage
   };
 }
@@ -367,6 +369,15 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         costEstimate: estimateQwenImageCost(size),
         error: "DASHSCOPE_API_KEY is required when ENABLE_REAL_IMAGE=true.", errorCode: "PROVIDER_NOT_CONFIGURED"
       };
+    }
+
+    if (input.projectId && input.shotId && !input.resumeTaskId) {
+      try { await assertImageStorageCapacity(); }
+      catch (error) {
+        if (!(error instanceof StorageCapacityError)) throw error;
+        return { success: false, provider: "dashscope", model, latencyMs: Date.now() - startedAt, size,
+          cacheStatus: "not-requested", errorCode: error.code, error: error.message };
+      }
     }
 
     const isAsync = model === "qwen-image-3.0";
@@ -483,7 +494,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
         cacheStatus: cached.cacheStatus,
         costEstimate: estimateQwenImageCost(size),
         error: sanitizeErrorMessage(cached.error || "Generated image could not be persisted privately."),
-        errorCode: cached.failureStage === "download" ? "ASSET_DOWNLOAD_FAILED" : "ASSET_PERSIST_FAILED",
+        errorCode: cached.errorCode ?? (cached.failureStage === "download" ? "ASSET_DOWNLOAD_FAILED" : "ASSET_PERSIST_FAILED"),
         httpStatus: response?.status, taskId, requestStartedAt, requestCompletedAt, submissionElapsedMs, downloadElapsedMs, submissionDiagnostic
       };
     }

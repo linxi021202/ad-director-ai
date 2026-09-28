@@ -28,6 +28,7 @@ import { POST as generateStrategyPOST } from "../app/api/generate-strategy/route
 import { POST as renderVideoPOST } from "../app/api/render-video/route";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { createPrivateAsset } from "../lib/assets/assetStore";
+import * as storageCapacity from "../lib/assets/storageCapacity";
 import { clearQwenModelAvailability } from "../lib/image/qwenImageModelRouter";
 import { listModelCallLogs } from "../lib/logs/modelCallStore";
 import { GET as exportCallLogs } from "../app/api/call-logs/export/route";
@@ -86,6 +87,16 @@ async function completedImageResponse(response: Response) {
 }
 
 describe("second-stage API routes", () => {
+  it("blocks keyframe generation on low storage before creating a batch or requesting providers", async () => {
+    vi.spyOn(storageCapacity, "assertImageStorageCapacity").mockRejectedValue(new storageCapacity.StorageCapacityError("STORAGE_CAPACITY_LOW"));
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const response = await generateImagesPOST(jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots" }));
+    expect(response.status).toBe(507);
+    expect((await response.json()).error).toContain("存储空间不足");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
+    expect(saved.project.generationEvents?.some((event) => event.stage === "keyframes")).not.toBe(true);
+  });
   beforeEach(async () => {
     process.env = { ...originalEnv };
     process.env.AI_MODE = "mock";
