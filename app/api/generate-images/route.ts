@@ -38,6 +38,7 @@ import type { ProductVisualSpec } from "../../../lib/schemas/project";
 import { createMockKeyframeQA, inspectKeyframe } from "../../../lib/visual/visualQA";
 import { ensureShotArchitecture } from "../../../lib/storyboard/shotArchitecture";
 import { ensureVisualAnchorWorkspace, getVisualAnchorReadiness } from "../../../lib/visual/visualAnchors";
+import { isShotPromptReady } from "../../../lib/prompts/shotPromptReadiness";
 
 const QWEN_FRAME_CONCURRENCY = 2;
 
@@ -151,6 +152,11 @@ export async function POST(request: Request) {
       }, 400);
     }
     const targetShots = selectTargetShots(requestedShots, parsed.data.mode, maxImagesPerRun, owned.project.heroShotId);
+    if (process.env.AI_MODE === "real" && targetShots.some((shot) => !isShotPromptReady(owned.project, shot))) {
+      return apiJson({ success: false, data: null, fallbackUsed: false,
+        trace: { route: "generate-images", stage: "prompt-readiness-gate", realImageCalled: false },
+        error: "镜头提示词或关键帧规划尚未通过质量检查，请先完成镜头提示词。" }, 409);
+    }
     const targetFrames = selectTargetFrames(targetShots, parsed.data.frameIds);
     if (!targetFrames.length) {
       return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "frame-validation" }, fallbackUsed: false, error: "没有找到可生成的镜头帧。" }, 400);

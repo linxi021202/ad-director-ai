@@ -22,7 +22,9 @@ describe("DeepSeek staged director quality", () => {
     const parsed = detailedShotPromptPackageSchema.safeParse(packageValue);
     expect(parsed.success, parsed.success ? undefined : parsed.error.message).toBe(true);
     expect(reviewDetailedPromptPackage(packageValue).passed).toBe(true);
-    expect(detailedShotPromptPackageSchema.safeParse({ ...packageValue, qualityScores: { ...packageValue.qualityScores, visualSpecificity: 6 } }).success).toBe(false);
+    const shallow = { ...packageValue, qualityScores: { ...packageValue.qualityScores, visualSpecificity: 6 } };
+    expect(detailedShotPromptPackageSchema.safeParse(shallow).success).toBe(true);
+    expect(reviewDetailedPromptPackage(shallow).qualityIssues).toContainEqual(expect.objectContaining({ path: "qualityScores.visualSpecificity", code: "LOW_QUALITY_SCORE" }));
   });
 
   it("uses per-shot expansion and persists full packages", () => {

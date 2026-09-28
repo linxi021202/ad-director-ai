@@ -35,6 +35,8 @@ import type { OptimizedCopy, ProviderRequestContext, RealTextProviderResponse, T
 import { resolveShotPlan, validateShotConfiguration } from "../video/shotConfig";
 import { ensureShotArchitecture, ensureStoryboardArchitecture } from "../storyboard/shotArchitecture";
 import { planShotKeyframeMoments, validateDetailedKeyframePlan } from "../storyboard/keyframePlan";
+import { normalizeDetailedPromptOutput, DETAILED_PROMPT_CONTRACT, type PromptQualityIssue } from "../ai/contracts/detailedPrompts";
+import { reviewDetailedPromptPackage } from "../director/promptQualityReview";
 import {
   buildStoryboardRepairPrompt,
   mergeStoryboardChunks,
@@ -221,7 +223,12 @@ async function reportModelCall(context: ProviderRequestContext | undefined, resu
     outputLength: result.outputLength, finishReason: result.finishReason ?? undefined,
     jsonParsed: result.json !== undefined, schemaValid: validation.schemaValid,
     validationPath: validation.validationPath, validationIssues: validation.validationIssues,
-    requestOptions, normalized: validation.normalized, repaired: validation.repaired
+    requestOptions, normalized: validation.normalized, repaired: validation.repaired,
+    ...(context.modelCallPass === "C" ? {
+      promptStage: context.modelCallMode?.includes("repair") ? "repair" as const : context.modelCallMode?.startsWith("foundation") ? "foundation" as const : "frame" as const,
+      resultVersion: context.modelCallMode?.includes("repair") ? "repaired" as const : validation.normalized ? "normalized" as const : "raw" as const,
+      canonicalValid: validation.schemaValid, finalUsed: false
+    } : {})
     });
   } catch {
     // A diagnostics write must never turn a valid model result into a failed generation.
@@ -239,7 +246,8 @@ async function callAndValidate<TData>(
   prompt: string,
   schema: z.ZodType<TData>,
   options?: { temperature?: number; maxTokens?: number },
-  context?: ProviderRequestContext
+  context?: ProviderRequestContext,
+  normalize?: typeof normalizeDetailedPromptOutput
 ): Promise<RealTextProviderResponse<TData> & { invalidJson?: unknown; invalidContent?: string; validationIssues?: Array<{ path: string; code: string; message: string }> }> {
   const startedAt = Date.now();
   const runtime = getDeepSeekRuntimeConfig();
@@ -283,10 +291,11 @@ async function callAndValidate<TData>(
       continue;
     }
 
-    const parsed = schema.safeParse(result.json);
+    const converted = normalize?.(result.json);
+    const parsed = schema.safeParse(converted ? converted.value : result.json);
     const issues = parsed.success ? undefined : parsed.error.issues.slice(0, 20).map((issue) => ({ path: issue.path.join("."), code: issue.code, message: issue.message }));
     await reportModelCall(context, result, attempt + 1, parsed.success
-      ? { schemaValid: true }
+      ? { schemaValid: true, normalized: converted?.normalized, repaired: context?.modelCallMode?.includes("repair") }
       : { success: false, error: parsed.error.message, schemaValid: false, validationPath: parsed.error.issues[0]?.path.join("."), validationIssues: issues }, requestOptions);
 
     if (parsed.success) {
@@ -713,7 +722,10 @@ export async function expandShotPrompts(
       refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["videoPromptCn"], message: "VIDEO_TIMELINE_REQUIRED" });
     }
   });
-  let foundationData = context?.resumeShotPromptDraft?.foundation;
+  const savedFoundation = normalizeDetailedPromptOutput(context?.resumeShotPromptDraft?.foundation);
+  const checkedFoundation = foundationSchema.safeParse(savedFoundation.value);
+  let foundationData = checkedFoundation.success ? checkedFoundation.data : undefined;
+  if (foundationData && savedFoundation.normalized) await context?.onShotPromptFoundation?.(foundationData);
   if (!foundationData) {
     const foundation = await callPromptSegment(
       buildShotPromptFoundationPrompt(input),
@@ -735,9 +747,12 @@ export async function expandShotPrompts(
   const plannedMoments = planShotKeyframeMoments(shot);
   const validFrameIds = new Set(frames.map((frame) => frame.id));
   const framePrompts: DetailedShotPromptPackage["framePrompts"] = (context?.resumeShotPromptDraft?.framePrompts ?? [])
-    .filter((frame) => validFrameIds.has(frame.frameId));
+    .filter((frame) => validFrameIds.has(frame.frameId) && detailedFramePromptSchema.safeParse(frame).success
+      && frame.timestampSec === plannedMoments.find((item) => item.frameId === frame.frameId)?.timestampSec
+      && frame.role === frames.find((item) => item.id === frame.frameId)?.role);
   const completedFrameIds = new Set(framePrompts.map((frame) => frame.frameId));
   const pendingFrames = frames.filter((frame) => !completedFrameIds.has(frame.id));
+  const frameFoundation = foundationData;
   for (let frameOffset = 0; frameOffset < pendingFrames.length; frameOffset += 2) {
     const frameBatch = pendingFrames.slice(frameOffset, frameOffset + 2);
     const results = await Promise.all(frameBatch.map(async (frame) => {
@@ -752,8 +767,8 @@ export async function expandShotPrompts(
       return {
         frame,
         result: await callPromptSegment(
-          buildSingleFramePromptExpansionPrompt(input, frame, foundationData),
-          buildSingleFramePromptExpansionPrompt(input, frame, foundationData, true),
+          buildSingleFramePromptExpansionPrompt(input, frame, frameFoundation),
+          buildSingleFramePromptExpansionPrompt(input, frame, frameFoundation, true),
           frameSchema,
           TEXT_OUTPUT_BUDGETS.shotPromptFrame,
           { ...context, modelCallPass: "C", modelCallShotId: input.shot.id, modelCallFrameId: frame.id, modelCallMode: "frame" }
@@ -783,21 +798,73 @@ export async function expandShotPrompts(
     await context?.onModelCall?.({ model, pass: "C", shotId: shot.id, frameId: planCheck.frameId,
       attempt: planRetry + 1, mode: "keyframe-plan-validation", latencyMs: 0, success: false,
       error: `${planCheck.code}：当前镜头的逐帧计划重复或无法自然衔接。`, errorCode: planCheck.code,
-      jsonParsed: true, schemaValid: false });
+      jsonParsed: true, schemaValid: true, promptStage: "qa", resultVersion: "final", canonicalValid: true, finalUsed: false,
+      qualityIssues: [{ path: `framePrompts[${assembled.data.framePrompts.findIndex((frame) => frame.frameId === planCheck.frameId)}].frozenMoment`, code: planCheck.code, reason: "时间锚点重复或动作无法连续衔接", suggestion: "只修复该帧的动作状态，保持其它帧不变" }] });
     if (planRetry < 1) {
-      await context?.onShotPromptPlanReset?.();
       return expandShotPrompts(input, { ...context, resumeShotPromptDraft: {
         shotId: shot.id, schemaVersion: 2, inputFingerprint: context?.resumeShotPromptDraft?.inputFingerprint ?? "0".repeat(64),
-        foundation: foundationData, framePrompts: []
+        foundation: foundationData, framePrompts: framePrompts.filter((frame) => frame.frameId !== planCheck.frameId)
       } }, planRetry + 1);
     }
     return failureResponse(model, Date.now() - startedAt, planCheck.code, tokenUsage);
   }
-  const concreteTerms = ["机位", "焦段", "前景", "中景", "背景", "主光", "材质", "产品"];
-  if (concreteTerms.filter((term) => assembled.data.directingNotesCn.includes(term) || assembled.data.framePrompts.some((frame) => frame.imagePromptCn.includes(term))).length < 6) {
-    return failureResponse(model, Date.now() - startedAt, "VAGUE_PROMPT：缺少可执行摄影信息。", tokenUsage);
+  let finalData = assembled.data;
+  let review = reviewDetailedPromptPackage(finalData);
+  for (let attempt = 1; !review.passed && attempt <= 2; attempt += 1) {
+    await context?.onModelCall?.({ model, pass: "D", shotId: shot.id, attempt, mode: "prompt-quality-review", latencyMs: 0,
+      success: false, errorCode: "VAGUE_PROMPT", error: review.issues.join("；"), jsonParsed: true, schemaValid: true,
+      promptStage: "qa", resultVersion: "final", canonicalValid: true, finalUsed: false, qualityIssues: review.qualityIssues });
+    const groups = new Map<string, PromptQualityIssue[]>();
+    for (const issue of review.qualityIssues) {
+      const match = issue.path.match(/^framePrompts\[(\d+)\]\./);
+      const group = match ? match[1]! : "foundation";
+      groups.set(group, [...(groups.get(group) ?? []), issue]);
+    }
+    let repairedAny = false;
+    for (const [group, issues] of groups) {
+      const index = group === "foundation" ? undefined : Number(group);
+      const source = index === undefined ? foundationData : finalData.framePrompts[index]!;
+      const shape: z.ZodRawShape = index === undefined ? detailedShotPromptFoundationSchema.shape : detailedFramePromptSchema.shape;
+      const keys = [...new Set(issues.map((issue) => issue.path.replace(/^framePrompts\[\d+\]\./, "").split(".")[0]!))];
+      const patchShape: z.ZodRawShape = {};
+      for (const key of keys) if (key in shape) patchShape[key] = shape[key]!;
+      if (Object.keys(patchShape).length !== keys.length) continue;
+      const repaired = await callAndValidate(
+        `只修复列出的字段，返回只包含 ${keys.join("、")} 的 JSON 对象，不得改变其它字段、镜头身份、时间锚点或已确认分镜。${DETAILED_PROMPT_CONTRACT}\n字段问题：${JSON.stringify(issues)}\n当前值：${JSON.stringify(source)}\n已确认镜头与时间锚点：${JSON.stringify({ shot: { id: shot.id, durationSec: shot.durationSec, goal: shot.goal, microBeats: shot.microBeats }, moments: plannedMoments })}`,
+        z.object(patchShape).strict(), { temperature: 0.15, maxTokens: index === undefined ? TEXT_OUTPUT_BUDGETS.shotPromptFoundation : TEXT_OUTPUT_BUDGETS.shotPromptFrame },
+        { ...context, maxProviderAttempts: 1, modelCallPass: "C", modelCallShotId: shot.id, modelCallFrameId: index === undefined ? undefined : finalData.framePrompts[index]!.frameId, modelCallMode: "quality-field-repair" }, normalizeDetailedPromptOutput
+      );
+      tokenUsage = addTokenUsage(tokenUsage, repaired.tokenUsage);
+      if (!repaired.success || !repaired.data) continue;
+      if (index === undefined) {
+        const checked = foundationSchema.safeParse({ ...foundationData, ...repaired.data });
+        if (!checked.success) continue;
+        foundationData = checked.data;
+        finalData = { ...finalData, ...foundationData };
+        await context?.onShotPromptFoundation?.(foundationData);
+      } else {
+        const checked = detailedFramePromptSchema.safeParse({ ...finalData.framePrompts[index], ...repaired.data });
+        if (!checked.success) continue;
+        finalData = { ...finalData, framePrompts: finalData.framePrompts.map((frame, frameIndex) => frameIndex === index ? checked.data : frame) };
+        await context?.onShotPromptFrame?.(checked.data);
+      }
+      repairedAny = true;
+    }
+    review = reviewDetailedPromptPackage(finalData);
+    if (!repairedAny) break;
   }
-  return successResponse(assembled.data, model, Date.now() - startedAt, tokenUsage);
+  const finalPlan = validateDetailedKeyframePlan(shot, finalData.framePrompts);
+  if (!finalPlan.passed) review = { passed: false, issues: [finalPlan.code], qualityIssues: [{ path: `framePrompts[${finalData.framePrompts.findIndex((frame) => frame.frameId === finalPlan.frameId)}].frozenMoment`, code: finalPlan.code, reason: "时间锚点重复或动作无法连续衔接", suggestion: "只修复该帧的动作状态，保留其它帧和已确认时间锚点" }] };
+  await context?.onModelCall?.({ model, pass: "D", shotId: shot.id, attempt: 1, mode: "final-prompt-qa", latencyMs: 0,
+    success: review.passed, errorCode: review.passed ? undefined : finalPlan.passed ? "VAGUE_PROMPT" : finalPlan.code,
+    error: review.passed ? undefined : review.issues.join("；"), jsonParsed: true, schemaValid: true,
+    promptStage: "qa", resultVersion: "final", canonicalValid: true, finalUsed: review.passed, qualityIssues: review.qualityIssues });
+  if (!review.passed) return { ...failureResponse<DetailedShotPromptPackage>(model, Date.now() - startedAt, `${finalPlan.passed ? "VAGUE_PROMPT" : finalPlan.code}：${review.issues.join("；")}`, tokenUsage), qualityIssues: review.qualityIssues };
+  for (const frame of finalData.framePrompts) await context?.onModelCall?.({ model, pass: "C", shotId: shot.id, frameId: frame.frameId,
+    attempt: 1, mode: "frame-canonical-selected", latencyMs: 0, success: true, jsonParsed: true, schemaValid: true, promptStage: "frame", resultVersion: "final", canonicalValid: true, finalUsed: true });
+  await context?.onModelCall?.({ model, pass: "C", shotId: shot.id, attempt: 1, mode: "foundation-canonical-selected", latencyMs: 0,
+    success: true, jsonParsed: true, schemaValid: true, promptStage: "foundation", resultVersion: "final", canonicalValid: true, finalUsed: true });
+  return successResponse(finalData, model, Date.now() - startedAt, tokenUsage);
 }
 
 async function callPromptSegment<TData>(
@@ -807,7 +874,7 @@ async function callPromptSegment<TData>(
   maxTokens: number,
   context?: ProviderRequestContext
 ) {
-  const first = await callAndValidate(prompt, schema, { temperature: 0.3, maxTokens }, { ...context, maxProviderAttempts: 1 });
+  const first = await callAndValidate(prompt, schema, { temperature: 0.3, maxTokens }, { ...context, maxProviderAttempts: 1 }, normalizeDetailedPromptOutput);
   if (first.success) return first;
   let retryPrompt: string;
   let retryMode: string;
@@ -815,7 +882,7 @@ async function callPromptSegment<TData>(
     retryPrompt = compactPrompt;
     retryMode = "compact-retry";
   } else if (first.validationIssues?.length && first.invalidJson !== undefined) {
-    retryPrompt = `只修复以下 JSON 的结构与缺失字段，不删减已有导演细节。必须保留原有语义，并严格满足字段类型和长度约束。校验错误：${JSON.stringify(first.validationIssues)}。原始 JSON：${JSON.stringify(first.invalidJson)}`;
+    retryPrompt = `只修复以下 JSON 的结构与缺失字段，不删减已有导演细节。必须保留原有语义，并严格满足字段类型和长度约束。${DETAILED_PROMPT_CONTRACT} 校验错误：${JSON.stringify(first.validationIssues)}。原始 JSON：${JSON.stringify(first.invalidJson)}`;
     retryMode = "schema-repair";
   } else if (first.error?.startsWith("JSON_PARSE_FAILED") && first.invalidContent) {
     retryPrompt = `只修复下面内容的 JSON 语法，保留全部已有导演细节与字段，不概括、不删减。原始响应：${first.invalidContent}`;
@@ -824,7 +891,7 @@ async function callPromptSegment<TData>(
     retryPrompt = prompt;
     retryMode = "empty-response-retry";
   } else return first;
-  const retry = await callAndValidate(retryPrompt, schema, { temperature: 0.15, maxTokens }, { ...context, maxProviderAttempts: 1, modelCallMode: `${context?.modelCallMode ?? "prompt"}-${retryMode}` });
+  const retry = await callAndValidate(retryPrompt, schema, { temperature: 0.15, maxTokens }, { ...context, maxProviderAttempts: 1, modelCallMode: `${context?.modelCallMode ?? "prompt"}-${retryMode}` }, normalizeDetailedPromptOutput);
   return { ...retry, tokenUsage: addTokenUsage(first.tokenUsage, retry.tokenUsage) };
 }
 

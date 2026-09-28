@@ -15,6 +15,8 @@ import { expandShotPrompts } from "../../../lib/providers/deepseekProvider";
 import { buildShotPromptInputFingerprint, SHOT_PROMPT_PACKAGE_SCHEMA_VERSION } from "../../../lib/prompts/shotPromptFingerprint";
 import type { ShotPromptExpansionInput } from "../../../lib/prompts/detailedDirectorPrompts";
 import { reviewDetailedPromptPackage } from "../../../lib/director/promptQualityReview";
+import { ensureShotArchitecture } from "../../../lib/storyboard/shotArchitecture";
+import { validateDetailedKeyframePlan } from "../../../lib/storyboard/keyframePlan";
 import { adStrategySchema, productBriefSchema, storyboardShotSchema, type DetailedShotPromptDraft, type DetailedShotPromptPackage, type StoryboardShot } from "../../../lib/schemas/project";
 import { getAnonymousApiSession } from "../../../lib/session/api";
 import { resolveProjectProductVisualSpec } from "../../../lib/visual/productVisualSpec";
@@ -114,15 +116,13 @@ export async function POST(request: Request) {
         inputFingerprint,
         framePrompts: []
       };
-      let shotHadFailedCall = false;
       const result = await expandShotPrompts(input, {
         sessionId: session.id,
         resumeShotPromptDraft: checkpoint,
         onModelCall: async (details) => {
           const endedAt = Date.now();
-          if (!details.success || details.schemaValid === false) shotHadFailedCall = true;
           await upsertModelCallLog(session.id, {
-            kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId: projectId!, stage: "prompts", provider: "deepseek",
+            kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId: projectId!, stage: "prompts", provider: details.promptStage === "qa" || details.mode?.endsWith("canonical-selected") ? "system" : "deepseek",
             model: details.model, pass: details.pass, shotId: details.shotId, frameId: details.frameId,
             mode: details.mode, attempt: details.attempt,
             status: details.success && details.schemaValid !== false ? "completed" : "failed",
@@ -135,7 +135,9 @@ export async function POST(request: Request) {
             inputTokens: details.inputTokens, outputTokens: details.outputTokens,
             outputLength: details.outputLength, finishReason: details.finishReason,
             jsonParsed: details.jsonParsed, schemaValid: details.schemaValid,
-            normalized: details.normalized, repaired: details.repaired
+            normalized: details.normalized, repaired: details.repaired,
+            promptStage: details.promptStage, resultVersion: details.resultVersion,
+            qualityIssues: details.qualityIssues, canonicalValid: details.canonicalValid, finalUsed: details.finalUsed
           });
         },
         onShotPromptFoundation: async (foundation) => {
@@ -170,15 +172,17 @@ export async function POST(request: Request) {
           shotErrorCode = "PROMPT_QUALITY_REVIEW_FAILED";
           await upsertModelCallLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
             stage: "prompts", provider: "system", mode: "quality-review", shotId: shot.id, status: "failed",
-            startedAt: Date.now(), errorCode: shotErrorCode, errorSummary: review.issues.join("；").slice(0, 500) });
+            startedAt: Date.now(), errorCode: shotErrorCode, errorSummary: review.issues.join("；").slice(0, 500),
+            promptStage: "qa", resultVersion: "final", canonicalValid: true, finalUsed: false, qualityIssues: review.qualityIssues });
         }
       } else {
         shotFailure = promptExpansionPublicError(result.error);
         shotErrorCode = promptFailureCode(result.error);
-        if (!shotHadFailedCall) await upsertModelCallLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
+        await upsertModelCallLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
           stage: "prompts", provider: "system", mode: "prompt-stage-validation", shotId: shot.id,
           status: "failed", startedAt: Date.now(), errorCode: shotErrorCode,
-          errorSummary: result.error ?? "详细提示词在最终组装时未通过检查。" });
+          errorSummary: result.error ?? "详细提示词在最终组装时未通过检查。",
+          promptStage: "qa", resultVersion: "final", finalUsed: false, qualityIssues: result.qualityIssues });
       }
       if (shotFailure) {
         failures.push(`镜头 ${shot.index}：${shotFailure}`);
@@ -308,6 +312,8 @@ function validPromptPackageIds(packages: DetailedShotPromptPackage[], inputs: Sh
   return new Set(packages.filter((item) =>
     item.schemaVersion === SHOT_PROMPT_PACKAGE_SCHEMA_VERSION
     && item.inputFingerprint === expectedByShot.get(item.shotId)
+    && reviewDetailedPromptPackage(item).passed
+    && validateDetailedKeyframePlan(ensureShotArchitecture(inputs.find((input) => input.shot.id === item.shotId)!.shot), item.framePrompts).passed
   ).map((item) => item.shotId));
 }
 

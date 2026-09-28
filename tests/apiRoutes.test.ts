@@ -43,6 +43,7 @@ import {
   updateOwnedAnonymousProject
 } from "../lib/projects/anonymousProjectStore";
 import { lockVisualAnchorMaster } from "../lib/visual/visualAnchors";
+import * as promptReadiness from "../lib/prompts/shotPromptReadiness";
 
 const originalEnv = { ...process.env };
 let storageRoot = "";
@@ -87,6 +88,16 @@ async function completedImageResponse(response: Response) {
 }
 
 describe("second-stage API routes", () => {
+  it("blocks Qwen before creating image tasks when prompt QA is not ready", async () => {
+    process.env.AI_MODE = "real";
+    vi.mocked(promptReadiness.isShotPromptReady).mockReturnValue(false);
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const response = await generateImagesPOST(jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots" }));
+    expect(response.status).toBe(409);
+    expect((await response.json()).trace).toMatchObject({ stage: "prompt-readiness-gate", realImageCalled: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await requireOwnedAnonymousProject("test-session", testProjectId)).project.generationEvents?.some((event) => event.stage === "keyframes")).not.toBe(true);
+  });
   it("blocks keyframe generation on low storage before creating a batch or requesting providers", async () => {
     vi.spyOn(storageCapacity, "assertImageStorageCapacity").mockRejectedValue(new storageCapacity.StorageCapacityError("STORAGE_CAPACITY_LOW"));
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
@@ -194,6 +205,7 @@ describe("second-stage API routes", () => {
     testProjectShots = updated.project.shots;
     testHeroShotId = updated.project.heroShotId ?? null;
     vi.restoreAllMocks();
+    vi.spyOn(promptReadiness, "isShotPromptReady").mockReturnValue(true);
     vi.mocked(createMockKeyframeQA).mockImplementation((shot, _attempt, frameId) => ({
       id: crypto.randomUUID(), shotId: shot.id, frameId, attempt: 1, inspectorModel: "mock-visual-qa",
       checkedAt: new Date().toISOString(), singleFramePassed: true, productMatchPassed: true,

@@ -36,6 +36,11 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     validationPath: entry.validationPath ?? null,
     validationIssues: entry.validationIssues ?? null,
     repaired: entry.repaired ?? null,
+    promptStage: entry.promptStage ?? null,
+    resultVersion: entry.resultVersion ?? null,
+    qualityIssues: entry.qualityIssues ?? null,
+    canonicalValid: entry.canonicalValid ?? null,
+    finalUsed: entry.finalUsed ?? null,
     requestOptions: entry.requestOptions ?? null,
     outputAssetIds: entry.outputAssetIds ?? null,
     referenceImageCount: entry.referenceImageCount ?? null,
@@ -89,10 +94,12 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
   for (const entry of report.entries.filter((item) => item.kind === "call" && item.status === "failed")) {
     lines.push(`### 调用 ${entry.id}`, `任务：${entry.taskId}；${entry.anchorType && entry.candidateIndex ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : `镜头：${safe(entry.shotId ?? "未关联")}`}`, `失败阶段：${safe(entry.failurePhase ?? "未采集")}；错误代码：${safe(entry.errorCode ?? "未采集")}；服务商代码：${safe(entry.providerErrorCode ?? "未返回")}`,
       `错误详情：${safe(entry.errorSummary ?? "未采集")}`, `finish_reason：${safe(entry.finishReason ?? "未返回")}`, `JSON 解析：${entry.jsonParsed === null ? "未知" : entry.jsonParsed ? "成功" : "失败"}`, `Schema 校验：${entry.schemaValid === null ? "未知" : entry.schemaValid ? "通过" : "失败"}`,
-      `字段问题：${entry.validationIssues?.map((issue) => `${safe(issue.path)} (${safe(issue.code)}: ${safe(issue.message)})`).join("；") || "未采集"}`, "");
+      `字段问题：${entry.validationIssues?.map((issue) => `${safe(issue.path)} (${safe(issue.code)}: ${safe(issue.message)})`).join("；") || "未采集"}`,
+      `质量证据：${entry.qualityIssues?.map((issue) => `${safe(issue.path)}：${safe(issue.reason)}；建议：${safe(issue.suggestion)}`).join("；") || "无"}`, "");
   }
   lines.push("## 六、模型请求信息");
   for (const entry of report.entries.filter((item) => item.kind === "call")) {
+    if (entry.promptStage) lines.push(`- 提示词阶段 ${entry.promptStage}；版本 ${entry.resultVersion ?? "未采集"}；规范结构 ${entry.canonicalValid ?? "未采集"}；最终采用 ${entry.finalUsed ?? "未采集"}`);
     lines.push(`- ${entry.id}：批次 ${entry.jobId ?? "未关联"}，任务 ${entry.taskId}，镜头 ${safe(entry.shotId ?? "未知")}，帧 ${safe(entry.frameId ?? "未知")}，${safe(entry.model ?? "未知模型")}，${safe(entry.mode ?? "未知模式")}，参考图 ${entry.referenceImageCount ?? "未知"} 张，资产 ${entry.outputAssetIds?.join("、") ?? "无"}，请求参数 ${entry.requestOptions ? JSON.stringify(entry.requestOptions) : "未采集"}，输入/输出 Token ${entry.inputTokens ?? "未知"}/${entry.outputTokens ?? "未知"}，HTTP ${entry.httpStatus ?? "未知"}，耗时 ${entry.modelCallElapsedMs ?? "未知"} ms`);
   }
   lines.push("", "## 七、完整错误详情", ...report.entries.filter((entry) => entry.errorSummary).map((entry) => `- ${entry.id}：${safe(entry.errorSummary!)}`), "", "## 八、无法获取的信息", ...report.unavailable.map((item) => `- ${item}`));

@@ -1233,6 +1233,13 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setKeyframeBusyShotId(shotId);
     setKeyframeError(null);
     try {
+      {
+        const promptResponse = await postApi<{ processedShotIds: string[] }>("/api/generate-assets", {
+          projectId: activeProject.id, brief: activeProject.brief, strategy: activeProject.strategy, shots: [shot], batchSize: 1
+        });
+        if (!promptResponse.success) throw new Error(promptResponse.error || "镜头提示词生成失败，请查看提示词日志后重试。");
+        applyProjectUpdate(await fetchServerProject(activeProject.id));
+      }
       await generateProjectKeyframes({
         projectId: activeProject.id,
         shots: [shot],

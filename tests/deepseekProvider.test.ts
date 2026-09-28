@@ -3,6 +3,11 @@ import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deepseekProvider, expandShotPrompts } from "../lib/providers/deepseekProvider";
 import { ensureShotArchitecture } from "../lib/storyboard/shotArchitecture";
 import { planShotKeyframeMoments } from "../lib/storyboard/keyframePlan";
+import { normalizeDetailedPromptOutput } from "../lib/ai/contracts/detailedPrompts";
+import { detailedFramePromptSchema, detailedShotPromptFoundationSchema } from "../lib/schemas/project";
+import { reviewDetailedPromptPackage } from "../lib/director/promptQualityReview";
+import { isShotPromptReady } from "../lib/prompts/shotPromptReadiness";
+import { buildShotPromptInputFingerprint } from "../lib/prompts/shotPromptFingerprint";
 
 const originalEnv = { ...process.env };
 
@@ -426,10 +431,109 @@ describe("deepseekProvider", () => {
     });
     expect(result.success, result.error ?? undefined).toBe(true);
     expect(foundationCalls).toBe(1);
-    expect(frameCalls).toBe(4);
-    expect(resets).toBe(1);
+    expect(frameCalls).toBe(3);
+    expect(resets).toBe(0);
     expect(diagnostics).toContain("KEYFRAME_PLAN_DUPLICATED");
     expect(result.data!.framePrompts[0]!.handState).not.toBe(result.data!.framePrompts[1]!.handState);
+  });
+
+  it("normalizes known continuity and text safe zone objects without hiding unknown fields", () => {
+    const valid = promptFoundation("shot-01", 4);
+    const object = { ...valid, continuityContext: { ...valid.continuityContext,
+      product: { identity: "真实冷萃产品纸杯", fixedTraits: ["纸质杯身", "白色杯盖"], currentState: "保持桌面直立" },
+      character: { identity: "办公室已确认人物", currentState: "坐在桌前视线向右" },
+      scene: { identity: "办公室窗边桌面", fixedTraits: ["窗户在右侧", "显示器在背景"] },
+      sceneState: { lighting: "右侧窗户冷白柔光", atmosphere: "安静的晨间办公室", spatialState: "前中后景分层" }
+    }, textSafeZone: { enabled: true, position: "下方居中", avoidAreas: ["杯身", "人物双手"], notes: "仅预留后期区域，不生成文字" } };
+    const normalized = normalizeDetailedPromptOutput(object);
+    expect(normalized.normalized).toBe(true);
+    const parsed = detailedShotPromptFoundationSchema.parse(normalized.value);
+    expect(parsed.continuityContext.product).toContain("白色杯盖");
+    expect(parsed.textSafeZone).toContain("杯身、人物双手");
+    expect(parsed.continuityContext.sceneState).toContain("前中后景分层");
+    const unknown = { ...object, textSafeZone: { position: "下方", unknown: "不得丢失" } };
+    expect(detailedShotPromptFoundationSchema.safeParse(normalizeDetailedPromptOutput(unknown).value).success).toBe(false);
+  });
+
+  it("accepts a short meaningful camera angle and reuses all valid outputs without prose keyword gates", async () => {
+    const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const foundation = promptFoundation(shot.id, shot.durationSec);
+    foundation.directingNotesCn = foundation.directingNotesCn.replace(/机位|焦段|前景|中景|背景|主光|材质|产品/g, "具体摄影信息");
+    const frames = shot.frames!.map((frame) => ({ ...expandedFrame(frame, shot), cameraAngle: "低机位" }));
+    frames.forEach((frame) => {
+      frame.imagePromptCn = frame.imagePromptCn.replace(/机位|焦段|前景|中景|背景|主光|材质|产品/g, "具体对象").slice(0, 350) + "单一完整摄影画面，禁止可读文字。";
+      expect(detailedFramePromptSchema.safeParse(frame).success).toBe(true);
+    });
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const calls: Array<{ finalUsed?: boolean; mode?: string }> = [];
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      resumeShotPromptDraft: { shotId: shot.id, schemaVersion: 2, inputFingerprint: "a".repeat(64), foundation, framePrompts: frames },
+      onModelCall: async (call) => { calls.push(call); }
+    });
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(calls.find((call) => call.mode === "final-prompt-qa")?.finalUsed).toBe(true);
+    const input = { brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot };
+    const readyProject = { ...coldBrewDemo, shots: [shot], productVisualSpec: undefined, visualContinuityBible: undefined, referencePack: undefined,
+      shotPromptPackages: [{ ...result.data!, schemaVersion: 2 as const, inputFingerprint: buildShotPromptInputFingerprint(input) }] };
+    expect(isShotPromptReady(readyProject, shot)).toBe(true);
+    const generatedShot = { ...shot, primaryKeyframeAssetId: "a0ded0fa-cb3e-48ba-bf96-706f8b127f71",
+      frames: shot.frames!.map((frame, index) => index === 0 ? { ...frame, status: "ready" as const, isLocked: true,
+        assetId: "a0ded0fa-cb3e-48ba-bf96-706f8b127f71" } : frame) };
+    expect(isShotPromptReady({ ...readyProject, shots: [generatedShot] }, generatedShot)).toBe(true);
+    expect(isShotPromptReady({ ...readyProject, shots: [{ ...shot, visualDescription: "改动已确认的画面描述" }] },
+      { ...shot, visualDescription: "改动已确认的画面描述" })).toBe(false);
+    expect(isShotPromptReady({ ...readyProject, shotPromptPackages: [] }, shot)).toBe(false);
+  });
+
+  it("repairs only the vague camera field and retains every successful frame and foundation", async () => {
+    const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const foundation = promptFoundation(shot.id, shot.durationSec);
+    const frames = shot.frames!.map((frame) => expandedFrame(frame, shot));
+    frames[0]!.cameraAngle = "待定";
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init.body));
+      const prompt = body.messages.at(-1).content;
+      expect(prompt).toContain("只包含 cameraAngle");
+      expect(prompt).toContain("framePrompts[0].cameraAngle");
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ cameraAngle: "低机位" })));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const calls: Array<{ success: boolean; qualityIssues?: Array<{ path: string }>; promptStage?: string }> = [];
+    const saved: string[] = [];
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      resumeShotPromptDraft: { shotId: shot.id, schemaVersion: 2, inputFingerprint: "a".repeat(64), foundation, framePrompts: frames },
+      onModelCall: async (call) => { calls.push(call); }, onShotPromptFrame: async (frame) => { saved.push(frame.frameId); }
+    });
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(saved).toEqual([frames[0]!.frameId]);
+    expect(result.data?.framePrompts[1]).toEqual(frames[1]);
+    expect(result.data?.continuityContext).toEqual(foundation.continuityContext);
+    expect(calls.find((call) => !call.success)?.qualityIssues?.[0]?.path).toBe("framePrompts[0].cameraAngle");
+    expect(calls.filter((call) => call.promptStage === "qa").at(-1)?.success).toBe(true);
+    const bad = { ...result.data!, framePrompts: [{ ...result.data!.framePrompts[0]!, cameraAngle: "待定" }] };
+    expect(reviewDetailedPromptPackage(bad).qualityIssues[0]).toMatchObject({ path: "framePrompts[0].cameraAngle", code: "TOO_GENERIC" });
+  });
+
+  it("uses repaired frames as the final result despite historical schema failures", async () => {
+    const shot = ensureShotArchitecture(coldBrewDemo.shots[0]!);
+    const foundation = promptFoundation(shot.id, shot.durationSec);
+    const frames = shot.frames!.map((frame) => expandedFrame(frame, shot));
+    let callCount = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => {
+      callCount += 1;
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(callCount === 1 ? { ...frames[0], cameraAngle: "" } : frames[0])));
+    }));
+    const calls: Array<{ schemaValid?: boolean; finalUsed?: boolean; mode?: string }> = [];
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      resumeShotPromptDraft: { shotId: shot.id, schemaVersion: 2, inputFingerprint: "a".repeat(64), foundation, framePrompts: frames.slice(1) },
+      onModelCall: async (call) => { calls.push(call); }
+    });
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(calls.some((call) => call.schemaValid === false)).toBe(true);
+    expect(calls.find((call) => call.mode === "frame-schema-repair")?.schemaValid).toBe(true);
+    expect(calls.find((call) => call.mode === "frame-canonical-selected")?.finalUsed).toBe(true);
   });
 
   it("honors a custom storyboard count and duration plan", async () => {

@@ -15,6 +15,10 @@ type Entry = {
   validationPath?: string; httpStatus?: number; providerRequestId?: string; providerTaskId?: string;
   inputTokens?: number; outputTokens?: number; outputLength?: number; finishReason?: string;
   jsonParsed?: boolean; schemaValid?: boolean; normalized?: boolean; repaired?: boolean;
+  promptStage?: "foundation" | "frame" | "qa" | "repair";
+  resultVersion?: "raw" | "normalized" | "repaired" | "final";
+  qualityIssues?: Array<{ path: string; code: string; reason: string; suggestion: string }>;
+  canonicalValid?: boolean; finalUsed?: boolean;
   referenceImageCount?: number; outputAssetIds?: string[];
   requestHost?: string; requestPath?: string; region?: string; workspaceIdMasked?: string; apiMode?: string;
   payloadBytes?: number; submissionTimeoutMs?: number; referenceSourceTypes?: string[]; failurePhase?: string;
@@ -162,6 +166,11 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
         <section><h3>调用历史</h3>{filtered.map((entry) => <button type="button" className={`call-log-row${selectedId === entry.id ? " is-selected" : ""}`} key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {anchorLabel(entry) ?? entry.mode ?? entry.stage} {entry.shotId ? `· ${entry.shotId}` : ""}</span><strong>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态待核查" : statusNames[entry.status] ?? entry.status} · {new Date(entry.startedAt).toLocaleString("zh-CN")}</strong>{entry.errorCode || entry.errorSummary ? <small>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态未知" : entry.errorCode || ""} {entry.errorSummary?.slice(0, 110)}</small> : null}</button>)}
           {!filtered.length ? <p className="call-log-empty">{focusStage === "keyframes" ? "当前镜头尚无关键帧调用记录。旧任务可能未采集诊断信息，请重试该帧后查看。" : projectId && !entries.length ? "当前项目暂无调用日志。" : "暂无符合条件的记录。"}</p> : null}{hasMore ? <button type="button" className="call-log-more" disabled={loading} onClick={() => void load(entries.at(-1)?.startedAt)}>{loading ? "正在加载…" : "加载更早记录"}</button> : null}</section>
         {selected ? <section className="call-log-diagnostics"><h3>技术诊断</h3><dl>{([
+          ["提示词阶段", selected.promptStage ? ({ foundation: "导演基础", frame: "逐帧提示词", qa: "质量校验", repair: "局部修复" })[selected.promptStage] : undefined],
+          ["结果版本", selected.resultVersion ? ({ raw: "原始输出", normalized: "规范化输出", repaired: "修复结果", final: "最终结果" })[selected.resultVersion] : undefined],
+          ["规范结构", selected.canonicalValid === undefined ? undefined : selected.canonicalValid ? "有效" : "无效"],
+          ["最终采用", selected.finalUsed === undefined ? undefined : selected.finalUsed ? "是" : "否"],
+          ["质量问题", selected.qualityIssues?.map((issue) => `${issue.path}：${issue.reason}；建议：${issue.suggestion}`).join("\n")],
           ["调用编号", selected.id], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["候选", anchorLabel(selected)], ["候选编号", selected.candidateId], ["模型", selected.model], ["生成模式", selected.mode], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
           ["模型调用耗时", selected.kind === "call" && selected.durationMs !== undefined ? `${selected.durationMs} 毫秒` : undefined], ["任务跨度", selected.kind === "task" && selected.jobElapsedMs !== undefined ? `${selected.jobElapsedMs} 毫秒` : undefined], ["最后活动", selected.lastHeartbeatAt ? new Date(selected.lastHeartbeatAt).toLocaleString("zh-CN") : undefined], ["中断发现", selected.interruptedAt ? new Date(selected.interruptedAt).toLocaleString("zh-CN") : undefined],
           ["重试序号", selected.attempt], ["错误类型", selected.errorCode], ["异常类型", selected.errorName], ["底层异常码", selected.causeCode], ["请求开始", selected.requestStartedAt ? new Date(selected.requestStartedAt).toLocaleString("zh-CN") : undefined], ["请求完成", selected.requestCompletedAt ? new Date(selected.requestCompletedAt).toLocaleString("zh-CN") : undefined], ["服务商错误码", selected.providerErrorCode], ["错误详情", selected.errorSummary], ["校验路径", selected.validationPath], ["字段问题", selected.validationIssues?.map((issue) => `${issue.path}: ${issue.message}`).join("；")],

@@ -5,6 +5,7 @@ import { AdaptiveMediaFrame } from "@/components/media/AdaptiveMediaFrame";
 import { VisualAssetPlaceholder } from "@/components/VisualAssetPlaceholder";
 import { CallLogDrawer } from "@/components/workspace/CallLogDrawer";
 import type { GenerationProject } from "@/lib/schemas/project";
+import { deriveShotGenerationState } from "@/lib/workflow/shotGenerationState";
 
 type Props = {
   project: GenerationProject;
@@ -29,6 +30,9 @@ export function KeyframeStageWorkspace({ project, selectedShotId, keyframes, bus
   const busy = busyShotId === shot?.id;
   useEffect(() => setFrameIndex(0), [selectedShotId]);
   if (!shot) return null;
+  const pipelineState = deriveShotGenerationState(project, shot.id, busy);
+  const promptPending = pipelineState.startsWith("prompt_") && pipelineState !== "prompt_ready";
+  const promptFailed = pipelineState === "prompt_failed" || pipelineState === "prompt_partial";
   const status = frame?.isLocked ? "已确认" : busy || keyframe?.status === "loading" ? "生成中" : imageUrl && keyframe?.status === "ready" ? "待确认" : keyframe?.status === "failed" || keyframe?.status === "fallback" || keyframe?.status === "needs-review" ? "需要检查" : "待生成";
   const pendingCount = frames.filter((item) => !item.isLocked).length;
   const earlierVersions = (project.keyframeVersions ?? []).filter((item) => item.shotId === shot.id && item.frameId === frame?.id && (item.localUrl || item.imageUrl)).slice(-10).reverse();
@@ -36,12 +40,12 @@ export function KeyframeStageWorkspace({ project, selectedShotId, keyframes, bus
   return <section className="keyframe-workspace" aria-label="关键帧制作">
     <header className="keyframe-workspace__header">
       <div><span>当前镜头</span><h2>镜头 {String(shot.index).padStart(2, "0")}</h2><p>{shot.durationSec} 秒 · {shot.cameraAngle || "镜头画面"} · {shot.sceneId || "场景"}</p></div>
-      <div className="keyframe-workspace__header-actions"><CallLogDrawer projectId={project.id} projectName={project.brief.productName} label="镜头日志" focusShotId={shot.id} focusFrameId={frame?.id} focusStage="keyframes" /><button type="button" className="button-primary-v3" disabled={busy} onClick={generate}>{busy ? "生成中…" : imageUrl ? "重新生成" : "生成关键帧"}</button></div>
+      <div className="keyframe-workspace__header-actions"><CallLogDrawer projectId={project.id} projectName={project.brief.productName} label="镜头日志" focusShotId={shot.id} focusFrameId={promptPending ? undefined : frame?.id} focusStage={promptPending ? "prompts" : "keyframes"} /><button type="button" className="button-primary-v3" disabled={busy} onClick={generate}>{busy ? "生成中…" : imageUrl ? "重新生成" : "生成关键帧"}</button></div>
     </header>
     {frame ? <div className="keyframe-workspace__moment"><strong>关键帧 {safeIndex + 1} · {(moment?.timestampSec ?? frame.timestampSec).toFixed(1)} 秒</strong><span>{moment?.narrativePurpose ?? frame.description}</span>{safeIndex > 0 && moment ? <small>与上一帧变化：{moment.continuityFromPreviousFrame}</small> : null}</div> : null}
     <div className="keyframe-workspace__preview">
       {imageUrl ? <AdaptiveMediaFrame aspectRatio={project.brief.aspectRatio} stage="keyframe" mediaType="image" src={imageUrl} fit="contain" showBlurredBackdrop={false} alt={`镜头 ${shot.index} 第 ${safeIndex + 1} 帧`} />
-        : <VisualAssetPlaceholder title={busy ? "关键帧生成中" : status === "需要检查" ? "关键帧生成失败" : "关键帧待生成"} description={busy ? "正在制作当前镜头画面。" : status === "需要检查" ? "请查看对应镜头的调用日志后重试。" : "当前镜头还没有关键帧。"} aspectRatio={project.brief.aspectRatio} status={busy ? "running" : status === "需要检查" ? "failed" : "pending"} actionLabel="生成关键帧" onAction={generate} />}
+        : <VisualAssetPlaceholder title={promptPending ? busy ? "镜头提示词生成中" : promptFailed ? "关键帧规划未完成" : "镜头提示词待完成" : busy ? "关键帧图片生成中" : status === "需要检查" ? "关键帧图片生成失败" : "关键帧待生成"} description={promptPending ? promptFailed ? "已保留成功的导演基础和逐帧提示词，请查看提示词日志后继续。" : "正在完善镜头提示词，通过检查后再制作图片。" : busy ? "正在制作当前镜头画面。" : status === "需要检查" ? "请查看对应镜头的调用日志后重试。" : "当前镜头还没有关键帧。"} aspectRatio={project.brief.aspectRatio} status={busy ? "running" : promptFailed || status === "需要检查" ? "failed" : "pending"} actionLabel="生成关键帧" onAction={generate} />}
     </div>
     {frames.length > 1 ? <nav className="keyframe-workspace__pager" aria-label="当前镜头帧导航"><button type="button" aria-label="上一帧" onClick={() => setFrameIndex((safeIndex - 1 + frames.length) % frames.length)}>←</button><span>{safeIndex + 1} / {frames.length}</span><button type="button" aria-label="下一帧" onClick={() => setFrameIndex((safeIndex + 1) % frames.length)}>→</button></nav> : null}
     {frame && imageUrl && keyframe?.status === "ready" ? <div className="keyframe-workspace__confirm"><span>{frame.isLocked ? "当前帧已确认" : "检查画面后确认当前帧"}</span><button type="button" className="button-secondary-v3" disabled={busy} onClick={() => onConfirm(shot.id, frame.id, !frame.isLocked)}>{frame.isLocked ? "取消确认" : "确认当前帧"}</button></div> : null}

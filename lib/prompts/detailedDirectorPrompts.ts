@@ -12,6 +12,7 @@ import { NO_READABLE_TEXT_CN, NO_READABLE_TEXT_EN } from "./noReadableText";
 import { SINGLE_FRAME_HARD_CONSTRAINT_CN, SINGLE_VIDEO_HARD_CONSTRAINT_CN } from "./singleComposition";
 import { serializeProductVisualSpecForPrompt } from "../visual/productVisualSpec";
 import { planShotKeyframeMoments } from "../storyboard/keyframePlan";
+import { DETAILED_PROMPT_CONTRACT } from "../ai/contracts/detailedPrompts";
 
 export type ShotPromptExpansionInput = {
   brief: ProductBrief;
@@ -68,6 +69,7 @@ ${serializeProductVisualSpecForPrompt(productVisualSpec)}
 参考资产摘要：${JSON.stringify(referencePack ?? {})}
 
 返回字段必须且只能是 shotId、continuityContext、directingNotesCn、directingNotesEn、videoPromptCn、videoPromptEn、negativePromptCn、negativePromptEn、narrationDirection、textSafeZone、qaChecklist、qualityScores。
+${DETAILED_PROMPT_CONTRACT}
 - shotId 固定为 ${shot.id}。
 - continuityContext 具体填写 product、character、wardrobe、scene、sceneState、majorProps、previousShotState、immutableElements、allowedChanges。
 - directingNotesCn 至少 120 个中文字符；directingNotesEn 至少 60 个英文字符。

@@ -1,4 +1,5 @@
 import type { LLMTokenUsage } from "../llm/types";
+import type { PromptQualityIssue } from "../ai/contracts/detailedPrompts";
 import type { QwenImageCacheStatus } from "../image/types";
 import type {
   AdStrategy,
@@ -27,6 +28,7 @@ export type ProviderResponse<TData> = {
 };
 
 export type RealTextProviderResponse<TData> = {
+  qualityIssues?: PromptQualityIssue[];
   success: boolean;
   data: TData | null;
   provider: "deepseek";
@@ -208,6 +210,11 @@ export type ProviderRequestContext = {
     schemaValid?: boolean;
     normalized?: boolean;
     repaired?: boolean;
+    promptStage?: "foundation" | "frame" | "qa" | "repair";
+    resultVersion?: "raw" | "normalized" | "repaired" | "final";
+    qualityIssues?: PromptQualityIssue[];
+    canonicalValid?: boolean;
+    finalUsed?: boolean;
     validationPath?: string;
     validationIssues?: Array<{ path: string; code: string; message: string }>;
     requestOptions?: { temperature?: number; maxTokens?: number; responseFormat?: "json" | "text"; thinking?: string };

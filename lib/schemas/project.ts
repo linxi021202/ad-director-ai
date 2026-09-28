@@ -490,7 +490,7 @@ export const detailedFramePromptSchema = z.object({
   subject: z.string().min(12), subjectPosition: z.string().min(8), characterPose: z.string().min(8), facialExpression: z.string().min(6),
   gazeDirection: z.string().min(5), handState: z.string().min(8), productPosition: z.string().min(8), productOrientation: z.string().min(8),
   productScale: z.string().min(5), environment: z.string().min(12), foreground: z.string().min(6), middleGround: z.string().min(6),
-  background: z.string().min(6), composition: z.string().min(12), cameraHeight: z.string().min(5), cameraAngle: z.string().min(5),
+  background: z.string().min(6), composition: z.string().min(12), cameraHeight: z.string().min(5), cameraAngle: z.string().trim().min(1),
   lens: z.string().min(3), focalLength: z.string().min(3), aperture: z.string().min(3), depthOfField: z.string().min(6),
   lightingDirection: z.string().min(6), lightingQuality: z.string().min(6), keyLight: z.string().min(6), fillLight: z.string().min(6),
   practicalLights: z.string().min(6), shadowBehavior: z.string().min(6), reflections: z.string().min(6), materialDetails: z.string().min(12),
@@ -525,12 +525,7 @@ export const detailedShotPromptPackageSchema = detailedShotPromptFoundationSchem
   schemaVersion: z.literal(2).optional(),
   inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   framePrompts: z.array(detailedFramePromptSchema).min(1).max(5)
-}).strict().superRefine((value, context) => {
-  const scores = value.qualityScores;
-  if (scores.creativeDepth < 8 || scores.visualSpecificity < 8 || scores.actionExecutability < 8 || scores.textRisk > 2 || scores.deformationRisk > 3) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["qualityScores"], message: "PROMPT_DEPTH_VALIDATION_FAILED" });
-  }
-});
+}).strict();
 
 export const detailedShotPromptDraftSchema = z.object({
   shotId: z.string().min(1),

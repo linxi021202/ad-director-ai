@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import { requireOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
 import { generationEventSchema } from "@/lib/schemas/project";
+import { promptQualityIssueSchema } from "../ai/contracts/detailedPrompts";
 
 const modelCallLogSchema = z.object({
   id: z.string().uuid(),
@@ -82,6 +83,11 @@ const modelCallLogSchema = z.object({
   schemaValid: z.boolean().optional(),
   normalized: z.boolean().optional(),
   repaired: z.boolean().optional(),
+  promptStage: z.enum(["foundation", "frame", "qa", "repair"]).optional(),
+  resultVersion: z.enum(["raw", "normalized", "repaired", "final"]).optional(),
+  qualityIssues: z.array(promptQualityIssueSchema).max(50).optional(),
+  canonicalValid: z.boolean().optional(),
+  finalUsed: z.boolean().optional(),
   chunkSaved: z.boolean().optional(),
   referenceAssetIds: z.array(z.string().uuid()).max(12).optional(),
   outputAssetIds: z.array(z.string().uuid()).max(12).optional(),

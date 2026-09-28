@@ -26,6 +26,8 @@ function promptSourceShot(shot: ShotPromptExpansionInput["shot"]) {
     negativePromptCn: _negativePromptCn,
     negativePromptEn: _negativePromptEn,
     continuityConstraints: _continuityConstraints,
+    primaryKeyframeAssetId: _primaryKeyframeAssetId,
+    keyframeAssetId: _keyframeAssetId,
     frames,
     ...source
   } = shot;
@@ -38,9 +40,13 @@ function promptSourceShot(shot: ShotPromptExpansionInput["shot"]) {
         negativePromptCn: _frameNegativePromptCn,
         negativePromptEn: _frameNegativePromptEn,
         keyframeMoment: _keyframeMoment,
+        assetId: _assetId,
+        status: _status,
+        isLocked: _isLocked,
         ...frameSource
       } = frame;
-      return frameSource;
+      // Retain the original pre-generation hash shape for saved checkpoints.
+      return { ...frameSource, status: "pending", isLocked: false };
     })
   };
 }
