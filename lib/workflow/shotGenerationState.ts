@@ -1,24 +1,18 @@
-import type { DetailedShotPromptPackage, GenerationProject } from "../schemas/project";
+import { getShotKeyframeViewState, type KeyframeProjectSnapshot } from "../image/keyframeViewState";
 
 export type ShotGenerationState = "storyboard_ready" | "prompt_generating" | "prompt_partial" | "prompt_failed" | "prompt_ready"
   | "keyframe_generating" | "keyframe_partial" | "keyframe_failed" | "keyframe_ready";
 
-type ShotPipelineSnapshot = Pick<GenerationProject, "shots" | "generationEvents" | "keyframes" | "shotPromptDrafts"> & {
-  shotPromptPackages?: Array<Pick<DetailedShotPromptPackage, "shotId" | "schemaVersion" | "inputFingerprint">>;
-};
-export function deriveShotGenerationState(project: ShotPipelineSnapshot, shotId: string, busy = false): ShotGenerationState {
-  const shot = project.shots.find((item) => item.id === shotId);
-  const ready = project.shotPromptPackages?.some((item) => item.shotId === shotId && item.schemaVersion === 2 && item.inputFingerprint);
+export function deriveShotGenerationState(project: KeyframeProjectSnapshot, shotId: string, busy = false): ShotGenerationState {
+  const view = getShotKeyframeViewState(project, shotId, busy);
+  const ready = view.promptStatus === "ready";
   const promptEvent = project.generationEvents?.filter((event) => event.stage === "prompts" && event.shotId === shotId)
     .sort((a, b) => b.startedAt - a.startedAt)[0];
-  const imageEvent = project.generationEvents?.filter((event) => event.stage === "keyframes" && event.shotId === shotId)
-    .sort((a, b) => b.startedAt - a.startedAt)[0];
-  const images = project.keyframes?.filter((item) => item.shotId === shotId && item.status === "ready") ?? [];
-  if (images.length && images.length >= (shot?.frames?.length ?? 1)) return "keyframe_ready";
+  if (view.keyframeGenerationStatus === "completed") return "keyframe_ready";
+  if (view.hasAnyKeyframe) return view.keyframeGenerationStatus === "generating" ? "keyframe_generating" : "keyframe_partial";
   if (ready) {
-    if (busy || imageEvent && ["queued", "running", "qa-review"].includes(imageEvent.status)) return "keyframe_generating";
-    if (images.length) return "keyframe_partial";
-    if (imageEvent && ["failed", "interrupted"].includes(imageEvent.status)) return "keyframe_failed";
+    if (view.keyframeGenerationStatus === "generating") return "keyframe_generating";
+    if (view.keyframeGenerationStatus === "failed") return "keyframe_failed";
     return "prompt_ready";
   }
   if (busy || promptEvent && ["queued", "running", "qa-review"].includes(promptEvent.status)) return "prompt_generating";

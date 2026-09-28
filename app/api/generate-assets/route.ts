@@ -129,7 +129,7 @@ export async function POST(request: Request) {
             kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId: projectId!, stage: "prompts", provider: details.promptStage === "qa" || details.mode?.endsWith("canonical-selected") ? "system" : "deepseek",
             model: details.model, pass: details.pass, shotId: details.shotId, frameId: details.frameId,
             mode: details.mode, attempt: details.attempt,
-            status: details.success && details.schemaValid !== false ? "completed" : "failed",
+            status: details.schemaValid === false && details.jsonParsed ? "completed" : details.success ? "completed" : "failed",
             startedAt: Math.max(0, endedAt - details.latencyMs), completedAt: endedAt,
             durationMs: details.latencyMs, errorCode: details.errorCode ?? details.error?.match(/(?:DEEPSEEK|MODEL|PROMPT|FRAME|SHOT)_[A-Z_]+/)?.[0],
             errorSummary: details.error, validationPath: details.validationPath,
@@ -143,6 +143,14 @@ export async function POST(request: Request) {
             promptStage: details.promptStage, resultVersion: details.resultVersion,
             qualityIssues: details.qualityIssues, canonicalValid: details.canonicalValid, finalUsed: details.finalUsed
           });
+          if (details.schemaValid === false && details.jsonParsed) {
+            await bestEffortPromptLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId,
+              projectId: projectId!, stage: "prompts", provider: "system", shotId: details.shotId, frameId: details.frameId,
+              mode: "prompt-stage-validation", attempt: details.attempt, status: "failed", startedAt: endedAt,
+              completedAt: endedAt, durationMs: 0, failurePhase: "SCHEMA_VALIDATION_FAILED", errorCode: "SCHEMA_VALIDATION_FAILED",
+              errorSummary: details.error, validationIssues: details.validationIssues, validationPath: details.validationPath,
+              jsonParsed: true, schemaValid: false, canonicalValid: false, finalUsed: false });
+          }
         },
         onShotPromptFoundation: async (foundation) => {
           checkpoint = { ...checkpoint, foundation };

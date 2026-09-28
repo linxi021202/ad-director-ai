@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import React, { type ReactNode } from "react";
 import type { GenerationProject, StageId, StageState, StageStates } from "@/lib/schemas/project";
 import { STAGE_LABELS, calculateDependencyImpact, canRunStage, currentResourceVersion, STAGE_RESOURCE } from "@/lib/workflow/stageGates";
 import { resolveProjectPlanningConstraints } from "@/lib/projects/planningConstraints";
@@ -8,6 +8,7 @@ import { getActionBlockers, type WorkflowAction } from "@/lib/workflow/actionBlo
 import { GuardedActionButton } from "@/components/workflow/GuardedActionButton";
 import { deriveVisualSetupStageState, visualSetupStatusLabel } from "@/lib/visual/visualSetupStage";
 import { creativeStageStatusLabel, deriveCreativeStageState } from "@/lib/creative/creativeStageState";
+import { getShotKeyframeViewState } from "@/lib/image/keyframeViewState";
 
 const MAJOR_STEPS: Array<{ label: string; stages: StageId[] }> = [
   { label: "商品与创意", stages: ["brief", "creative"] },
@@ -37,9 +38,8 @@ export function StageContextPanel({ project, activeStage, onSelect, selectedShot
     {activeStage !== "keyframes" ? <div className="stage-context-list"><span>本步骤内容</span>{step.stages.map((stage) => <button type="button" className={stage === activeStage ? "is-current" : ""} key={stage} onClick={() => onSelect?.(stage)}>{userStageLabel(stage)}<small>{stage === "anchors" && visualSetup ? visualSetupStatusLabel(visualSetup.status) : stage === "creative" ? creativeStageStatusLabel(deriveCreativeStageState(project).status) : stageStatusLabel(project.stageStates?.[stage].status ?? "draft")}</small></button>)}</div> : null}
     {visualSetup ? <><p className="stage-context-copy">{visualSetup.status === "ready-to-complete" ? "全部设置已准备完成，等待你确认并继续。" : visualSetup.status === "completed" ? "人物与场景已经完成。" : "逐一确认产品、人物和场景后即可继续。"}</p><div className="stage-context-list"><span>确认进度</span><a href="#anchor-product">产品图<small>{visualSetup.productConfirmed ? "已确认" : "待确认"}</small></a><a href="#anchor-characters">人物<small>{visualSetup.characterConfirmed ? "已确认" : `${visualSetup.characterStatuses.filter((item) => item.status !== "confirmed").length} 项待确认`}</small></a><a href="#anchor-scenes">场景<small>{visualSetup.scenesConfirmed ? "已确认" : `${visualSetup.sceneStatuses.filter((item) => item.status !== "confirmed").length} 项待确认`}</small></a></div></> : null}
     {activeStage === "keyframes" ? <div className="stage-shot-navigator keyframe-shot-nav"><span>镜头列表</span>{project.shots.map((shot) => {
-      const confirmed = Boolean(shot.frames?.length && shot.frames.every((frame) => frame.isLocked));
-      const generated = project.keyframes?.some((item) => item.shotId === shot.id && item.status === "ready" && !item.fallbackUsed);
-      return <button type="button" key={shot.id} className={shot.id === selectedShotId ? "is-current" : ""} onClick={() => onShotSelect?.(shot.id)}><strong>镜头 {String(shot.index).padStart(2, "0")}</strong><small>{shot.durationSec} 秒 · {busyShotId === shot.id ? "生成中" : confirmed ? "已确认" : generated ? "待确认" : "待生成"}</small></button>;
+      const view = getShotKeyframeViewState(project, shot.id, busyShotId === shot.id);
+      return <button type="button" key={shot.id} className={shot.id === selectedShotId ? "is-current" : ""} onClick={() => onShotSelect?.(shot.id)}><strong>镜头 {String(shot.index).padStart(2, "0")}</strong><small>{shot.durationSec} 秒 · {view.label}</small></button>;
     })}</div> : (activeStage === "storyboard" || activeStage === "video") ? <div className="stage-shot-navigator"><span>镜头列表</span>{project.shots.map((shot) => <a key={shot.id} href={`#${activeStage}-shot-${shot.id}`}>镜头 {String(shot.index).padStart(2, "0")}<small>{shot.durationSec} 秒</small></a>)}</div> : null}
     <footer className="stage-project-summary"><small>{project.brief.productName}</small><strong>{constraints.shotCount} 镜头 · {constraints.targetDurationSec} 秒 · {constraints.aspectRatio}</strong></footer>
   </aside>;
@@ -58,11 +58,12 @@ export function StageInspector({ project, activeStage, state, busy, selectedShot
   const impact = record ? calculateDependencyImpact(project.dependencyGraph ?? [], resource.resourceId, record.version, record.version + 1) : null;
   const blockers = getActionBlockers(project, actionForStage(activeStage));
   const selectedShot = activeStage === "keyframes" ? project.shots.find((shot) => shot.id === selectedShotId) ?? project.shots[0] : undefined;
-  const shotConfirmed = Boolean(selectedShot?.frames?.length && selectedShot.frames.every((frame) => frame.isLocked));
-  const shotGenerated = selectedShot && project.keyframes?.some((item) => item.shotId === selectedShot.id && item.status === "ready" && !item.fallbackUsed);
+  const shotView = selectedShot ? getShotKeyframeViewState(project, selectedShot.id, busyShotId === selectedShot.id) : undefined;
+  const shotConfirmed = shotView?.confirmationStatus === "confirmed";
+  const shotGenerated = shotView?.hasAnyKeyframe;
   const currentStatusLabel = visualSetup ? visualSetupStatusLabel(visualSetup.status)
     : activeStage === "creative" ? creativeStageStatusLabel(deriveCreativeStageState(project).status)
-    : selectedShot ? busyShotId === selectedShot.id ? "生成中" : shotConfirmed ? "已确认" : shotGenerated ? "待确认" : "待生成"
+    : selectedShot ? shotView!.label
     : stageStatusLabel(state.status);
   return <aside className={`stage-inspector workspace-column workspace-column--right${open ? " is-open" : ""}`} aria-label="步骤状态">
     <header><div><span>制作状态</span><h2>{userStageLabel(activeStage)}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭状态面板" onClick={onClose}>×</button> : null}</header>

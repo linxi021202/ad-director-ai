@@ -760,9 +760,6 @@ export async function expandShotPrompts(
         if (value.frameId !== frame.id || value.timestampSec !== plannedMoments.find((item) => item.frameId === frame.id)?.timestampSec || value.role !== frame.role) {
           refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["frameId"], message: "FRAME_IDENTITY_MISMATCH" });
         }
-        if (!["单一完整", "可读文字"].every((term) => value.imagePromptCn.includes(term))) {
-          refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["imagePromptCn"], message: "PROMPT_SAFETY_CONSTRAINT_MISSING" });
-        }
       });
       return {
         frame,
@@ -771,7 +768,8 @@ export async function expandShotPrompts(
           buildSingleFramePromptExpansionPrompt(input, frame, frameFoundation, true),
           frameSchema,
           TEXT_OUTPUT_BUDGETS.shotPromptFrame,
-          { ...context, modelCallPass: "C", modelCallShotId: input.shot.id, modelCallFrameId: frame.id, modelCallMode: "frame" }
+          { ...context, modelCallPass: "C", modelCallShotId: input.shot.id, modelCallFrameId: frame.id, modelCallMode: "frame" },
+          detailedFramePromptSchema.shape
         )
       };
     }));
@@ -830,7 +828,7 @@ export async function expandShotPrompts(
       for (const key of keys) if (key in shape) patchShape[key] = shape[key]!;
       if (Object.keys(patchShape).length !== keys.length) continue;
       const repaired = await callAndValidate(
-        `只修复列出的字段，返回只包含 ${keys.join("、")} 的 JSON 对象，不得改变其它字段、镜头身份、时间锚点或已确认分镜。${DETAILED_PROMPT_CONTRACT}\n字段问题：${JSON.stringify(issues)}\n当前值：${JSON.stringify(source)}\n已确认镜头与时间锚点：${JSON.stringify({ shot: { id: shot.id, durationSec: shot.durationSec, goal: shot.goal, microBeats: shot.microBeats }, moments: plannedMoments })}`,
+        `只修复列出的字段，返回只包含 ${keys.join("、")} 的 JSON 对象，不得改变其它字段、镜头身份、时间锚点或已确认分镜。${index === undefined ? DETAILED_PROMPT_CONTRACT : "只遵守当前帧字段定义，不输出导演基础包。"}\n字段问题：${JSON.stringify(issues)}\n当前值：${JSON.stringify(source)}\n已确认镜头与时间锚点：${JSON.stringify({ shot: { id: shot.id, durationSec: shot.durationSec, goal: shot.goal, microBeats: shot.microBeats }, moments: plannedMoments })}`,
         z.object(patchShape).strict(), { temperature: 0.15, maxTokens: index === undefined ? TEXT_OUTPUT_BUDGETS.shotPromptFoundation : TEXT_OUTPUT_BUDGETS.shotPromptFrame },
         { ...context, maxProviderAttempts: 1, modelCallPass: "C", modelCallShotId: shot.id, modelCallFrameId: index === undefined ? undefined : finalData.framePrompts[index]!.frameId, modelCallMode: "quality-field-repair" }, normalizeDetailedPromptOutput
       );
@@ -872,7 +870,8 @@ async function callPromptSegment<TData>(
   compactPrompt: string,
   schema: z.ZodType<TData>,
   maxTokens: number,
-  context?: ProviderRequestContext
+  context?: ProviderRequestContext,
+  repairShape?: z.ZodRawShape
 ) {
   const first = await callAndValidate(prompt, schema, { temperature: 0.3, maxTokens }, { ...context, maxProviderAttempts: 1 }, normalizeDetailedPromptOutput);
   if (first.success) return first;
@@ -882,6 +881,27 @@ async function callPromptSegment<TData>(
     retryPrompt = compactPrompt;
     retryMode = "compact-retry";
   } else if (first.validationIssues?.length && first.invalidJson !== undefined) {
+    if (repairShape && first.invalidJson && typeof first.invalidJson === "object" && !Array.isArray(first.invalidJson)) {
+      const source = first.invalidJson as Record<string, unknown>;
+      const keys = [...new Set(first.validationIssues.filter((issue) => issue.code !== "unrecognized_keys")
+        .map((issue) => issue.path.split(".")[0]!).filter((key) => key in repairShape))];
+      // Remove foreign top-level fields, never import a Foundation shape into a Frame.
+      const base = Object.fromEntries(Object.entries(source).filter(([key]) => key in repairShape));
+      const cleaned = schema.safeParse(base);
+      if (cleaned.success) return { ...first, success: true, data: cleaned.data, error: null };
+      if (!keys.length) return first;
+      const patchShape = Object.fromEntries(keys.map((key) => [key, repairShape[key]!])) as z.ZodRawShape;
+      const repair = await callAndValidate(
+        `只修复以下字段，返回只包含 ${keys.join("、")} 的 JSON 对象。不得返回完整对象，不得修改其它字段。允许字段定义：${JSON.stringify(keys)}。校验问题：${JSON.stringify(first.validationIssues.filter((issue) => keys.includes(issue.path.split(".")[0]!)))}。待修字段当前值：${JSON.stringify(Object.fromEntries(keys.map((key) => [key, base[key]])))}。只读上下文：${JSON.stringify(base)}`,
+        z.object(patchShape).strict(), { temperature: 0.15, maxTokens },
+        { ...context, maxProviderAttempts: 1, modelCallMode: `${context?.modelCallMode ?? "prompt"}-schema-repair` }, normalizeDetailedPromptOutput
+      );
+      const usage = addTokenUsage(first.tokenUsage, repair.tokenUsage);
+      if (!repair.success || !repair.data) return { ...first, error: repair.validationIssues?.length ? `MODEL_SCHEMA_DRIFT：${repair.error}` : repair.error, tokenUsage: usage };
+      const final = schema.safeParse({ ...base, ...repair.data });
+      if (!final.success) return { ...first, error: `MODEL_SCHEMA_DRIFT：${final.error.message}`, tokenUsage: usage };
+      return { ...repair, success: true, data: final.data, tokenUsage: usage };
+    }
     retryPrompt = `只修复以下 JSON 的结构与缺失字段，不删减已有导演细节。必须保留原有语义，并严格满足字段类型和长度约束。${DETAILED_PROMPT_CONTRACT} 校验错误：${JSON.stringify(first.validationIssues)}。原始 JSON：${JSON.stringify(first.invalidJson)}`;
     retryMode = "schema-repair";
   } else if (first.error?.startsWith("JSON_PARSE_FAILED") && first.invalidContent) {

@@ -496,7 +496,7 @@ export const detailedFramePromptSchema = z.object({
   practicalLights: z.string().min(6), shadowBehavior: z.string().min(6), reflections: z.string().min(6), materialDetails: z.string().min(12),
   colorDesign: z.string().min(8), atmosphere: z.string().min(8), spatialDepth: z.string().min(8),
   continuityConstraints: z.array(z.string().min(6)).min(3), forbiddenChanges: z.array(z.string().min(6)).min(3),
-  imagePromptCn: z.string().trim().min(350), imagePromptEn: z.string().trim().min(120),
+  imagePromptCn: z.string().trim().min(1), imagePromptEn: z.string().trim().min(120),
   negativePromptCn: z.string().trim().min(40), negativePromptEn: z.string().trim().min(20)
 }).strict();
 

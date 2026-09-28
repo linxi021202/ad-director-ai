@@ -12,9 +12,9 @@ describe("keyframe production workspace", () => {
   const noop = () => undefined;
 
   it("shows one real-ratio pending frame and an in-place generation action", () => {
-    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={project} keyframes={[]} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
-    expect(html).toContain("关键帧待生成");
-    expect(html).toContain("当前镜头还没有关键帧");
+    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={{ ...project, keyframes: [] }} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
+    expect(html).toContain("当前镜头提示词尚未完成");
+    expect(html).toContain("继续生成提示词");
     expect(html).toContain("生成关键帧");
     expect(html).toContain("镜头日志");
     expect(html).toContain(`aspect-ratio:${project.brief.aspectRatio.replace(":", " / ")}`);
@@ -26,10 +26,10 @@ describe("keyframe production workspace", () => {
     const fourFrameProject = { ...project, shots: [{ ...shot, frames }] };
     const current = frames[0]!;
     const other = frames[1]!;
-    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={fourFrameProject} keyframes={[
-      { shotId: shot.id, frameId: current.id, localUrl: "/first.png", status: "ready" },
-      { shotId: shot.id, frameId: other.id, localUrl: "/second.png", status: "ready" }
-    ]} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
+    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={{ ...fourFrameProject, keyframes: [
+      { shotId: shot.id, frameId: current.id, localUrl: "/first.png", status: "ready", fallbackUsed: false, storageTransition: "PRIVATE_ASSET_V1" },
+      { shotId: shot.id, frameId: other.id, localUrl: "/second.png", status: "ready", fallbackUsed: false, storageTransition: "PRIVATE_ASSET_V1" }
+    ] }} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
     expect(html).toContain("/first.png");
     expect(html).not.toContain("/second.png");
     expect(html).toContain("1 / 4");
@@ -43,7 +43,7 @@ describe("keyframe production workspace", () => {
       characterPose: "坐在办公椅上", handState: index ? "握住产品" : "靠近键盘", gazeDirection: "看向产品",
       facialExpression: "自然", productPosition: index ? "手中" : "桌上", productOrientation: "正面", cameraAngle: "侧前方", environment: "办公室"
     } }));
-    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={{ ...project, shots: [{ ...shot, frames }] }} keyframes={[]} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
+    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={{ ...project, shots: [{ ...shot, frames }], keyframes: [] }} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
     expect(html).toContain("关键帧 1 · 0.5 秒");
     expect(html).toContain("1 / 2");
     expect(html).not.toContain("候选方案");

@@ -34,7 +34,7 @@ const providerNames: Record<string, string> = { system: "系统处理", deepseek
 const commitModeNames: Record<string, string> = { "prompt-bundle-building": "组装最终提示词", "prompt-bundle-validated": "最终提示词校验通过",
   "prompt-bundle-persisting": "正在保存提示词", "prompt-bundle-persisted": "提示词保存成功", "shot-status-updating": "正在提交镜头状态",
   "shot-status-ready": "镜头提示词已就绪", "task-completing": "正在完成任务", "task-completed": "任务已完成",
-  "prompt-commit-failed": "提示词提交失败", "prompt-pipeline-exception": "提示词处理异常" };
+  "prompt-commit-failed": "提示词提交失败", "prompt-pipeline-exception": "提示词处理异常", "prompt-stage-validation": "提示词结构校验" };
 const statusNames: Record<string, string> = { queued: "排队中", running: "运行中", "qa-review": "校验中", completed: "成功", "needs-review": "待检查", failed: "失败", fallback: "已降级", cancelled: "已取消", blocked: "已跳过", interrupted: "已中断" };
 const anchorLabel = (entry: Entry) => entry.anchorType && entry.candidateIndex
   ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : undefined;

@@ -52,7 +52,7 @@ export async function GET(_request: Request, context: RouteContext) {
 
   try {
     const record = await requireOwnedAnonymousProject(sessionResult.session.id, projectId);
-    return NextResponse.json({ success: true, data: publicAnonymousProject(record) });
+    return NextResponse.json({ success: true, data: publicAnonymousProject(record) }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return projectStoreErrorResponse(error) ?? projectNotFoundResponse();
   }

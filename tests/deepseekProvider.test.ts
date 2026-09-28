@@ -565,7 +565,7 @@ describe("deepseekProvider", () => {
     let callCount = 0;
     vi.stubGlobal("fetch", vi.fn().mockImplementation(() => {
       callCount += 1;
-      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(callCount === 1 ? { ...frames[0], cameraAngle: "" } : frames[0])));
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(callCount === 1 ? { ...frames[0], cameraAngle: "" } : { cameraAngle: frames[0]!.cameraAngle })));
     }));
     const calls: Array<{ schemaValid?: boolean; finalUsed?: boolean; mode?: string }> = [];
     const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
@@ -576,6 +576,79 @@ describe("deepseekProvider", () => {
     expect(calls.some((call) => call.schemaValid === false)).toBe(true);
     expect(calls.find((call) => call.mode === "frame-schema-repair")?.schemaValid).toBe(true);
     expect(calls.find((call) => call.mode === "frame-canonical-selected")?.finalUsed).toBe(true);
+  });
+
+  it("repairs only shot-01-frame-3 imagePromptCn and preserves the successful foundation and other frames", async () => {
+    const shot = ensureShotArchitecture({ ...coldBrewDemo.shots[0]!, id: "shot-01", durationSec: 4, frames: undefined, microBeats: undefined, subclips: undefined });
+    const foundation = promptFoundation(shot.id, shot.durationSec);
+    const frames = shot.frames!.map((frame) => expandedFrame(frame, shot));
+    const shortPrompt = "单一完整摄影画面。此刻同一人物坐直，右手握住真实产品并抬离桌面，视线追随杯身，表情克制。办公室前中后景保持不变；侧前平视中景，50mm 三分构图，右侧柔光与低强度补光，材质反射受控。保持产品包装、人物与场景连续；禁止任何可读文字、字幕、界面与水印。";
+    expect(shortPrompt.length).toBeLessThan(350);
+    expect(detailedFramePromptSchema.safeParse({ ...frames[2], imagePromptCn: shortPrompt }).success).toBe(true);
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const prompt = JSON.parse(String(init.body)).messages.at(-1).content;
+      if (prompt.includes("只修复以下字段")) {
+        expect(prompt).toContain("只包含 imagePromptCn");
+        expect(prompt).not.toContain("continuityContext");
+        return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ imagePromptCn: shortPrompt })));
+      }
+      expect(prompt).toContain("第 3 帧");
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify({ ...frames[2], imagePromptCn: "", continuityContext: foundation.continuityContext, majorProps: ["错误顶层道具"] })));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const saved: string[] = [];
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      resumeShotPromptDraft: { shotId: shot.id, schemaVersion: 2, inputFingerprint: "a".repeat(64), foundation, framePrompts: frames.slice(0, 2) },
+      onShotPromptFoundation: async () => { throw new Error("Foundation must not regenerate"); },
+      onShotPromptFrame: async (frame) => { saved.push(frame.frameId); }
+    });
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(saved).toEqual(["shot-01-frame-3"]);
+    expect(result.data?.framePrompts).toEqual([frames[0], frames[1], { ...frames[2], imagePromptCn: shortPrompt }]);
+    expect(result.data?.continuityContext).toEqual(foundation.continuityContext);
+  });
+
+  it("rejects a field repair containing Foundation fields rather than replacing a Frame", async () => {
+    const shot = ensureShotArchitecture({ ...coldBrewDemo.shots[0]!, id: "shot-01", durationSec: 4, frames: undefined, microBeats: undefined, subclips: undefined });
+    const foundation = promptFoundation(shot.id, shot.durationSec);
+    const frames = shot.frames!.map((frame) => expandedFrame(frame, shot));
+    let count = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => {
+      count++;
+      return Promise.resolve(mockDeepSeekResponse(JSON.stringify(count === 1 ? { ...frames[2], imagePromptCn: "" }
+        : { imagePromptCn: frames[2]!.imagePromptCn, continuityContext: foundation.continuityContext })));
+    }));
+    const saved = vi.fn();
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      resumeShotPromptDraft: { shotId: shot.id, schemaVersion: 2, inputFingerprint: "a".repeat(64), foundation, framePrompts: frames.slice(0, 2) }, onShotPromptFrame: saved
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("MODEL_SCHEMA_DRIFT");
+    expect(saved).not.toHaveBeenCalled();
+    expect(count).toBe(2);
+  });
+
+  it("repairs only imagePromptCn after semantic QA without regenerating a structurally valid third frame", async () => {
+    const shot = ensureShotArchitecture({ ...coldBrewDemo.shots[0]!, id: "shot-01", durationSec: 4, frames: undefined, microBeats: undefined, subclips: undefined });
+    const foundation = promptFoundation(shot.id, shot.durationSec);
+    const frames = shot.frames!.map((frame) => expandedFrame(frame, shot));
+    const imagePromptCn = frames[2]!.imagePromptCn;
+    frames[2]!.imagePromptCn = "单一完整摄影画面，禁止任何可读文字。";
+    expect(detailedFramePromptSchema.safeParse(frames[2]).success).toBe(true);
+    const fetchMock = vi.fn(async (_url, init) => {
+      const prompt = JSON.parse(String(init.body)).messages.at(-1).content;
+      expect(prompt).toContain("只包含 imagePromptCn");
+      expect(prompt).not.toContain("continuityContext");
+      return mockDeepSeekResponse(JSON.stringify({ imagePromptCn }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await expandShotPrompts({ brief: coldBrewDemo.brief, strategy: coldBrewDemo.strategy, shot }, {
+      resumeShotPromptDraft: { shotId: shot.id, schemaVersion: 2, inputFingerprint: "a".repeat(64), foundation, framePrompts: frames }
+    });
+    expect(result.success, result.error ?? undefined).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.data?.framePrompts).toEqual([frames[0], frames[1], { ...frames[2], imagePromptCn }]);
   });
 
   it("honors a custom storyboard count and duration plan", async () => {

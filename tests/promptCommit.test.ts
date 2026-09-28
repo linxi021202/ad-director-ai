@@ -72,6 +72,28 @@ async function fixture() {
     shotId: shot.id, taskId: event.id, jobId: event.runId } };
 }
 
+it("logs schema rejection as a system validation failure while retaining the successful model response", async () => {
+  const data = await fixture();
+  await store.saveOwnedShotPromptDraft(apiSession.id, data.record.id, { ...data.draft, framePrompts: data.draft.framePrompts.slice(0, 2) });
+  let requests = 0;
+  vi.stubGlobal("fetch", vi.fn(async () => {
+    requests++;
+    return new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify(requests === 1
+      ? { ...data.draft.framePrompts[2], cameraAngle: "" } : { cameraAngle: "平视" }) } }] }), { status: 200 });
+  }));
+  const response = await POST(new Request("http://localhost/api/generate-assets", { method: "POST", body: JSON.stringify({
+    projectId: data.record.id, brief: data.record.project.brief, strategy: data.record.project.strategy, shots: [data.record.project.shots[2]], batchSize: 1
+  }) }));
+  expect(response.status).toBe(200);
+  expect(requests).toBe(2);
+  const saved = await store.requireOwnedAnonymousProject(apiSession.id, data.record.id);
+  expect(isShotPromptReady(saved.project, saved.project.shots[2]!)).toBe(true);
+  const entries = await logs.listModelCallLogs(apiSession.id, { projectId: data.record.id });
+  const validation = entries.find((entry) => entry.mode === "prompt-stage-validation");
+  expect(validation).toMatchObject({ provider: "system", status: "failed", failurePhase: "SCHEMA_VALIDATION_FAILED" });
+  expect(entries.find((entry) => entry.mode === "frame" && entry.provider === "deepseek")).toMatchObject({ status: "completed", schemaValid: false });
+});
+
 describe("final prompt commit", () => {
   it("runs shot-03 through the real API to task-completed using saved canonical results, ignoring historical raw failures", async () => {
     const data = await fixture();

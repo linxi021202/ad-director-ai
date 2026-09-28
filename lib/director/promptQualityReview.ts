@@ -1,4 +1,4 @@
-import type { DetailedShotPromptPackage } from "@/lib/schemas/project";
+import type { DetailedFramePrompt, DetailedShotPromptPackage } from "@/lib/schemas/project";
 import type { PromptQualityIssue } from "../ai/contracts/detailedPrompts";
 
 export type PromptQualityReview = {
@@ -6,6 +6,25 @@ export type PromptQualityReview = {
   issues: string[];
   qualityIssues: PromptQualityIssue[];
 };
+
+export function validateImagePromptQuality(frame: DetailedFramePrompt): PromptQualityIssue[] {
+  const issues: PromptQualityIssue[] = [];
+  const add = (path: string, code: string, reason: string, suggestion: string) => issues.push({ path, code, reason, suggestion });
+  if (!frame.imagePromptCn.includes("单一完整")) add("imagePromptCn", "SINGLE_FRAME_REQUIRED", "缺少单帧构图约束", "明确单一完整摄影画面，不得拼贴或多面板");
+  if (!frame.imagePromptCn.includes("可读文字")) add("imagePromptCn", "ZERO_TEXT_REQUIRED", "缺少零生成文字约束", "明确禁止画面出现任何可读文字、字幕、界面和水印");
+  if (/^(?:单一完整摄影画面[，,。\s]*禁止(?:任何)?可读文字[。\s]*|(?:画得好看|生成图片|同上|待定)[。\s]*)$/.test(frame.imagePromptCn.trim())) {
+    add("imagePromptCn", "IMAGE_CONTENT_MISSING", "只有通用限制，没有当前帧画面内容", "写出当前时刻的人物、产品、场景、摄影与独有动作状态，不按字符数扩写");
+  }
+  // Semantic slots are reviewed from the canonical frame, not a prose word-count gate.
+  for (const key of ["frozenMoment", "subject", "characterPose", "productPosition", "environment", "cameraAngle", "composition", "keyLight", "depthOfField", "atmosphere", "continuityConstraints"] as const) {
+    const value = frame[key];
+    const text = Array.isArray(value) ? value.join("；") : value;
+    if (!text.trim() || /^(?:同上|默认|待定|适当|合理|无|暂无|描述|内容)[。\s]*$/.test(text.trim())) {
+      add(key, "IMAGE_SEMANTIC_SLOT_MISSING", "缺少当前帧可执行语义", "补充该字段的具体状态，保持其它字段和时间锚点不变");
+    }
+  }
+  return issues;
+}
 
 /** PASS D: deterministic review after DeepSeek's own scoring and before persistence. */
 export function reviewDetailedPromptPackage(value: DetailedShotPromptPackage): PromptQualityReview {
@@ -31,8 +50,9 @@ export function reviewDetailedPromptPackage(value: DetailedShotPromptPackage): P
       && !/低|高|平|俯|仰|侧|正|顶|背|斜|水平|角度|eye|low|high|level|angle|front|side|overhead|tilt/i.test(frame.cameraAngle)) {
       add(`${prefix}.cameraAngle`, "CAMERA_ANGLE_UNCLEAR", "没有明确可执行的拍摄方向", "说明平视、俯拍、仰拍或侧面方向；无需为了字符数扩写");
     }
-    if (!frame.imagePromptCn.includes("单一完整")) add(`${prefix}.imagePromptCn`, "SINGLE_FRAME_REQUIRED", "缺少单帧构图约束", "明确单一完整摄影画面，不得拼贴或多面板");
-    if (!frame.imagePromptCn.includes("可读文字")) add(`${prefix}.imagePromptCn`, "ZERO_TEXT_REQUIRED", "缺少零生成文字约束", "明确禁止画面出现任何可读文字");
+    for (const issue of validateImagePromptQuality(frame)) {
+      if (!qualityIssues.some((existing) => existing.path === `${prefix}.${issue.path}`)) qualityIssues.push({ ...issue, path: `${prefix}.${issue.path}` });
+    }
   }
 
   if (!/Start State|开始状态/i.test(value.videoPromptCn)) add("videoPromptCn", "START_STATE_REQUIRED", "视频提示词缺少开始状态", "补充明确的起始人物、产品和场景状态");

@@ -20,6 +20,8 @@ import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
 import { KeyframeStageWorkspace } from "@/components/KeyframeStageWorkspace";
 import { generateProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
+import { getMissingKeyframeIds, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
+import { useKeyframeProjectRefresh } from "@/components/workspace/useKeyframeProjectRefresh";
 import { creativeStageStatusLabel, deriveCreativeStageState } from "@/lib/creative/creativeStageState";
 import { StoryboardTimeline } from "@/components/storyboard/StoryboardTimeline";
 import { buildOptimizedVideoPrompt, resolveHeroShot } from "@/lib/heroVideo";
@@ -128,7 +130,7 @@ type GenerateImagesData = {
     cacheStatus: string;
     fallbackUsed: boolean;
     fallbackReason?: string | null;
-    status?: "qa-review" | "ready" | "needs-review" | "fallback";
+    status?: "idle" | "loading" | "generated" | "qa-review" | "ready" | "needs-review" | "failed" | "fallback";
     errorCode?: string | null;
     qaResult?: { overallPassed: boolean; attempt: number; issues: string[] } | null;
     diagnostic?: ProviderDiagnostic | null;
@@ -219,6 +221,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [traceLabel, setTraceLabel] = useState(() => initialTraceLabel(initialProject.generationEvents));
   const [callTrace, setCallTrace] = useState<string[]>(() => generationEventsToTrace(initialProject.generationEvents));
   const [activeProject, setActiveProject] = useState<GenerationProject>(initialProject);
+  const latestProjectRef = useRef(activeProject);
+  latestProjectRef.current = activeProject;
   const [stageLocking, setStageLocking] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -242,6 +246,9 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       aspectRatio: briefDraft.brief.aspectRatio
     }
   }), [activeProject, briefDraft.brief.aspectRatio]);
+  useKeyframeProjectRefresh(activeProject.id, activeStage === "keyframes", async () => {
+    applyProjectUpdate(await fetchServerProject(activeProject.id));
+  });
 
   useEffect(() => {
     const revealKey = "ad-director-workspace-reveal";
@@ -803,6 +810,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   function applyProjectUpdate(saved: ProjectPatchData) {
+    if (saved.project.id !== latestProjectRef.current.id || saved.version < activeVersionRef.current) return latestProjectRef.current;
     const refreshed = ensureStageWorkflow(normalizeProjectDuration(saved.project));
     trackServerVersion(saved.version);
     setActiveProject(refreshed);
@@ -1233,18 +1241,21 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setKeyframeBusyShotId(shotId);
     setKeyframeError(null);
     try {
+      let currentProject = activeProject;
       {
         const promptResponse = await postApi<{ processedShotIds: string[] }>("/api/generate-assets", {
           projectId: activeProject.id, brief: activeProject.brief, strategy: activeProject.strategy, shots: [shot], batchSize: 1
         });
         if (!promptResponse.success) throw new Error(promptResponse.error || "镜头提示词生成失败，请查看提示词日志后重试。");
-        applyProjectUpdate(await fetchServerProject(activeProject.id));
+        currentProject = applyProjectUpdate(await fetchServerProject(activeProject.id));
       }
+      const frameIds = frameId ? [frameId] : getMissingKeyframeIds(currentProject, shotId);
+      if (!frameIds.length && !frameId) return;
       await generateProjectKeyframes({
         projectId: activeProject.id,
         shots: [shot],
         aspectRatio: activeProject.brief.aspectRatio,
-        ...(frameId ? { frameIds: [frameId] } : {}),
+        ...(frameIds.length ? { frameIds } : {}),
         onProgress: async () => {
           const snapshot = await fetchServerProject(activeProject.id);
           applyProjectUpdate(snapshot);
@@ -1372,7 +1383,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               })}</div>
             </section> : null}
 
-            {activeStage === "keyframes" && activeStageState.status !== "blocked" ? <KeyframeStageWorkspace project={previewProject} selectedShotId={selectedKeyframeShotId} keyframes={liveKeyframes} busyShotId={keyframeBusyShotId} error={keyframeError} onGenerate={(shotId, frameId) => void generateCurrentShotKeyframes(shotId, frameId)} onConfirm={(shotId, frameId, locked) => void confirmCurrentFrame(shotId, frameId, locked)} /> : null}
+            {activeStage === "keyframes" && activeStageState.status !== "blocked" ? <KeyframeStageWorkspace project={previewProject} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} error={keyframeError} onGenerate={(shotId, frameId) => void generateCurrentShotKeyframes(shotId, frameId)} onConfirm={(shotId, frameId, locked) => void confirmCurrentFrame(shotId, frameId, locked)} /> : null}
             {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已确认关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
             {activeStage === "final" ? <section className="stage-readiness-grid"><StageReadiness label="关键帧" value={`${liveKeyframes.filter((item) => item.status === "ready").length} 个已完成`} /><StageReadiness label="视频" value={activeProject.heroVideo ? "已完成" : "未完成"} /><StageReadiness label="旁白" value={activeProject.narrationAssetId ? "已完成" : "待生成"} /><StageReadiness label="成片时长" value={`${getProjectDurationSec(activeProject)} 秒`} /><Link href={`/projects/${activeProject.id}#final`} className="button-primary-v3">进入最终成片检查</Link></section> : null}
 
@@ -1778,24 +1789,6 @@ function normalizeWorkflowStatus(status: string): WorkflowStepStatus {
     return status as WorkflowStepStatus;
   }
   return "pending";
-}
-
-function projectKeyframesToImages(project: GenerationProject): GenerateImagesData["images"] {
-  return (project.keyframes ?? []).map((frame) => ({
-    shotId: frame.shotId,
-    frameId: frame.frameId,
-    imageUrl: frame.imageUrl,
-    localUrl: frame.localUrl,
-    requestId: frame.requestId,
-    provider: frame.provider ?? "planned",
-    model: frame.model ?? "qwen-image",
-    latencyMs: frame.latencyMs ?? 0,
-    cacheStatus: frame.cacheStatus ?? "not-requested",
-    fallbackUsed: frame.fallbackUsed,
-    fallbackReason: frame.fallbackReason ?? null,
-    status: frame.status === "ready" ? "ready" : frame.status === "needs-review" ? "needs-review" : frame.status === "fallback" ? "fallback" : ["text-qa", "product-qa", "character-qa", "scene-qa", "qa-review"].includes(frame.status) ? "qa-review" : undefined,
-    qaResult: project.keyframeQAResults?.filter((item) => item.shotId === frame.shotId).sort((a, b) => b.attempt - a.attempt)[0] ?? null
-  }));
 }
 
 function imageWorkflowStatus(images: GenerateImagesData["images"]): WorkflowStepStatus {

@@ -12,6 +12,8 @@ import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWo
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { readClientApiResponse } from "@/lib/api/clientResponse";
 import { generateProjectKeyframes, pollProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
+import { getMissingKeyframeIds, getProjectKeyframeViewState, getShotKeyframeViewState, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
+import { useKeyframeProjectRefresh } from "@/components/workspace/useKeyframeProjectRefresh";
 import {
   buildOptimizedVideoPrompt,
   DEFAULT_HERO_SHOT_ID,
@@ -175,6 +177,8 @@ type NextProjectAction = {
 export function ProjectDetailView({ project, projectId, projectVersion, aiStatus }: ProjectDetailViewProps) {
   const [displayProject, setDisplayProject] = useState<GenerationProject>(() => normalizeProjectDuration(project));
   const [currentVersion, setCurrentVersion] = useState(projectVersion);
+  const latestSnapshotVersion = useRef(projectVersion);
+  useKeyframeProjectRefresh(project.id, true, async () => { await fetchProjectSnapshot(); });
   const [heroShotId, setHeroShotId] = useState<string | undefined>(project.heroShotId ?? undefined);
   const [keyframes, setKeyframes] = useState<Record<string, KeyframeResult>>(() => projectKeyframesRecord(project));
   const [activeBatch, setActiveBatch] = useState<"hero-only" | "all-shots" | null>(null);
@@ -231,11 +235,9 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   });
   const renderIsActive = Boolean(renderStatus && isActiveRenderState(renderStatus.status));
   const totalKeyframeCount = displayProject.shots.reduce((sum, shot) => sum + Math.max(1, shot.frames?.length ?? 0), 0);
-  const completedKeyframeCount = displayProject.shots.reduce((sum, shot) => sum + (shot.frames?.length
-    ? shot.frames.filter((frame) => isUsableKeyframe(keyframes[frame.id])).length
-    : Number(isUsableKeyframe(keyframes[shot.id]))), 0);
-  const allKeyframesReady = completedKeyframeCount === displayProject.shots.length;
-  const missingKeyframeShots = displayProject.shots.filter((shot) => !isShotKeyframesComplete(shot, keyframes));
+  const completedKeyframeCount = displayProject.shots.reduce((sum, shot) => sum + getShotKeyframeViewState(displayProject, shot.id).completedCount, 0);
+  const allKeyframesReady = completedKeyframeCount === totalKeyframeCount;
+  const missingKeyframeShots = displayProject.shots.filter((shot) => getShotKeyframeViewState(displayProject, shot.id).completedCount < getShotKeyframeViewState(displayProject, shot.id).totalCount);
   const productMediaUrl = resolveProductImageUrl(
     (displayProject.brief.productImages ?? []).find((image) => image.role === "main-product")
       ?? displayProject.brief.productImages?.[0]
@@ -282,6 +284,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
   async function resetGenerationLogForNewRun() {
     const result = await clearProjectGenerationEvents(displayProject.id);
+    latestSnapshotVersion.current = Math.max(latestSnapshotVersion.current, result.version);
     setCurrentVersion((current) => Math.max(current, result.version));
     setDisplayProject((current) => ({ ...current, generationEvents: [] }));
   }
@@ -390,6 +393,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     return () => observer.disconnect();
   }, []);
   function applyProjectSnapshot(data: ProjectApiData) {
+    if (data.version < latestSnapshotVersion.current) return displayProject;
+    latestSnapshotVersion.current = data.version;
     const normalized = normalizeProjectDuration(data.project);
     setDisplayProject(normalized);
     setCurrentVersion(data.version);
@@ -966,7 +971,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
             <div><small>关键帧</small><h2 id="project-keyframes-title">{displayProject.shots.length} 镜头 · {totalKeyframeCount} 张独立帧 · 共 {projectDurationSec} 秒</h2><p>已完成 {completedKeyframeCount} / {totalKeyframeCount} 帧</p></div>
             <div className="project-section-heading-v4__actions">
               <button type="button" className="project-button-v4 project-button-v4--ghost" onClick={() => { setRequestedShotCount(Math.max(MIN_SHOT_COUNT, Math.min(MAX_SHOT_COUNT, displayProject.shots.length))); setShotCountDialogOpen(true); }}>调整分镜数量</button>
-              {missingKeyframeShots.length > 0 ? <button type="button" className="project-button-v4 project-button-v4--ai" disabled={activeBatch !== null} onClick={() => void generateImages("all-shots", missingKeyframeShots)}>生成缺失关键帧</button> : null}
+              {missingKeyframeShots.length > 0 ? <button type="button" className="project-button-v4 project-button-v4--ai" disabled={activeBatch !== null} onClick={() => void generateImages("all-shots", missingKeyframeShots, missingKeyframeShots.flatMap((shot) => getMissingKeyframeIds(displayProject, shot.id)))}>生成缺失关键帧</button> : null}
               <button type="button" className="project-button-v4 project-button-v4--secondary" disabled={activeBatch !== null} onClick={() => void generateImages("all-shots")}>重新生成全部</button>
             </div>
           </header>
@@ -978,6 +983,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
                 shot={shot}
                 aspectRatio={displayProject.brief.aspectRatio}
                 keyframes={shotKeyframes(shot, keyframes)}
+                view={getShotKeyframeViewState(displayProject, shot.id)}
                 blockedFrameIds={(displayProject.generationEvents ?? []).filter((event) => event.shotId === shot.id && event.status === "blocked" && event.errorCode === "SUBMISSION_STATE_UNKNOWN" && event.frameId).map((event) => event.frameId!)}
                 onRefresh={() => void fetchProjectSnapshot()}
                 isHeroShot={Boolean(displayProject.heroShotId) && shot.id === heroShot.id}
@@ -1266,6 +1272,7 @@ function ProjectWorkflow({ steps }: { steps: ProjectWorkflowStep[] }) {
 function ShotCard({
   shot,
   keyframes,
+  view,
   blockedFrameIds,
   onRefresh,
   aspectRatio,
@@ -1279,6 +1286,7 @@ function ShotCard({
 }: {
   shot: StoryboardShot;
   keyframes: KeyframeResult[];
+  view: ReturnType<typeof getShotKeyframeViewState>;
   blockedFrameIds: string[];
   onRefresh: () => void;
   aspectRatio: AspectRatio;
@@ -1298,9 +1306,9 @@ function ShotCard({
   const keyframe = currentFrame
     ? keyframes.find((item) => item.frameId === currentFrame.id)
     : keyframes[0];
-  const imageUrl = keyframe?.fallbackUsed ? undefined : keyframe?.localUrl || keyframe?.imageUrl;
+  const imageUrl = view.frameViews[safeIndex]?.imageUrl;
   const status = keyframeCardStatus(keyframe);
-  const isLoading = keyframe?.status === "loading" || keyframe?.status === "generated" || keyframe?.status === "qa-review";
+  const isLoading = view.keyframeGenerationStatus === "generating" || keyframe?.status === "loading" || keyframe?.status === "generated" || keyframe?.status === "qa-review";
   const frameCount = Math.max(1, frames.length);
   const goPrevious = () => setCurrentIndex((value) => (value - 1 + frameCount) % frameCount);
   const goNext = () => setCurrentIndex((value) => (value + 1) % frameCount);
@@ -1327,7 +1335,7 @@ function ShotCard({
         <div className="keyframe-card-v4__badges">
           {isHeroShot ? <span className="is-hero">当前主镜头</span> : null}
           {shot.exactProductShot ? <span>精确产品镜头</span> : shot.containsProduct ? <span>产品互动镜头</span> : null}
-          <span className={`is-${status}`}>{keyframeStatusLabel(status)}</span>
+          <span className={`is-${status}`}>{view.label}</span>
         </div>
         {frameCount > 1 ? <div className="keyframe-card-v4__carousel" aria-label="帧导航">
           <button type="button" onClick={goPrevious} aria-label="上一帧" title="上一帧">‹</button>
@@ -1490,17 +1498,17 @@ function buildProjectSteps({
   renderStatus: RenderStatusState | null;
   finalVideo: { outputUrl: string; downloadUrl: string; sizeBytes: number } | null;
 }): ProjectWorkflowStep[] {
-  const completedFrames = project.shots.filter((shot) => isShotKeyframesComplete(shot, keyframes)).length;
-  const fallbackFrames = project.shots.filter((shot) => shotKeyframes(shot, keyframes).some((frame) => frame.fallbackUsed || frame.status === "failed")).length;
-  const keyframeStatus: ProjectStepStatus = activeBatch
+  const view = getProjectKeyframeViewState(project);
+  const completedFrames = view.completedShotCount;
+  const keyframeStatus: ProjectStepStatus = activeBatch || view.keyframeGenerationStatus === "generating"
     ? "running"
     : completedFrames === project.shots.length
       ? "completed"
-      : fallbackFrames > 0
-        ? "fallback"
-        : imageBatchError
+      : view.hasAnyKeyframe
+        ? "needs-review"
+        : imageBatchError || view.hasFailed
           ? "failed"
-          : normalizeWorkflowStatus(project.workflowSteps?.keyframes);
+          : "pending";
   const heroStatus: ProjectStepStatus = project.heroShotId ? "completed" : keyframeStatus === "completed" ? "pending" : "blocked";
   const videoStatus: ProjectStepStatus = heroVideoUploading
     ? "running"
@@ -1631,22 +1639,8 @@ function formatDuration(durationSec: number) {
 }
 
 function projectKeyframesRecord(project: GenerationProject): Record<string, KeyframeResult> {
-  return (project.keyframes ?? []).reduce<Record<string, KeyframeResult>>((acc, frame) => {
-    acc[frame.frameId ?? frame.shotId] = {
-      shotId: frame.shotId,
-      frameId: frame.frameId,
-      imageUrl: frame.imageUrl,
-      localUrl: frame.localUrl,
-      provider: frame.provider,
-      model: frame.model,
-      latencyMs: frame.latencyMs,
-      requestId: frame.requestId,
-      cacheStatus: frame.cacheStatus,
-      fallbackUsed: frame.fallbackUsed,
-      fallbackReason: frame.fallbackReason,
-      status: frame.status === "ready" ? "ready" : frame.status === "generated" ? "generated" : ["text-qa", "product-qa", "character-qa", "scene-qa", "qa-review"].includes(frame.status) ? "qa-review" : frame.status === "needs-review" ? "needs-review" : frame.status === "pending" ? "loading" : "failed",
-      qaResult: project.keyframeQAResults?.filter((item) => item.shotId === frame.shotId && item.frameId === frame.frameId).sort((a, b) => b.attempt - a.attempt)[0] ?? null
-    };
+  return projectKeyframesToImages(project).reduce<Record<string, KeyframeResult>>((acc, frame) => {
+    acc[frame.frameId ?? frame.shotId] = frame;
     return acc;
   }, {});
 }
