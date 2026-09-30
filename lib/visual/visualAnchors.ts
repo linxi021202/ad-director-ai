@@ -138,14 +138,21 @@ export function replaceVisualAnchorCandidates(
   const normalized = ensureVisualAnchorWorkspace(project, now);
   const workspace = normalized.visualAnchorWorkspace!;
   const key = kind === "character" ? "characterCandidates" : "sceneCandidates";
+  const selectionKey = kind === "character" ? "characterSelections" : "sceneSelections";
+  const priorSelection = workspace[selectionKey]?.find((item) => item.targetId === targetId);
+  const confirmedId = kind === "scene" && priorSelection?.status === "confirmed" ? priorSelection.confirmedCandidateId : undefined;
   const replacedIndexes = new Set(candidates.map((candidate) => candidate.candidateIndex ?? Number(candidate.label.match(/方案\s*(\d+)/)?.[1])));
   const previous = workspace[key].map((candidate) => candidate.targetId === targetId
+    && candidate.id !== confirmedId
     && (!preserveUnreplaced || replacedIndexes.has(candidate.candidateIndex ?? Number(candidate.label.match(/方案\s*(\d+)/)?.[1])))
     ? { ...candidate, status: "outdated" as const }
     : candidate);
-  const selectionKey = kind === "character" ? "characterSelections" : "sceneSelections";
   const setVersion = Math.max(...candidates.map((candidate) => candidate.setVersion ?? candidate.version));
-  const priorSelection = workspace[selectionKey]?.find((item) => item.targetId === targetId);
+  if (confirmedId) {
+    return applyVisualAnchorReadiness({ ...normalized,
+      visualAnchorWorkspace: { ...workspace, [key]: [...previous, ...candidates], updatedAt: now }
+    }, now);
+  }
   const selectedStillActive = preserveUnreplaced && previous.some((item) => item.id === priorSelection?.selectedCandidateId && item.status !== "outdated");
   const selections = upsertSelection(workspace[selectionKey] ?? [], {
     kind,

@@ -25,6 +25,8 @@ type Entry = {
   networkErrorName?: string; networkErrorMessage?: string; networkCauseCode?: string; networkCauseErrno?: number; networkCauseSyscall?: string;
   errorName?: string; causeCode?: string; requestStartedAt?: number; requestCompletedAt?: number;
   errorStack?: string; projectVersionBefore?: number; projectVersionExpected?: number; projectVersionActual?: number;
+  projectVersionAtStart?: number; projectVersionBeforePersist?: number; projectVersionAfterPersist?: number;
+  persistAttempt?: number; persistStatus?: string; anchorTargetId?: string;
   message?: string;
 };
 
@@ -34,7 +36,12 @@ const providerNames: Record<string, string> = { system: "系统处理", deepseek
 const commitModeNames: Record<string, string> = { "prompt-bundle-building": "组装最终提示词", "prompt-bundle-validated": "最终提示词校验通过",
   "prompt-bundle-persisting": "正在保存提示词", "prompt-bundle-persisted": "提示词保存成功", "shot-status-updating": "正在提交镜头状态",
   "shot-status-ready": "镜头提示词已就绪", "task-completing": "正在完成任务", "task-completed": "任务已完成",
-  "prompt-commit-failed": "提示词提交失败", "prompt-pipeline-exception": "提示词处理异常", "prompt-stage-validation": "提示词结构校验" };
+  "prompt-commit-failed": "提示词提交失败", "prompt-pipeline-exception": "提示词处理异常", "prompt-stage-validation": "提示词结构校验",
+  "scene-candidates-building": "整理场景候选", "scene-candidates-built": "场景候选已整理",
+  "project-patch-started": "开始保存项目", "project-version-conflict": "项目版本冲突",
+  "project-reloaded": "重新读取项目", "project-patch-retrying": "重试保存项目",
+  "project-patch-completed": "项目保存完成", "project-read-after-write-verified": "保存后核验通过",
+  "project-patch-failed": "项目保存失败" };
 const statusNames: Record<string, string> = { queued: "排队中", running: "运行中", "qa-review": "校验中", completed: "成功", "needs-review": "待检查", failed: "失败", fallback: "已降级", cancelled: "已取消", blocked: "已跳过", interrupted: "已中断" };
 const anchorLabel = (entry: Entry) => entry.anchorType && entry.candidateIndex
   ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : undefined;
@@ -168,7 +175,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
       </div>
       <div className="call-log-sheet__scroll">
         <section><h3>当前任务</h3>{active.length ? active.map((entry) => <button type="button" className="call-log-row" key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {entry.stage}</span><strong>{entry.message || "任务执行中"}</strong><small>{statusNames[entry.status]} · 已运行 {Math.max(0, Math.floor((Date.now() - entry.startedAt) / 1000))} 秒{entry.progressTotal ? ` · ${entry.progressCurrent ?? 0}/${entry.progressTotal}` : ""}</small></button>) : <p className="call-log-empty">当前没有运行中的任务。</p>}</section>
-        <section><h3>调用历史</h3>{filtered.map((entry) => <button type="button" className={`call-log-row${selectedId === entry.id ? " is-selected" : ""}`} key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {anchorLabel(entry) ?? entry.mode ?? entry.stage} {entry.shotId ? `· ${entry.shotId}` : ""}</span><strong>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态待核查" : statusNames[entry.status] ?? entry.status} · {new Date(entry.startedAt).toLocaleString("zh-CN")}</strong>{entry.errorCode || entry.errorSummary ? <small>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态未知" : entry.errorCode || ""} {entry.errorSummary?.slice(0, 110)}</small> : null}</button>)}
+        <section><h3>调用历史</h3>{filtered.map((entry) => <button type="button" className={`call-log-row${selectedId === entry.id ? " is-selected" : ""}`} key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {anchorLabel(entry) ?? (entry.mode ? commitModeNames[entry.mode] ?? entry.mode : entry.stage)} {entry.shotId ? `· ${entry.shotId}` : ""}</span><strong>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态待核查" : statusNames[entry.status] ?? entry.status} · {new Date(entry.startedAt).toLocaleString("zh-CN")}</strong>{entry.errorCode || entry.errorSummary ? <small>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态未知" : entry.errorCode || ""} {entry.errorSummary?.slice(0, 110)}</small> : null}</button>)}
           {!filtered.length ? <p className="call-log-empty">{focusStage === "keyframes" ? "当前镜头尚无关键帧调用记录。旧任务可能未采集诊断信息，请重试该帧后查看。" : projectId && !entries.length ? "当前项目暂无调用日志。" : "暂无符合条件的记录。"}</p> : null}{hasMore ? <button type="button" className="call-log-more" disabled={loading} onClick={() => void load(entries.at(-1)?.startedAt)}>{loading ? "正在加载…" : "加载更早记录"}</button> : null}</section>
         {selected ? <section className="call-log-diagnostics"><h3>技术诊断</h3><dl>{([
           ["提示词阶段", selected.promptStage ? ({ foundation: "导演基础", frame: "逐帧提示词", qa: "质量校验", repair: "局部修复" })[selected.promptStage] : undefined],
@@ -177,6 +184,9 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
           ["最终采用", selected.finalUsed === undefined ? undefined : selected.finalUsed ? "是" : "否"],
           ["质量问题", selected.qualityIssues?.map((issue) => `${issue.path}：${issue.reason}；建议：${issue.suggestion}`).join("\n")],
           ["调用编号", selected.id], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["候选", anchorLabel(selected)], ["候选编号", selected.candidateId], ["模型", selected.model], ["生成模式", selected.mode ? commitModeNames[selected.mode] ?? selected.mode : undefined], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
+          ["生成前项目版本", selected.projectVersionAtStart], ["持久化前项目版本", selected.projectVersionBeforePersist],
+          ["持久化后项目版本", selected.projectVersionAfterPersist], ["保存尝试次数", selected.persistAttempt],
+          ["持久化状态", selected.persistStatus], ["场景需求编号", selected.anchorTargetId],
           ["保存前项目版本", selected.projectVersionBefore], ["预期项目版本", selected.projectVersionExpected], ["实际项目版本", selected.projectVersionActual], ["内部异常堆栈", selected.errorStack],
           ["模型调用耗时", selected.kind === "call" && selected.durationMs !== undefined ? `${selected.durationMs} 毫秒` : undefined], ["任务跨度", selected.kind === "task" && selected.jobElapsedMs !== undefined ? `${selected.jobElapsedMs} 毫秒` : undefined], ["最后活动", selected.lastHeartbeatAt ? new Date(selected.lastHeartbeatAt).toLocaleString("zh-CN") : undefined], ["中断发现", selected.interruptedAt ? new Date(selected.interruptedAt).toLocaleString("zh-CN") : undefined],
           ["重试序号", selected.attempt], ["错误类型", selected.errorCode], ["异常类型", selected.errorName], ["底层异常码", selected.causeCode], ["请求开始", selected.requestStartedAt ? new Date(selected.requestStartedAt).toLocaleString("zh-CN") : undefined], ["请求完成", selected.requestCompletedAt ? new Date(selected.requestCompletedAt).toLocaleString("zh-CN") : undefined], ["服务商错误码", selected.providerErrorCode], ["错误详情", selected.errorSummary], ["校验路径", selected.validationPath], ["字段问题", selected.validationIssues?.map((issue) => `${issue.path}: ${issue.message}`).join("；")],

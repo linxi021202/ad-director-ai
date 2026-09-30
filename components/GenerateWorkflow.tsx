@@ -228,6 +228,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [briefVersionImpact, setBriefVersionImpact] = useState<DependencyImpact | null>(null);
   const [anchorBusyTarget, setAnchorBusyTarget] = useState<string | null>(null);
+  const attemptedSceneRecoveryRef = useRef(new Set<string>());
   const [anchorVersionIntent, setAnchorVersionIntent] = useState<AnchorVersionIntent | null>(null);
   const [liveKeyframes, setLiveKeyframes] = useState<GenerateImagesData["images"]>(() => projectKeyframesToImages(initialProject));
   const [keyframeBusyShotId, setKeyframeBusyShotId] = useState<string | null>(null);
@@ -246,9 +247,36 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       aspectRatio: briefDraft.brief.aspectRatio
     }
   }), [activeProject, briefDraft.brief.aspectRatio]);
-  useKeyframeProjectRefresh(activeProject.id, activeStage === "keyframes", async () => {
+  useKeyframeProjectRefresh(activeProject.id, activeStage === "keyframes" || activeStage === "anchors", async () => {
     applyProjectUpdate(await fetchServerProject(activeProject.id));
   });
+
+  useEffect(() => {
+    if (activeStage !== "anchors") return;
+    const sceneIds = activeProject.visualAnchorWorkspace?.requiredSceneIds ?? [];
+    if (sceneIds.length !== 1) return;
+    const targetId = sceneIds[0]!;
+    if (activeProject.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === targetId && item.status !== "outdated")) return;
+    const event = [...(activeProject.generationEvents ?? [])].reverse().find((item) => item.stage === "anchors"
+      && item.provider === "qwen-image" && item.action === "生成场景候选方案"
+      && ["completed", "failed", "interrupted"].includes(item.status));
+    if (!event) return;
+    const key = `${activeProject.id}:${event.id}`;
+    if (attemptedSceneRecoveryRef.current.has(key)) return;
+    attemptedSceneRecoveryRef.current.add(key);
+    void (async () => {
+      const response = await fetch(`/api/projects/${encodeURIComponent(activeProject.id)}/visual-anchors`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "recover-candidates", kind: "scene", targetId, taskId: event.id })
+      });
+      if (!response.ok) {
+        if (response.status === 410) setError("先前生成的场景图片文件已失效，无法自动恢复；请查看调用日志。");
+        return;
+      }
+      applyProjectUpdate(await fetchServerProject(activeProject.id));
+      setTraceLabel("已恢复先前生成的场景图片");
+    })().catch(() => undefined);
+  }, [activeStage, activeProject]);
 
   useEffect(() => {
     const revealKey = "ad-director-workspace-reveal";
@@ -998,10 +1026,19 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         body: JSON.stringify({ ...body, expectedVersion: activeVersionRef.current })
       });
       const result = await readClientApiResponse<ProjectPatchData>(response);
+      if (response.status === 409) {
+        const snapshot = await fetchServerProject(activeProject.id);
+        const refreshed = applyProjectUpdate(snapshot);
+        if (body.action === "generate-candidates" && body.kind === "scene"
+          && refreshed.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === body.targetId && item.status !== "outdated")) {
+          return refreshed;
+        }
+        throw new Error("项目状态已更新，已同步最新场景信息；已生成的图片会优先恢复，请稍后查看。");
+      }
       if (!response.ok || !result.success || !result.data) {
         throw new Error(typeof result.error === "string" ? result.error : "视觉基准更新失败。");
       }
-      const refreshed = applyProjectUpdate(result.data);
+      const refreshed = applyProjectUpdate(await fetchServerProject(activeProject.id));
       await refreshServerEvents(activeProject.id);
       return refreshed;
     } finally {
@@ -1019,6 +1056,25 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   async function generateVisualAnchorCandidates(kind: VisualAnchorCandidateKind, targetId: string, candidateIndex?: number) {
+    if (kind === "scene" && !candidateIndex
+      && !activeProject.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === targetId && item.status !== "outdated")) {
+      const event = [...(activeProject.generationEvents ?? [])].reverse().find((item) => item.stage === "anchors"
+        && item.provider === "qwen-image" && item.action === "生成场景候选方案"
+        && ["completed", "failed", "interrupted"].includes(item.status));
+      if (event) {
+        try {
+          const recovered = await postAnchorAction({ action: "recover-candidates", kind: "scene", targetId, taskId: event.id },
+            `recover:scene:${targetId}`);
+          if (recovered?.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === targetId && item.status !== "outdated")) {
+            setTraceLabel("已恢复先前生成的场景图片，无需重新生成");
+            return;
+          }
+        } catch (recoveryError) {
+          setError(recoveryError instanceof Error ? recoveryError.message : "旧场景图片恢复失败，请查看调用日志。");
+          return;
+        }
+      }
+    }
     if (!modelStatus?.qwenImage.configured) {
       const guidance = `生成${kind === "character" ? "人物" : "场景"}候选前需要配置 Qwen-Image。`;
       setError(guidance);

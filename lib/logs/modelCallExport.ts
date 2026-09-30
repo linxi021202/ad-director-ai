@@ -33,6 +33,12 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     projectVersionBefore: entry.projectVersionBefore ?? null,
     projectVersionExpected: entry.projectVersionExpected ?? null,
     projectVersionActual: entry.projectVersionActual ?? null,
+    projectVersionAtStart: entry.projectVersionAtStart ?? null,
+    projectVersionBeforePersist: entry.projectVersionBeforePersist ?? null,
+    projectVersionAfterPersist: entry.projectVersionAfterPersist ?? null,
+    persistAttempt: entry.persistAttempt ?? null,
+    persistStatus: entry.persistStatus ?? null,
+    anchorTargetId: entry.anchorTargetId ?? null,
     httpStatus: entry.httpStatus ?? null,
     inputTokens: entry.inputTokens ?? null,
     outputTokens: entry.outputTokens ?? null,
@@ -62,7 +68,8 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     environment: { nodeEnv: process.env.NODE_ENV ?? null, commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT_SHA ?? null },
     retention: { days: archive.retentionDays, maxSessionEntries: 500, limitReached: archive.retentionLimitReached, firstAvailableAt: archive.firstAvailableAt ? new Date(archive.firstAvailableAt).toISOString() : null,
       notice: archive.retentionLimitReached ? "会话日志达到保留上限，更早记录可能已被清理；本文件包含当前仍保存的全部匹配记录。" : null },
-    summary: { total: entries.length, failedCalls: entries.filter((entry) => entry.kind === "call" && entry.status === "failed").length,
+    summary: { total: entries.length, failedCalls: entries.filter((entry) => entry.kind === "call" && entry.provider !== "system" && entry.status === "failed").length,
+      failedSystemCalls: entries.filter((entry) => entry.kind === "call" && entry.provider === "system" && entry.status === "failed").length,
       failedTasks: entries.filter((entry) => entry.kind === "task" && entry.status === "failed").length,
       interruptedTasks: entries.filter((entry) => entry.kind === "task" && entry.status === "interrupted").length,
       affectedShotIds: [...new Set(entries.filter((entry) => entry.status === "failed" && entry.shotId).map((entry) => entry.shotId!))],
@@ -82,12 +89,13 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
     `导出时间：${report.exportedAt}`, `应用提交：${report.environment.commit ?? "未提供"}`,
     `记录数量：${report.summary.total}`, "",
     "## 二、失败摘要",
-    `失败模型调用：${report.summary.failedCalls}`, `失败任务：${report.summary.failedTasks}`, `中断任务：${report.summary.interruptedTasks}`,
+    `失败模型调用：${report.summary.failedCalls}`, `失败系统处理：${report.summary.failedSystemCalls}`,
+    `失败任务：${report.summary.failedTasks}`, `中断任务：${report.summary.interruptedTasks}`,
     `受影响镜头：${report.summary.affectedShotIds.join("、") || "无"}`,
     `受影响候选：${report.summary.affectedCandidates.join("、") || "无"}`,
     ...report.entries.filter((entry) => entry.status === "failed").map((entry) => `- ${safe(entry.errorCode ?? "未知错误")}：${safe(entry.errorSummary ?? "未采集错误摘要")}；字段：${safe(entry.validationPath ?? "未采集")}`), "",
     "## 三、任务执行时间线",
-    ...report.entries.map((entry) => `- ${new Date(entry.startedAt).toISOString()} | ${entry.kind === "task" ? "任务" : "模型调用"} | ${safe(entry.provider)} ${safe(entry.model ?? "")} | ${safe(entry.mode ?? entry.stage)} | ${entry.anchorType && entry.candidateIndex ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : safe(entry.shotId ?? "无镜头")} | ${safe(entry.status)} | ${entry.kind === "call" ? `模型耗时 ${entry.modelCallElapsedMs ?? "未知"} ms` : `任务跨度 ${entry.jobElapsedMs ?? "未知"} ms`}`), "",
+    ...report.entries.map((entry) => `- ${new Date(entry.startedAt).toISOString()} | ${entry.kind === "task" ? "任务" : entry.provider === "system" ? "系统处理" : "模型调用"} | ${safe(entry.provider)} ${safe(entry.model ?? "")} | ${safe(entry.mode ?? entry.stage)} | ${entry.anchorType && entry.candidateIndex ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : safe(entry.shotId ?? "无镜头")} | ${safe(entry.status)} | ${entry.kind === "task" ? `任务跨度 ${entry.jobElapsedMs ?? "未知"} ms` : entry.provider === "system" ? `保存状态 ${entry.persistStatus ?? "未采集"}` : `模型耗时 ${entry.modelCallElapsedMs ?? "未知"} ms`}`), "",
     "## 四、逐镜头生成情况"
   ];
   const shots = [...new Set(report.entries.map((entry) => entry.shotId).filter((id): id is string => Boolean(id)))];
@@ -98,6 +106,9 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
     }
   }
   lines.push("", "## 五、技术诊断");
+  for (const entry of report.entries.filter((item) => item.provider === "system" && item.persistStatus)) {
+    lines.push(`- ${safe(entry.mode ?? "持久化")}：${safe(entry.persistStatus!)}；生成前版本 ${entry.projectVersionAtStart ?? "未采集"}；保存前版本 ${entry.projectVersionBeforePersist ?? "未采集"}；保存后版本 ${entry.projectVersionAfterPersist ?? "未采集"}；第 ${entry.persistAttempt ?? "未知"} 次尝试`);
+  }
   for (const entry of report.entries.filter((item) => item.kind === "call" && item.status === "failed")) {
     lines.push(`### 调用 ${entry.id}`, `任务：${entry.taskId}；${entry.anchorType && entry.candidateIndex ? `${entry.anchorType === "scene" ? "场景" : "人物"}候选 ${entry.candidateIndex}` : `镜头：${safe(entry.shotId ?? "未关联")}`}`, `失败阶段：${safe(entry.failurePhase ?? "未采集")}；错误代码：${safe(entry.errorCode ?? "未采集")}；服务商代码：${safe(entry.providerErrorCode ?? "未返回")}`,
       `错误详情：${safe(entry.errorSummary ?? "未采集")}`, `finish_reason：${safe(entry.finishReason ?? "未返回")}`, `JSON 解析：${entry.jsonParsed === null ? "未知" : entry.jsonParsed ? "成功" : "失败"}`, `Schema 校验：${entry.schemaValid === null ? "未知" : entry.schemaValid ? "通过" : "失败"}`,
@@ -108,7 +119,7 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
       `质量证据：${entry.qualityIssues?.map((issue) => `${safe(issue.path)}：${safe(issue.reason)}；建议：${safe(issue.suggestion)}`).join("；") || "无"}`, "");
   }
   lines.push("## 六、模型请求信息");
-  for (const entry of report.entries.filter((item) => item.kind === "call")) {
+  for (const entry of report.entries.filter((item) => item.kind === "call" && item.provider !== "system")) {
     if (entry.promptStage) lines.push(`- 提示词阶段 ${entry.promptStage}；版本 ${entry.resultVersion ?? "未采集"}；规范结构 ${entry.canonicalValid ?? "未采集"}；最终采用 ${entry.finalUsed ?? "未采集"}`);
     lines.push(`- ${entry.id}：批次 ${entry.jobId ?? "未关联"}，任务 ${entry.taskId}，镜头 ${safe(entry.shotId ?? "未知")}，帧 ${safe(entry.frameId ?? "未知")}，${safe(entry.model ?? "未知模型")}，${safe(entry.mode ?? "未知模式")}，参考图 ${entry.referenceImageCount ?? "未知"} 张，资产 ${entry.outputAssetIds?.join("、") ?? "无"}，请求参数 ${entry.requestOptions ? JSON.stringify(entry.requestOptions) : "未采集"}，输入/输出 Token ${entry.inputTokens ?? "未知"}/${entry.outputTokens ?? "未知"}，HTTP ${entry.httpStatus ?? "未知"}，耗时 ${entry.modelCallElapsedMs ?? "未知"} ms`);
   }

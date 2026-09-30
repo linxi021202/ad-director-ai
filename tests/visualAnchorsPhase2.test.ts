@@ -144,6 +144,22 @@ describe("Phase 2 visual anchors", () => {
     expect(active.find((item) => item.candidateIndex === 3)?.assetId).toBe(characterAssetIds[1]);
   });
 
+  it("does not replace a scene the user confirmed while another candidate set was running", () => {
+    let project = anchorProject();
+    const targetId = project.sceneVisualSpecs![0]!.id;
+    const original = makeCandidates("scene", targetId, sceneAssetIds);
+    project = replaceVisualAnchorCandidates(project, "scene", targetId, original);
+    project = selectVisualAnchorCandidate(project, "scene", targetId, original[1]!.id);
+    project = lockVisualAnchorMaster(project, "scene", targetId);
+    const next = makeCandidates("scene", targetId, characterAssetIds).map((item) => ({ ...item, version: 2, setVersion: 2 }));
+    project = replaceVisualAnchorCandidates(project, "scene", targetId, next);
+    expect(project.visualAnchorWorkspace?.sceneSelections?.find((item) => item.targetId === targetId)).toMatchObject({
+      status: "confirmed", selectedCandidateId: original[1]!.id, confirmedCandidateId: original[1]!.id
+    });
+    expect(project.visualAnchorWorkspace?.sceneCandidates.find((item) => item.id === original[1]!.id)?.status).not.toBe("outdated");
+    expect(project.sceneVisualSpecs?.find((item) => item.id === targetId)?.masterAssetId).toBe(original[1]!.assetId);
+  });
+
   it("keeps night and bright states inside one Scene Identity with stable spatial anchors", () => {
     const architecture = buildProjectContinuity({
       brief: coldBrewDemo.brief,

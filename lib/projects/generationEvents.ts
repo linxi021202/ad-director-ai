@@ -164,6 +164,7 @@ export function completeGenerationEvent(
   return updateEvent(sessionId, projectId, eventId, {
     status: details.status ?? "completed",
     message,
+    errorCode: undefined,
     completedAt: Date.now(),
     ...(details.latencyMs !== undefined ? { latencyMs: Math.max(0, Math.round(details.latencyMs)) } : {}),
     ...(details.progressCurrent !== undefined ? { progressCurrent: details.progressCurrent } : {}),

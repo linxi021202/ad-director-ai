@@ -7,9 +7,10 @@ import { z } from "zod";
 import { generateQwenImageAdaptive, type QwenModelAttempt } from "@/lib/image/qwenImageModelRouter";
 import { qwenImageUserMessage } from "@/lib/image/qwenImageErrors";
 import { assertImageStorageCapacity, StorageCapacityError } from "@/lib/assets/storageCapacity";
+import { assertPrivateAssetReadable, requirePrivateAsset } from "@/lib/assets/assetStore";
 import { readProductReferenceDataUrl, selectPrimaryProductImage } from "@/lib/image/productReference";
 import type { QwenImageResult } from "@/lib/image/types";
-import { upsertModelCallLog } from "@/lib/logs/modelCallStore";
+import { readModelCallLogArchive, upsertModelCallLog } from "@/lib/logs/modelCallStore";
 import {
   AnonymousProjectVersionConflictError,
   mutateOwnedAnonymousProject,
@@ -54,6 +55,8 @@ const requestSchema = z.discriminatedUnion("action", [
     count: z.number().int().min(1).max(3).default(3),
     candidateIndex: z.number().int().min(1).max(3).optional()
   }).strict(),
+  z.object({ action: z.literal("recover-candidates"), kind: z.literal("scene"), targetId: z.string().trim().min(1).max(120),
+    taskId: z.string().uuid(), expectedVersion: z.number().int().positive().optional() }).strict(),
   z.object({
     action: z.literal("set-current"),
     expectedVersion: z.number().int().positive(),
@@ -94,13 +97,19 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const body = requestSchema.parse(await request.json());
     const current = await requireOwnedAnonymousProject(sessionResult.session.id, projectId.data);
-    if (current.version !== body.expectedVersion) throw new AnonymousProjectVersionConflictError();
+    if (!(body.action === "generate-candidates" && body.kind === "scene")
+      && body.action !== "recover-candidates" && current.version !== body.expectedVersion) {
+      throw new AnonymousProjectVersionConflictError();
+    }
 
     if (body.action === "initialize") {
       return await initializeAnchors(sessionResult.session.id, projectId.data, current.project);
     }
     if (body.action === "generate-candidates") {
-      return await generateCandidates(sessionResult.session.id, projectId.data, current.project, body);
+      return await generateCandidates(sessionResult.session.id, projectId.data, current.project, current.version, body);
+    }
+    if (body.action === "recover-candidates") {
+      return await recoverSceneCandidates(sessionResult.session.id, projectId.data, body.targetId, body.taskId);
     }
     if (body.action === "set-current") {
       const saved = await setCurrentCandidate(sessionResult.session.id, projectId.data, current.project, body, current.version);
@@ -121,26 +130,27 @@ async function initializeAnchors(sessionId: string, projectId: string, source: G
     message: "DeepSeek 正在根据已锁定创意整理人物需求与场景身份。"
   });
   try {
-    const current = await requireOwnedAnonymousProject(sessionId, projectId);
-    let project = ensureVisualAnchorWorkspace({ ...source, generationEvents: current.project.generationEvents });
+    const project = ensureVisualAnchorWorkspace(source);
     const productSpec = await resolveProjectProductVisualSpec({ sessionId, project }).catch((error) => ({
       spec: null,
       error: error instanceof Error ? error.message : "产品图片分析暂时不可用。"
     }));
-    if (productSpec.spec) project = { ...project, productVisualSpec: productSpec.spec };
     const defaults = project.visualAnchorWorkspace!.characterBriefs;
     const generated = await generateCharacterAnchorBriefs(project.brief, project.creativeBible!, defaults, {
       sessionId,
       maxProviderAttempts: 1
     });
-    if (generated.success && generated.data) {
-      project = ensureVisualAnchorWorkspace({
-        ...project,
-        visualAnchorWorkspace: { ...project.visualAnchorWorkspace!, characterBriefs: generated.data }
-      });
-      project = applyCharacterBriefs(project, generated.data);
-    }
-    const saved = await mutateOwnedAnonymousProject(sessionId, projectId, () => project);
+    await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => {
+      let next = ensureVisualAnchorWorkspace(latest);
+      if (productSpec.spec && !next.productVisualSpec) next = { ...next, productVisualSpec: productSpec.spec };
+      const briefsUnchanged = JSON.stringify(next.visualAnchorWorkspace?.characterBriefs) === JSON.stringify(defaults);
+      if (generated.success && generated.data && briefsUnchanged) {
+        next = applyCharacterBriefs({ ...next, visualAnchorWorkspace: {
+          ...next.visualAnchorWorkspace!, characterBriefs: generated.data
+        } }, generated.data);
+      }
+      return ensureVisualAnchorWorkspace(next);
+    });
     await completeGenerationEvent(
       sessionId,
       projectId,
@@ -172,6 +182,7 @@ async function generateCandidates(
   sessionId: string,
   projectId: string,
   source: GenerationProject,
+  projectVersionAtStart: number,
   body: Extract<z.infer<typeof requestSchema>, { action: "generate-candidates" }>
 ) {
   if (body.candidateIndex && body.count !== 1) return failure("VISUAL_ANCHOR_INVALID_CANDIDATE", "补生成单个候选时数量必须为 1。", 400);
@@ -199,6 +210,7 @@ async function generateCandidates(
   const indexes = body.candidateIndex ? [body.candidateIndex] : Array.from({ length: body.count }, (_, index) => index + 1);
   const candidateIds = new Map(indexes.map((index) => [index, randomUUID()]));
   let candidatesStarted = false;
+  let persistenceStarted = false;
   try {
     const planned = body.kind === "character"
       ? await generateCharacterCandidateDirections(target as NonNullable<GenerationProject["visualAnchorWorkspace"]>["characterBriefs"][number], { sessionId, maxProviderAttempts: 1 })
@@ -218,7 +230,7 @@ async function generateCandidates(
           : buildSceneCandidatePrompt(target as SceneVisualSpec, candidate.direction as SceneCandidateDirection,
             needsProductReference ? project.brief.productName : undefined));
       } catch (error) {
-        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, "PROMPT_BUILD_FAILED", error, startedAt, repair, needsProductReference);
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, "PROMPT_BUILD_FAILED", error, startedAt, repair, needsProductReference);
         return { requestItem: { ...candidate, prompt: "" }, result: null };
       }
       const requestItem = { ...candidate, prompt };
@@ -229,7 +241,7 @@ async function generateCandidates(
           : undefined;
         if (needsProductReference && !referenceImage) throw new Error("场景需要真实商品参考图，但主产品图未保存。");
       } catch (error) {
-        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index,
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index,
           "REFERENCE_ASSET_LOAD_FAILED", error, startedAt, repair, needsProductReference);
         return { requestItem, result: null };
       }
@@ -245,14 +257,14 @@ async function generateCandidates(
           sessionId, size: body.kind === "character" ? "1152*2048" : "2048*1152", watermark: false
         }, (attempt) => {
           modelAttemptSeen = true;
-          return logAnchorModelAttempt(sessionId, projectId, event, body.kind, candidate.id, candidate.index, attempt, repair);
+          return logAnchorModelAttempt(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, attempt, repair);
         });
-        if (!modelAttemptSeen) await logAnchorCandidateResult(sessionId, projectId, event, body.kind, candidate.id, candidate.index, result, startedAt, repair, needsProductReference);
+        if (!modelAttemptSeen) await logAnchorCandidateResult(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, result, startedAt, repair, needsProductReference);
         return { requestItem, result };
       } catch (error) {
         const phase = error instanceof Error && error.message === "SUBMISSION_STATE_UNKNOWN" ? "MODEL_SUBMISSION_FAILED"
           : modelAttemptSeen ? "UNKNOWN" : "MODEL_ROUTING_FAILED";
-        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, candidate.id, candidate.index, phase, error, startedAt, repair, needsProductReference);
+        await logAnchorCandidateFailure(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, phase, error, startedAt, repair, needsProductReference);
         return { requestItem, result: null };
       }
     };
@@ -281,9 +293,9 @@ async function generateCandidates(
       return failure("VISUAL_ANCHOR_GENERATION_FAILED", guidance, 502);
     }
     const now = new Date().toISOString();
-    const nextVersion = Math.max(0, ...(project.visualAnchorWorkspace![body.kind === "character" ? "characterCandidates" : "sceneCandidates"]
-      .filter((candidate) => candidate.targetId === body.targetId)
-      .map((candidate) => candidate.version))) + 1;
+    const buildVersion = await requireOwnedAnonymousProject(sessionId, projectId);
+    await logAnchorPersistPhase(sessionId, projectId, event, body.kind === "scene" ? "scene-candidates-building" : "character-candidates-building",
+      "started", projectVersionAtStart, buildVersion.version, undefined, 1);
     const candidates: VisualAnchorCandidate[] = successful.map(({ requestItem, result }, index) => ({
       id: requestItem.id,
       kind: body.kind,
@@ -295,13 +307,51 @@ async function generateCandidates(
       directionTitle: requestItem.direction.title,
       directionSummary: requestItem.direction.differentiation,
       setId,
-      setVersion: nextVersion,
       status: "ready",
       recommended: index === 0,
-      version: nextVersion,
+      version: 1,
       createdAt: now
     }));
-    await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => replaceVisualAnchorCandidates(latest, body.kind, body.targetId, candidates, now, successful.length < body.count || Boolean(body.candidateIndex)));
+    persistenceStarted = true;
+    const beforePersist = await requireOwnedAnonymousProject(sessionId, projectId);
+    await logAnchorPersistPhase(sessionId, projectId, event, body.kind === "scene" ? "scene-candidates-built" : "character-candidates-built",
+      "completed", projectVersionAtStart, beforePersist.version, undefined, 1);
+    let saved: Awaited<ReturnType<typeof mutateOwnedAnonymousProject>> | undefined;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const before = await requireOwnedAnonymousProject(sessionId, projectId);
+      await logAnchorPersistPhase(sessionId, projectId, event, attempt === 1 ? "project-patch-started" : "project-patch-retrying", "started",
+        projectVersionAtStart, before.version, undefined, attempt);
+      try {
+        saved = await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => {
+          if (!latest.sceneVisualSpecs?.some((spec) => spec.id === body.targetId) && body.kind === "scene") {
+            throw new Error("VISUAL_ANCHOR_TARGET_NOT_FOUND");
+          }
+          const workspace = ensureVisualAnchorWorkspace(latest).visualAnchorWorkspace!;
+          const existing = workspace[body.kind === "character" ? "characterCandidates" : "sceneCandidates"];
+          const nextVersion = Math.max(0, ...existing.filter((candidate) => candidate.targetId === body.targetId).map((candidate) => candidate.version)) + 1;
+          const versioned = candidates.map((candidate) => ({ ...candidate, setVersion: nextVersion, version: nextVersion }));
+          return replaceVisualAnchorCandidates(latest, body.kind, body.targetId, versioned, now,
+            successful.length < body.count || Boolean(body.candidateIndex));
+        });
+        await logAnchorPersistPhase(sessionId, projectId, event, "project-patch-completed", "completed",
+          projectVersionAtStart, before.version, saved.version, attempt);
+        break;
+      } catch (error) {
+        if (!(error instanceof AnonymousProjectVersionConflictError) || attempt === 2) throw error;
+        await logAnchorPersistPhase(sessionId, projectId, event, "project-version-conflict", "conflict",
+          projectVersionAtStart, before.version, (await requireOwnedAnonymousProject(sessionId, projectId)).version, attempt);
+        await logAnchorPersistPhase(sessionId, projectId, event, "project-reloaded", "completed",
+          projectVersionAtStart, (await requireOwnedAnonymousProject(sessionId, projectId)).version, undefined, attempt);
+      }
+    }
+    if (!saved) throw new Error("PROJECT_PERSIST_FAILED");
+    const persisted = await requireOwnedAnonymousProject(sessionId, projectId);
+    const stored = persisted.project.visualAnchorWorkspace?.[body.kind === "character" ? "characterCandidates" : "sceneCandidates"] ?? [];
+    if (!candidates.every((candidate) => stored.some((item) => item.id === candidate.id && item.assetId === candidate.assetId && item.status !== "outdated"))) {
+      throw new Error("PROJECT_PERSIST_FAILED: 候选写入后校验失败");
+    }
+    await logAnchorPersistPhase(sessionId, projectId, event, "project-read-after-write-verified", "verified",
+      projectVersionAtStart, beforePersist.version, persisted.version, 1);
     const failedCount = body.count - candidates.length;
     await completeGenerationEvent(sessionId, projectId, event.id, failedCount
       ? `已保留 ${candidates.length} 个成功候选，另有 ${failedCount} 个生成失败，可单独重试本模块。`
@@ -311,13 +361,119 @@ async function generateCandidates(
       progressTotal: body.count
     });
     const final = await requireOwnedAnonymousProject(sessionId, projectId);
+    await logAnchorPersistPhase(sessionId, projectId, event, "task-completed", "completed",
+      projectVersionAtStart, beforePersist.version, final.version, 1);
     return NextResponse.json({ success: true, data: publicAnonymousProject(final) });
   } catch (error) {
     if (!candidatesStarted) await Promise.all(indexes.map((index) => logAnchorCandidateFailure(sessionId, projectId, event, body.kind,
-      candidateIds.get(index)!, index, "PROMPT_BUILD_FAILED", error, event.startedAt, false, needsProductReference).catch(() => undefined)));
-    await failGenerationEvent(sessionId, projectId, event.id, "视觉候选生成失败。", "PROVIDER_REQUEST_FAILED").catch(() => undefined);
+      body.targetId, candidateIds.get(index)!, index, "PROMPT_BUILD_FAILED", error, event.startedAt, false, needsProductReference).catch(() => undefined)));
+    if (persistenceStarted) {
+      const actualVersion = await requireOwnedAnonymousProject(sessionId, projectId).then((record) => record.version).catch(() => undefined);
+      await logAnchorPersistPhase(sessionId, projectId, event, "project-patch-failed", "failed",
+        projectVersionAtStart, actualVersion, undefined, 1).catch(() => undefined);
+    }
+    await failGenerationEvent(sessionId, projectId, event.id,
+      persistenceStarted ? "候选图片已生成，但项目保存或核验失败；可从调用记录恢复，勿重新生成。" : "视觉候选生成失败。",
+      persistenceStarted ? error instanceof AnonymousProjectVersionConflictError ? "VERSION_CONFLICT" : "PROJECT_PERSIST_FAILED" : "PROVIDER_REQUEST_FAILED").catch(() => undefined);
     throw error;
   }
+}
+
+async function recoverSceneCandidates(sessionId: string, projectId: string, targetId: string, taskId: string) {
+  const current = await requireOwnedAnonymousProject(sessionId, projectId);
+  const workspace = ensureVisualAnchorWorkspace(current.project).visualAnchorWorkspace!;
+  if (!current.project.sceneVisualSpecs?.some((spec) => spec.id === targetId) || !workspace.requiredSceneIds.includes(targetId)) {
+    return failure("VISUAL_ANCHOR_TARGET_NOT_FOUND", "场景需求已变化，无法自动挂接旧图片。", 409);
+  }
+  const event = current.project.generationEvents?.find((item) => item.id === taskId && item.stage === "anchors"
+    && item.provider === "qwen-image" && item.action === "生成场景候选方案" && !["queued", "running", "qa-review"].includes(item.status));
+  if (!event) return failure("VISUAL_ANCHOR_RECOVERY_NOT_FOUND", "未找到已结束的场景生成任务。", 404);
+  const archive = await readModelCallLogArchive(sessionId, projectId, taskId);
+  const calls = archive.entries.filter((item) => item.kind === "call" && item.anchorType === "scene" && item.status === "completed"
+    && item.candidateId && item.candidateIndex && item.finalAssetId);
+  if (!calls.length || calls.some((item) => item.anchorTargetId && item.anchorTargetId !== targetId)
+    || calls.some((item) => !item.anchorTargetId) && workspace.requiredSceneIds.length !== 1) {
+    return failure("VISUAL_ANCHOR_RECOVERY_AMBIGUOUS", "无法确认旧任务对应的场景，请保留调用日志并联系维护人员。", 409);
+  }
+  const byIndex = new Map<number, (typeof calls)[number]>();
+  for (const call of calls) {
+    const previous = byIndex.get(call.candidateIndex!);
+    if (!previous || (call.completedAt ?? 0) > (previous.completedAt ?? 0)) byIndex.set(call.candidateIndex!, call);
+  }
+  const recovered = [...byIndex.values()].sort((a, b) => a.candidateIndex! - b.candidateIndex!);
+  const occupiedIndexes = new Set(workspace.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated")
+    .map((item) => item.candidateIndex));
+  const toRestore = recovered.filter((call) => !occupiedIndexes.has(call.candidateIndex));
+  if (!toRestore.length) {
+    return NextResponse.json({ success: true, data: publicAnonymousProject(current), recovered: 0 }, {
+      headers: { "cache-control": "no-store" }
+    });
+  }
+  for (const call of toRestore) {
+    try {
+      const asset = await requirePrivateAsset(sessionId, projectId, call.finalAssetId!);
+      if (!asset.mimeType.startsWith("image/")) throw new Error("ASSET_NOT_IMAGE");
+      await assertPrivateAssetReadable(asset);
+    } catch {
+      return failure("VISUAL_ANCHOR_RECOVERY_ASSET_MISSING", `场景候选 ${call.candidateIndex} 的图片文件不可读取，未修改项目。`, 410);
+    }
+  }
+  const now = new Date().toISOString();
+  const before = await requireOwnedAnonymousProject(sessionId, projectId);
+  await logAnchorPersistPhase(sessionId, projectId, event, "project-reloaded", "completed", before.version, before.version, undefined, 1);
+  const saved = await mutateOwnedAnonymousProject(sessionId, projectId, (latest) => {
+    const normalized = ensureVisualAnchorWorkspace(latest);
+    const visual = normalized.visualAnchorWorkspace!;
+    const existingIds = new Set(visual.sceneCandidates.map((item) => item.id));
+    const existingAssets = new Set(visual.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated")
+      .map((item) => item.assetId));
+    const version = Math.max(0, ...visual.sceneCandidates.filter((item) => item.targetId === targetId).map((item) => item.version)) + 1;
+    const activeIndexes = new Set(visual.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated")
+      .map((item) => item.candidateIndex));
+    const additions: VisualAnchorCandidate[] = toRestore.filter((call) => !activeIndexes.has(call.candidateIndex)
+      && !existingIds.has(call.candidateId!) && !existingAssets.has(call.finalAssetId!))
+      .map((call, index) => ({ id: call.candidateId!, kind: "scene", candidateIndex: call.candidateIndex!, targetId,
+        assetId: call.finalAssetId!, label: `场景方案 ${call.candidateIndex}`, prompt: "从已完成任务恢复的场景图片；原始生成提示词未记录。",
+        setId: event.runId, setVersion: version, status: "ready", recommended: index === 0,
+        version, createdAt: new Date(call.completedAt ?? event.startedAt).toISOString() }));
+    if (!additions.length) return latest;
+    return ensureVisualAnchorWorkspace({ ...normalized, visualAnchorWorkspace: {
+      ...visual, sceneCandidates: [...visual.sceneCandidates, ...additions], updatedAt: now
+    } }, now);
+  });
+  const verified = await requireOwnedAnonymousProject(sessionId, projectId);
+  const stored = verified.project.visualAnchorWorkspace?.sceneCandidates ?? [];
+  if (!toRestore.every((call) => stored.some((item) => item.targetId === targetId
+    && item.candidateIndex === call.candidateIndex && item.status !== "outdated"))) {
+    return failure("PROJECT_PERSIST_FAILED", "场景图片恢复后的项目核验失败，请稍后重试。", 500);
+  }
+  await logAnchorPersistPhase(sessionId, projectId, event, "project-read-after-write-verified", "verified",
+    before.version, before.version, saved.version, 1);
+  if (event.status === "failed" || event.status === "interrupted") {
+    await completeGenerationEvent(sessionId, projectId, event.id, "已从原任务保存的图片恢复场景候选；没有重新调用模型。",
+      { progressCurrent: recovered.length, progressTotal: recovered.length });
+  }
+  const final = await requireOwnedAnonymousProject(sessionId, projectId);
+  const recoveredCount = toRestore.filter((call) => stored.some((item) => item.id === call.candidateId && item.assetId === call.finalAssetId)).length;
+  return NextResponse.json({ success: true, data: publicAnonymousProject(final), recovered: recoveredCount }, {
+    headers: { "cache-control": "no-store" }
+  });
+}
+
+async function logAnchorPersistPhase(sessionId: string, projectId: string,
+  event: Pick<Awaited<ReturnType<typeof startGenerationEvent>>, "id" | "runId" | "startedAt">,
+  mode: string, persistStatus: "started" | "conflict" | "completed" | "failed" | "verified",
+  projectVersionAtStart: number, projectVersionBeforePersist?: number, projectVersionAfterPersist?: number, persistAttempt = 1) {
+  await upsertModelCallLog(sessionId, {
+    id: anchorAttemptId(event.id, event.runId, `${mode}:${persistAttempt}`), kind: "call", taskId: event.id,
+    jobId: event.runId, projectId, stage: "anchors", provider: "system", mode,
+    status: persistStatus === "started" ? "running" : persistStatus === "failed" || persistStatus === "conflict" ? "failed" : "completed",
+    startedAt: Date.now(), completedAt: Date.now(), durationMs: 0, persistStatus, persistAttempt,
+    projectVersionAtStart, projectVersionBeforePersist, projectVersionAfterPersist,
+    projectVersionBefore: projectVersionBeforePersist, projectVersionActual: projectVersionAfterPersist,
+    failurePhase: persistStatus === "failed" ? "PROJECT_PERSIST_FAILED" : persistStatus === "conflict" ? "VERSION_CONFLICT" : undefined,
+    errorCode: persistStatus === "failed" ? "PROJECT_PERSIST_FAILED" : persistStatus === "conflict" ? "VERSION_CONFLICT" : undefined
+  }).catch(() => undefined);
 }
 
 type AnchorFailurePhase = "PROMPT_BUILD_FAILED" | "REFERENCE_ASSET_LOAD_FAILED" | "REFERENCE_URL_BUILD_FAILED"
@@ -339,11 +495,11 @@ function anchorFailurePhase(result: QwenImageResult): AnchorFailurePhase | undef
 }
 
 async function logAnchorModelAttempt(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
-  anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, attempt: QwenModelAttempt, repair: boolean) {
+  anchorType: VisualAnchorCandidateKind, anchorTargetId: string, candidateId: string, candidateIndex: number, attempt: QwenModelAttempt, repair: boolean) {
   const logId = anchorAttemptId(event.id, candidateId, `${repair ? "repair" : "initial"}:${attempt.model}:${attempt.attempt}`);
   await upsertModelCallLog(sessionId, {
     id: logId, kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
-    taskType: attempt.taskType, anchorType, candidateId, candidateIndex, model: attempt.model, attempt: attempt.attempt, mode: attempt.mode,
+    taskType: attempt.taskType, anchorType, anchorTargetId, candidateId, candidateIndex, model: attempt.model, attempt: attempt.attempt, mode: attempt.mode,
     status: attempt.status, startedAt: attempt.startedAt, completedAt: attempt.completedAt,
     requestStartedAt: attempt.status === "blocked" ? undefined : attempt.submissionDiagnostic?.requestStartedAt ?? attempt.startedAt,
     requestCompletedAt: attempt.status === "blocked" ? undefined : attempt.completedAt,
@@ -372,13 +528,13 @@ async function logAnchorModelAttempt(sessionId: string, projectId: string, event
 }
 
 async function logAnchorCandidateResult(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
-  anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, result: QwenImageResult,
+  anchorType: VisualAnchorCandidateKind, anchorTargetId: string, candidateId: string, candidateIndex: number, result: QwenImageResult,
   startedAt: number, repair: boolean, productReference = false) {
   await upsertModelCallLog(sessionId, {
     id: anchorAttemptId(event.id, candidateId, repair ? "repair:summary" : "initial:summary"),
     kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
     taskType: anchorType === "character" ? "character_candidate" : productReference ? "scene_candidate_with_product_reference" : "scene_candidate_text_only",
-    anchorType, candidateId, candidateIndex, model: result.model, attempt: 1, mode: "anchor-candidate",
+    anchorType, anchorTargetId, candidateId, candidateIndex, model: result.model, attempt: 1, mode: "anchor-candidate",
     status: result.success && result.assetId ? "completed" : "failed", startedAt,
     completedAt: Date.now(), durationMs: Date.now() - startedAt,
     requestStartedAt: result.requestStartedAt, requestCompletedAt: result.requestCompletedAt,
@@ -392,7 +548,7 @@ async function logAnchorCandidateResult(sessionId: string, projectId: string, ev
 }
 
 async function logAnchorCandidateFailure(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
-  anchorType: VisualAnchorCandidateKind, candidateId: string, candidateIndex: number, failurePhase: AnchorFailurePhase,
+  anchorType: VisualAnchorCandidateKind, anchorTargetId: string, candidateId: string, candidateIndex: number, failurePhase: AnchorFailurePhase,
   error: unknown, startedAt: number, repair = false, productReference = false) {
   const cause = error instanceof Error && "cause" in error && error.cause && typeof error.cause === "object"
     ? error.cause as { code?: unknown } : undefined;
@@ -401,7 +557,7 @@ async function logAnchorCandidateFailure(sessionId: string, projectId: string, e
     id: anchorAttemptId(event.id, candidateId, repair ? "repair:exception" : "initial:exception"),
     kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
     taskType: anchorType === "character" ? "character_candidate" : productReference ? "scene_candidate_with_product_reference" : "scene_candidate_text_only",
-    anchorType, candidateId, candidateIndex, model: "未调用", attempt: 1, mode: "anchor-candidate",
+    anchorType, anchorTargetId, candidateId, candidateIndex, model: "未调用", attempt: 1, mode: "anchor-candidate",
     status: "failed", startedAt, completedAt: Date.now(), durationMs: Date.now() - startedAt,
     referenceImageCount: 0, referenceImagesIncluded: false, failurePhase,
     errorCode: code.slice(0, 80), errorName: error instanceof Error ? error.name : typeof error,
