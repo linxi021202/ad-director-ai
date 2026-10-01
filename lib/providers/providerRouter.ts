@@ -329,6 +329,7 @@ export async function generateShotImage(
 
       return await qwenImageProvider.generateShotImage(projectId, shot, options);
     } catch (error) {
+      if (error instanceof Error && ["PROVIDER_RESPONSE_TIMEOUT", "SUBMISSION_STATE_UNKNOWN", "TASK_POLL_INTERRUPTED"].includes(error.message)) throw error;
       return imageFallbackResult(
         shot,
         `Qwen-Image route failed unexpectedly: ${error instanceof Error ? error.message : "unknown error"}. Used placeholder image fallback.`

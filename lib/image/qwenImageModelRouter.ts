@@ -39,6 +39,9 @@ export type QwenModelAttempt = {
   providerStatus?: string; submittedAt?: number; lastPolledAt?: number; pollCount?: number; imageUrl?: string;
   submissionElapsedMs?: number; downloadElapsedMs?: number;
   submissionDiagnostic?: QwenSubmissionDiagnostic; networkFailure?: QwenNetworkFailure;
+  providerOutcome?: QwenImageResult["providerOutcome"]; timeoutSource?: string;
+  responseReceivedAt?: number; assetPersistedAt?: number;
+  projectPatchedAt?: number;
 };
 
 type Availability = { code: string; cooldownUntil: number; lastCheckedAt: number };
@@ -110,7 +113,9 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
       providerErrorCode: result.providerErrorCode, httpStatus: result.httpStatus, requestId: result.requestId,
       taskId: result.taskId, referenceCount, size: input.size ?? "1152*2048", assetId: result.assetId, mode,
       submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs,
-      submissionDiagnostic: result.submissionDiagnostic, networkFailure: result.networkFailure, ...parameters });
+      submissionDiagnostic: result.submissionDiagnostic, networkFailure: result.networkFailure,
+      providerOutcome: result.providerOutcome, timeoutSource: result.timeoutSource,
+      responseReceivedAt: result.responseReceivedAt, assetPersistedAt: result.assetPersistedAt, ...parameters });
     return result;
   }
 
@@ -155,7 +160,9 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
         errorCode: result.errorCode, error: result.error, providerErrorCode: result.providerErrorCode, httpStatus: result.httpStatus,
         requestId: result.requestId, taskId: result.taskId, referenceCount, size, assetId: result.assetId, mode,
         submissionElapsedMs: result.submissionElapsedMs, downloadElapsedMs: result.downloadElapsedMs,
-        submissionDiagnostic: result.submissionDiagnostic, networkFailure: result.networkFailure, ...parameters });
+        submissionDiagnostic: result.submissionDiagnostic, networkFailure: result.networkFailure,
+        providerOutcome: result.providerOutcome, timeoutSource: result.timeoutSource,
+        responseReceivedAt: result.responseReceivedAt, assetPersistedAt: result.assetPersistedAt, ...parameters });
       if (result.success) return result;
       last = result;
       if (code === "RATE_LIMITED" && rateRetry < 2) {

@@ -30,11 +30,13 @@ import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { createPrivateAsset } from "../lib/assets/assetStore";
 import * as storageCapacity from "../lib/assets/storageCapacity";
 import { clearQwenModelAvailability } from "../lib/image/qwenImageModelRouter";
-import { listModelCallLogs } from "../lib/logs/modelCallStore";
+import { listModelCallLogs, upsertModelCallLog } from "../lib/logs/modelCallStore";
+import { blockUnknownSubmission, startGenerationEvent } from "../lib/projects/generationEvents";
 import { GET as exportCallLogs } from "../app/api/call-logs/export/route";
 import { buildVisualMasterSpecs } from "../lib/continuity/visualMasters";
 import { createMockKeyframeQA, inspectKeyframe } from "../lib/visual/visualQA";
 import { deepseekProvider } from "../lib/providers/deepseekProvider";
+import { qwenImageProvider } from "../lib/providers/qwenImageProvider";
 import {
   createAnonymousProject,
   mutateOwnedAnonymousProject,
@@ -477,6 +479,95 @@ describe("second-stage API routes", () => {
     expect(body.success).toBe(true);
     expect(data.images[0].fallbackUsed).toBe(false);
   });
+
+  it("keeps a completed frame and leaves later frames unsubmitted after a response timeout", async () => {
+    process.env.AI_MODE = "real";
+    process.env.ENABLE_REAL_IMAGE = "true";
+    process.env.DASHSCOPE_API_KEY = "sk-dashscope-secret-test-key";
+    const asset = await createPrivateAsset("test-session", testProjectId, {
+      kind: "keyframe", source: "qwen-image", role: "test-frame", fileName: "frame.png", mimeType: "image/png", bytes: VALID_PNG_BYTES
+    });
+    const frameIds = testProjectShots[0]!.frames!.slice(0, 3).map((frame) => frame.id);
+    let calls = 0;
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const imageProvider = qwenImageProvider as typeof qwenImageProvider & { generateShotImage: NonNullable<typeof qwenImageProvider.generateShotImage> };
+    vi.spyOn(imageProvider, "generateShotImage").mockImplementation(async (_projectId, shot) => {
+      calls += 1;
+      if (calls === 1) await firstGate;
+      if (calls === 2) throw new Error("PROVIDER_RESPONSE_TIMEOUT");
+      return { shotId: shot.id, imageUrl: `/api/projects/${testProjectId}/assets/${asset.id}`,
+        localUrl: `/api/projects/${testProjectId}/assets/${asset.id}`, assetId: asset.id, prompt: "test",
+        provider: "qwenImageProvider", model: "qwen-image-edit-max-2026-01-16", latencyMs: 100,
+        size: "2048*1152", cacheStatus: "cached", fallbackUsed: false };
+    });
+    const request = { projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots", frameIds };
+    const first = await generateImagesPOST(jsonRequest(request));
+    expect(first.status).toBe(202);
+    const firstBody = await responseJson(first.clone());
+    const duplicate = await generateImagesPOST(jsonRequest(request));
+    expect(duplicate.status).toBe(202);
+    expect((await responseJson(duplicate)).data).toMatchObject({ eventId: (firstBody.data as { eventId: string }).eventId });
+    const inFlight = await generateImagesGET(new Request(`http://localhost/api/generate-images?projectId=${testProjectId}&eventId=${(firstBody.data as { eventId: string }).eventId}`));
+    expect(inFlight.status).toBe(202);
+    expect((await responseJson(inFlight)).data).toMatchObject({ status: "running" });
+    releaseFirst();
+    const finished = await completedImageResponse(first);
+    expect(finished.success, JSON.stringify(finished)).toBe(false);
+    const saved = (await requireOwnedAnonymousProject("test-session", testProjectId)).project;
+    expect(saved.keyframes?.find((item) => item.frameId === frameIds[0])).toMatchObject({ status: "ready", assetId: asset.id });
+    const timedOut = saved.keyframes?.find((item) => item.frameId === frameIds[1]);
+    expect(timedOut).toMatchObject({ status: "response_timeout", fallbackUsed: false });
+    expect(timedOut?.assetId).toBeUndefined();
+    expect(timedOut?.imageUrl).toBeUndefined();
+    expect(saved.keyframes?.find((item) => item.frameId === frameIds[2])).toBeUndefined();
+    expect(saved.generationEvents?.findLast((item) => item.frameId === frameIds[2])).toMatchObject({ status: "cancelled" });
+    expect(calls).toBe(2);
+    const withoutConsent = await generateImagesPOST(jsonRequest({ ...request, frameIds: [frameIds[1]] }));
+    expect(withoutConsent.status).toBe(409);
+    expect(calls).toBe(2);
+    const retry = await generateImagesPOST(jsonRequest({ ...request, frameIds: [frameIds[1]], retryResponseTimeout: true }));
+    expect(retry.status).toBe(202);
+    expect((await completedImageResponse(retry)).success).toBe(true);
+    const recovered = (await requireOwnedAnonymousProject("test-session", testProjectId)).project;
+    expect(recovered.keyframes?.find((item) => item.frameId === frameIds[0])).toMatchObject({ status: "ready", assetId: asset.id });
+    expect(recovered.keyframes?.find((item) => item.frameId === frameIds[1])).toMatchObject({ status: "ready", assetId: asset.id });
+    expect(recovered.keyframes?.find((item) => item.frameId === frameIds[2])).toBeUndefined();
+    expect(calls).toBe(3);
+  }, 15_000);
+
+  it("only permits an explicit retry of a legacy 300-second synchronous timeout", async () => {
+    process.env.AI_MODE = "real";
+    process.env.ENABLE_REAL_IMAGE = "true";
+    const frameId = testProjectShots[0]!.frames![0]!.id;
+    const old = await startGenerationEvent("test-session", testProjectId, { stage: "keyframes", provider: "qwen-image",
+      action: "生成单帧关键帧", message: "旧版任务", shotId: testProjectShots[0]!.id, frameId,
+      submissionFingerprint: "a".repeat(64) });
+    await upsertModelCallLog("test-session", { kind: "call", taskId: old.id, jobId: old.runId, projectId: testProjectId,
+      stage: "keyframes", provider: "qwen-image", model: "qwen-image-edit-max-2026-01-16", status: "failed",
+      shotId: testProjectShots[0]!.id, frameId, startedAt: Date.now() - 300_003, completedAt: Date.now(), durationMs: 300_003,
+      apiMode: "dashscope-sync", failurePhase: "WAITING_RESPONSE", errorCode: "SUBMISSION_STATE_UNKNOWN",
+      errorSummary: "The operation was aborted due to timeout" });
+    await blockUnknownSubmission("test-session", testProjectId, old.id);
+    const request = { projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots", frameIds: [frameId] };
+    expect((await generateImagesPOST(jsonRequest(request))).status).toBe(409);
+    const asset = await createPrivateAsset("test-session", testProjectId, {
+      kind: "keyframe", source: "qwen-image", role: "test-frame", fileName: "frame.png", mimeType: "image/png", bytes: VALID_PNG_BYTES
+    });
+    const imageProvider = qwenImageProvider as typeof qwenImageProvider & { generateShotImage: NonNullable<typeof qwenImageProvider.generateShotImage> };
+    const call = vi.spyOn(imageProvider, "generateShotImage").mockImplementation(async (_projectId, shot) => ({
+      shotId: shot.id, imageUrl: `/api/projects/${testProjectId}/assets/${asset.id}`,
+      localUrl: `/api/projects/${testProjectId}/assets/${asset.id}`, assetId: asset.id, prompt: "test",
+      provider: "qwenImageProvider", model: "qwen-image-edit-max-2026-01-16", latencyMs: 100,
+      size: "2048*1152", cacheStatus: "cached", fallbackUsed: false
+    }));
+    const retried = await generateImagesPOST(jsonRequest({ ...request, retryResponseTimeout: true }));
+    expect(retried.status).toBe(202);
+    expect((await completedImageResponse(retried)).success).toBe(true);
+    expect(call).toHaveBeenCalledTimes(1);
+    const saved = (await requireOwnedAnonymousProject("test-session", testProjectId)).project;
+    expect(saved.generationEvents?.find((item) => item.id === old.id)).toMatchObject({ status: "failed", errorCode: "PROVIDER_RESPONSE_TIMEOUT" });
+  }, 15_000);
   it("generate-images polls DashScope task result when initial response only returns task_id", async () => {
     process.env.AI_MODE = "real";
     process.env.ENABLE_REAL_IMAGE = "true";
@@ -510,13 +601,13 @@ describe("second-stage API routes", () => {
     );
 
     const response = await generateImagesPOST(
-      jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots" })
+      jsonRequest({ projectId: testProjectId, shots: testProjectShots.slice(0, 1), mode: "all-shots", frameIds: [testProjectShots[0]!.frames![0]!.id] })
     );
     const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ fallbackUsed: boolean; requestId?: string; localUrl?: string }> };
 
-    expect(body.success).toBe(true);
-    expect(data.images).toHaveLength(4);
+    expect(body.success, JSON.stringify(body)).toBe(true);
+    expect(data.images).toHaveLength(1);
     expect(data.images[0].fallbackUsed).toBe(false);
     expect(data.images[0].requestId).toBe("req-task");
     expect(data.images[0].localUrl).toContain(
@@ -531,7 +622,7 @@ describe("second-stage API routes", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
+      vi.fn().mockImplementation(async () =>
         new Response(JSON.stringify({ code: "InvalidApiKey", message: "Bearer sk-dashscope-secret-test-key failed" }), {
           status: 401,
           headers: { "Content-Type": "application/json" }

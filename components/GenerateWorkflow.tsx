@@ -130,7 +130,7 @@ type GenerateImagesData = {
     cacheStatus: string;
     fallbackUsed: boolean;
     fallbackReason?: string | null;
-    status?: "idle" | "loading" | "generated" | "qa-review" | "ready" | "needs-review" | "failed" | "fallback";
+    status?: "idle" | "loading" | "generated" | "qa-review" | "ready" | "needs-review" | "failed" | "fallback" | "response_timeout";
     errorCode?: string | null;
     qaResult?: { overallPassed: boolean; attempt: number; issues: string[] } | null;
     diagnostic?: ProviderDiagnostic | null;
@@ -1312,6 +1312,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         shots: [shot],
         aspectRatio: activeProject.brief.aspectRatio,
         ...(frameIds.length ? { frameIds } : {}),
+        retryResponseTimeout: Boolean(frameId && activeProject.generationEvents?.some((event) => event.stage === "keyframes"
+          && event.frameId === frameId && ["PROVIDER_RESPONSE_TIMEOUT", "SUBMISSION_STATE_UNKNOWN"].includes(event.errorCode ?? ""))),
         onProgress: async () => {
           const snapshot = await fetchServerProject(activeProject.id);
           applyProjectUpdate(snapshot);

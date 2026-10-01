@@ -779,7 +779,7 @@ export const keyframeMetadataSchema = z.object({
   cacheStatus: z.string().min(1).optional(),
   fallbackUsed: z.boolean().default(false),
   fallbackReason: z.string().min(1).optional(),
-  status: z.enum(["pending", "generated", "text-qa", "product-qa", "character-qa", "scene-qa", "qa-review", "ready", "needs-review", "failed", "fallback"]).default("pending"),
+  status: z.enum(["pending", "generated", "text-qa", "product-qa", "character-qa", "scene-qa", "qa-review", "ready", "needs-review", "failed", "fallback", "response_timeout"]).default("pending"),
   storageTransition: z.enum(["LOCAL_PUBLIC_ASSET_TRANSITION", "PRIVATE_ASSET_V1"])
 }).strict();
 

@@ -67,7 +67,8 @@ const ALLOWED_ERROR_CODES = new Set([
   "NOT_CONFIGURED",
   "RATE_LIMITED",
   "QUOTA_EXHAUSTED",
-  "SUBMISSION_STATE_UNKNOWN"
+  "SUBMISSION_STATE_UNKNOWN",
+  "PROVIDER_RESPONSE_TIMEOUT"
 ]);
 
 const STAGE_TIMEOUT_MS: Record<GenerationStage, number> = {
@@ -194,6 +195,14 @@ export function failGenerationEvent(
     errorCode: sanitizeErrorCode(errorCode),
     completedAt: Date.now()
   });
+}
+
+export function heartbeatGenerationEvent(sessionId: string, projectId: string, eventId: string, message?: string) {
+  return updateEvent(sessionId, projectId, eventId, message ? { message } : {});
+}
+
+export function cancelGenerationEvent(sessionId: string, projectId: string, eventId: string, message: string) {
+  return updateEvent(sessionId, projectId, eventId, { status: "cancelled", message, completedAt: Date.now() });
 }
 
 export function blockUnknownSubmission(sessionId: string, projectId: string, eventId: string) {

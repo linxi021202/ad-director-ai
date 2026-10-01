@@ -60,6 +60,20 @@ describe("canonical keyframe views", () => {
     expect(view.completedCount).toBe(0);
     expect(view.keyframeGenerationStatus).toBe("failed");
   });
+  it("shows response timeout without inventing a persisted image", () => {
+    const project = fixture();
+    for (const frame of project.keyframes!.filter((item) => item.shotId === "shot-01")) {
+      delete frame.assetId;
+      delete frame.localUrl;
+      frame.status = "response_timeout";
+    }
+    const view = getShotKeyframeViewState(project, "shot-01");
+    expect(view.frameViews[0]).toMatchObject({ responseTimeout: true, imageUrl: undefined });
+    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={project} selectedShotId="shot-01" busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
+    expect(html).toContain("图像模型响应超时，本次结果状态未知");
+    expect(html).toContain("重新生成当前帧");
+    expect(html).not.toContain("/landing-cold-brew-hero.png");
+  });
   it("ignores an outdated whole-project completed flag when a shot still has no image", () => {
     const project = fixture();
     project.workflowSteps = { ...project.workflowSteps!, keyframes: "completed" };

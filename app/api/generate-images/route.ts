@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { QWEN_REFERENCE_MODELS } from "../../../lib/image/qwenImageModelRouter";
 
 import { diagnoseQwenImageFallback } from "../../../lib/api/provider-diagnostics";
-import { upsertModelCallLog } from "../../../lib/logs/modelCallStore";
+import { listModelCallLogs, upsertModelCallLog } from "../../../lib/logs/modelCallStore";
 import { assertImageStorageCapacity, StorageCapacityError } from "../../../lib/assets/storageCapacity";
 import type { QwenModelAttempt } from "../../../lib/image/qwenImageModelRouter";
 import { markPrivateAssetsLifecycle } from "../../../lib/assets/assetStore";
@@ -13,6 +14,8 @@ import { projectStoreErrorResponse } from "../../../lib/projects/api";
 import {
   completeGenerationEvent,
   failGenerationEvent,
+  heartbeatGenerationEvent,
+  cancelGenerationEvent,
   blockUnknownSubmission,
   attachGenerationEventProviderTask,
   markGenerationEventQAReview,
@@ -26,7 +29,7 @@ import {
   updateOwnedAnonymousProject
 } from "../../../lib/projects/anonymousProjectStore";
 import { generateShotImage, selectProviderModel } from "../../../lib/providers/providerRouter";
-import { aspectRatioSchema, productImageSchema, storyboardShotSchema, type KeyframeQAResult, type ShotFrame } from "../../../lib/schemas/project";
+import { aspectRatioSchema, productImageSchema, storyboardShotSchema, type GenerationProject, type KeyframeQAResult, type ShotFrame } from "../../../lib/schemas/project";
 import type { ShotImageGenerationResult } from "../../../lib/providers/types";
 import type { QwenTaskProgress } from "../../../lib/image/types";
 import { getAnonymousApiSession } from "../../../lib/session/api";
@@ -42,9 +45,12 @@ import { isShotPromptReady } from "../../../lib/prompts/shotPromptReadiness";
 
 const QWEN_FRAME_CONCURRENCY = 2;
 
-function frameSubmissionFingerprint(projectId: string, shot: TargetShot, frame: ShotFrame, keyframeVersion: string) {
-  return createHash("sha256").update(JSON.stringify({ projectId, shotId: shot.id, frameId: frame.id,
-    model: "qwen-image-3.0", keyframeVersion, promptCn: frame.imagePromptCn, promptEn: frame.imagePromptEn })).digest("hex");
+function frameSubmissionFingerprint(project: GenerationProject, shot: TargetShot, frame: ShotFrame) {
+  const references = selectImageReferencesForShot(project, shot);
+  const promptVersion = project.shotPromptPackages?.find((item) => item.shotId === shot.id)?.inputFingerprint ?? "unversioned";
+  return createHash("sha256").update(JSON.stringify({ projectId: project.id, shotId: shot.id, frameId: frame.id,
+    model: QWEN_REFERENCE_MODELS[0], promptVersion, promptCn: frame.imagePromptCn, promptEn: frame.imagePromptEn,
+    referenceAssetIds: [...references.productImages.flatMap((image) => image.assetId ? [image.assetId] : []), ...references.masterReferenceAssetIds] })).digest("hex");
 }
 
 const requestSchema = z.object({
@@ -53,7 +59,8 @@ const requestSchema = z.object({
   mode: z.enum(["hero-only", "all-shots"]),
   aspectRatio: aspectRatioSchema.optional().default("9:16"),
   productImages: z.array(productImageSchema).max(3).optional(),
-  frameIds: z.array(z.string().min(1)).max(60).optional()
+  frameIds: z.array(z.string().min(1)).max(60).optional(),
+  retryResponseTimeout: z.boolean().optional()
 }).strict();
 
 const batchEventIdSchema = z.string().uuid();
@@ -76,6 +83,7 @@ type ImageBatchInput = {
   batchRunId: string;
   shotEvents: Map<string, string>;
   regenerationFrameIds?: Set<string>;
+  userRetryFrameIds?: Set<string>;
   resumeTaskIdsByFrame?: Map<string, string>;
 };
 
@@ -84,6 +92,7 @@ const globalImageJobs = globalThis as typeof globalThis & {
 };
 const imageJobs = globalImageJobs.__adDirectorImageJobs ?? new Map<string, Promise<void>>();
 globalImageJobs.__adDirectorImageJobs = imageJobs;
+const admittingProjects = new Set<string>();
 
 function selectTargetShots(
   shots: z.infer<typeof storyboardShotSchema>[],
@@ -111,6 +120,7 @@ export async function POST(request: Request) {
   const { session } = sessionResult;
   let batchEventId: string | undefined;
   let activeProjectId: string | undefined;
+  let admissionHeld = false;
 
   try {
     const parsed = requestSchema.safeParse(await request.json());
@@ -123,6 +133,14 @@ export async function POST(request: Request) {
         error: "项目 ID 或关键帧请求无效。"
       }, 400);
     }
+
+    activeProjectId = parsed.data.projectId;
+    if (admittingProjects.has(activeProjectId)) {
+      return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "admission-running" }, fallbackUsed: false,
+        error: "关键帧任务正在创建，请稍候查看当前任务。" }, 409);
+    }
+    admittingProjects.add(activeProjectId);
+    admissionHeld = true;
 
     const owned = await requireOwnedAnonymousProject(session.id, parsed.data.projectId);
     const anchorProject = ensureVisualAnchorWorkspace(owned.project);
@@ -167,19 +185,40 @@ export async function POST(request: Request) {
       return apiJson({ success: false, data: null, fallbackUsed: false, error: error.message,
         trace: { route: "generate-images", stage: "storage-preflight", errorCode: error.code } }, 507);
     }
-    const fingerprintByFrame = new Map(targetFrames.map(({ shot, frame }) => {
-      const version = owned.project.keyframeVersions?.filter((item) => item.shotId === shot.id && item.frameId === frame.id)
-        .map((item) => item.assetId ?? "").join(":") ?? "";
-      return [frame.id, frameSubmissionFingerprint(owned.project.id, shot, frame, version)];
-    }));
+    const fingerprintByFrame = new Map(targetFrames.map(({ shot, frame }) => [frame.id, frameSubmissionFingerprint(owned.project, shot, frame)]));
     const unresolved = owned.project.generationEvents?.find((item) => item.stage === "keyframes" && item.action === "生成单帧关键帧"
       && item.errorCode === "SUBMISSION_STATE_UNKNOWN" && Boolean(item.frameId && item.submissionFingerprint)
       && item.submissionFingerprint === fingerprintByFrame.get(item.frameId!));
-    if (unresolved) return apiJson({ success: false, data: null,
-      trace: { route: "generate-images", stage: "submission-unresolved", eventId: unresolved.id }, fallbackUsed: false,
-      error: "提交状态未知，请先检查任务状态和调用日志；为避免重复计费，当前帧暂不可重新提交。" }, 409);
+    const latestSingleFrameEvent = targetFrames.length === 1 ? owned.project.generationEvents?.findLast((item) => item.stage === "keyframes"
+      && item.action === "生成单帧关键帧" && item.frameId === targetFrames[0]?.frame.id) : undefined;
+    const legacyUnresolved = latestSingleFrameEvent?.errorCode === "SUBMISSION_STATE_UNKNOWN" ? latestSingleFrameEvent : undefined;
+    if (unresolved || legacyUnresolved) {
+      const candidate = legacyUnresolved ?? unresolved!;
+      const calls = parsed.data.retryResponseTimeout && targetFrames.length === 1 && !candidate.providerTaskId
+        ? await listModelCallLogs(session.id, { projectId: activeProjectId, frameId: candidate.frameId, stage: "keyframes", limit: 100 }) : [];
+      const provenSyncTimeout = calls.some((call) => call.kind === "call" && call.taskId === candidate.id
+        && call.apiMode === "dashscope-sync" && call.model === QWEN_REFERENCE_MODELS[0]
+        && call.failurePhase === "WAITING_RESPONSE" && call.durationMs !== undefined && call.durationMs >= 290_000
+        && call.httpStatus === undefined && /timeout|timed out|aborted due to timeout/i.test(`${call.errorSummary ?? ""} ${call.networkErrorMessage ?? ""}`));
+      if (!provenSyncTimeout) return apiJson({ success: false, data: null,
+        trace: { route: "generate-images", stage: "submission-unresolved", eventId: candidate.id }, fallbackUsed: false,
+        error: "提交状态未知，请先检查任务状态和调用日志；为避免重复计费，当前帧暂不可重新提交。" }, 409);
+      await failGenerationEvent(session.id, activeProjectId, candidate.id,
+        "已核实旧版同步模型调用因本地等待超时中断，结果状态未知；用户已明确请求单帧重试。", "PROVIDER_RESPONSE_TIMEOUT");
+    }
+    const timedOut = owned.project.generationEvents?.findLast((item) => item.stage === "keyframes" && item.action === "生成单帧关键帧"
+      && item.errorCode === "PROVIDER_RESPONSE_TIMEOUT" && Boolean(item.frameId && item.submissionFingerprint)
+      && item.submissionFingerprint === fingerprintByFrame.get(item.frameId!));
+    if (timedOut && (!parsed.data.retryResponseTimeout || targetFrames.length !== 1 || timedOut.frameId !== targetFrames[0]?.frame.id)) return apiJson({ success: false, data: null,
+      trace: { route: "generate-images", stage: "response-timeout-retry-required", eventId: timedOut.id }, fallbackUsed: false,
+      error: "模型响应超时，本次结果状态未知。请查看镜头日志，再明确点击当前帧的“重新生成”。" }, 409);
     const activeBatch = owned.project.generationEvents?.find((item) => item.stage === "keyframes" && item.action === "生成关键帧批次" && item.status === "running");
     if (activeBatch) {
+      const activeFrames = (owned.project.generationEvents ?? []).filter((item) => item.runId === activeBatch.runId && item.action === "生成单帧关键帧");
+      const sameFrames = activeFrames.length === targetFrames.length && activeFrames.every((item) => item.frameId && item.submissionFingerprint === fingerprintByFrame.get(item.frameId));
+      if (sameFrames) return apiJson({ success: true, data: { status: "running", eventId: activeBatch.id, jobId: activeBatch.runId, mode: parsed.data.mode,
+        requestedShots: targetFrames.length, generatedShots: activeBatch.progressCurrent ?? 0, images: [], failedShots: [] },
+        trace: { route: "generate-images", stage: "existing-batch", eventId: activeBatch.id }, fallbackUsed: false, error: null }, 202);
       return apiJson({ success: false, data: null, trace: { route: "generate-images", stage: "existing-batch", eventId: activeBatch.id }, fallbackUsed: false,
         error: "已有关键帧任务正在处理，请等待当前任务完成；刷新页面后会继续显示进度。" }, 409);
     }
@@ -219,7 +258,8 @@ export async function POST(request: Request) {
       batchEventId: batchEvent.id,
       batchRunId: batchEvent.runId,
       shotEvents,
-      regenerationFrameIds: new Set(targetFrames.filter(({ frame }) => owned.project.keyframeVersions?.some((version) => version.frameId === frame.id)).map(({ frame }) => frame.id))
+      regenerationFrameIds: new Set(targetFrames.filter(({ frame }) => owned.project.keyframeVersions?.some((version) => version.frameId === frame.id)).map(({ frame }) => frame.id)),
+      userRetryFrameIds: parsed.data.retryResponseTimeout ? new Set(targetFrames.map(({ frame }) => frame.id)) : undefined
     };
 
     if (imageRoute.provider === "qwenImageProvider") {
@@ -229,6 +269,7 @@ export async function POST(request: Request) {
         data: {
           status: "running",
           eventId: batchEvent.id,
+          jobId: batchEvent.runId,
           mode: parsed.data.mode,
           requestedShots: parsed.data.shots.length,
           generatedShots: 0,
@@ -280,6 +321,8 @@ export async function POST(request: Request) {
       fallbackUsed: false,
       error: sanitizeApiError(error)
     }, 500);
+  } finally {
+    if (admissionHeld && activeProjectId) admittingProjects.delete(activeProjectId);
   }
 }
 
@@ -309,6 +352,11 @@ export async function GET(request: Request) {
     if (event.status === "running" || event.status === "queued" || event.status === "qa-review") {
       const recovering = !imageJobs.has(projectId.data);
       if (!imageJobs.has(projectId.data)) {
+        const recentlyActive = Date.now() - (event.lastHeartbeatAt ?? event.startedAt) < 60_000;
+        if (recentlyActive) return apiJson({ success: true, data: { status: "running", eventId: event.id, jobId: event.runId,
+          generatedShots: event.progressCurrent ?? 0, requestedShots: event.progressTotal ?? 1,
+          message: "模型正在生成，任务仍在服务器运行中。", images: [], failedShots: [] },
+          trace: { route: "generate-images", stage: "batch-running-remote" }, fallbackUsed: false, error: null }, 202);
         const frameEvents = (owned.project.generationEvents ?? []).filter((item) => item.runId === event.runId && item.action === "生成单帧关键帧" && item.status === "running");
         if (frameEvents.length && frameEvents.every((item) => item.providerTaskId && item.shotId && item.frameId)) {
           const targetFrames = frameEvents.flatMap((item) => {
@@ -351,6 +399,7 @@ export async function GET(request: Request) {
         data: {
           status: "running",
           eventId: event.id,
+          jobId: event.runId,
           generatedShots: event.progressCurrent ?? 0,
           requestedShots: event.progressTotal ?? 1,
           message: recovering ? "正在恢复生成任务，已提交的图片不会重复提交。" : event.message,
@@ -367,7 +416,7 @@ export async function GET(request: Request) {
     const data = imageBatchDataFromProject(owned.project, event.runId);
     return apiJson({
       success: true,
-      data: { status: "completed", eventId: event.id, ...data },
+      data: { status: "completed", eventId: event.id, jobId: event.runId, ...data },
       trace: { route: "generate-images", stage: "batch-completed" },
       fallbackUsed: data.failedShots.length > 0,
       fallbackReason: data.failedShots.length > 0 ? `${data.failedShots.length} 个镜头使用了关键帧降级。` : null,
@@ -384,6 +433,14 @@ function launchImageBatch(input: ImageBatchInput) {
   void queueImageBatch(input).catch(() => undefined);
 }
 
+function responseTimeoutImage(shot: TargetShot, frame: ShotFrame, attempt?: QwenModelAttempt): ShotImageGenerationResult {
+  return { shotId: shot.id, frameId: frame.id, imageUrl: "", prompt: frame.imagePromptCn,
+    provider: "qwenImageProvider", model: attempt?.model ?? QWEN_REFERENCE_MODELS[0],
+    latencyMs: attempt ? Date.now() - attempt.startedAt : 0, size: attempt?.size ?? "2048*1152",
+    cacheStatus: "not-requested", fallbackUsed: false,
+    fallbackReason: "图像模型响应超时，本次结果状态未知。", errorCode: "PROVIDER_RESPONSE_TIMEOUT" };
+}
+
 function queueImageBatch(input: ImageBatchInput) {
   const previous = imageJobs.get(input.projectId) ?? Promise.resolve();
   const job = previous.catch(() => undefined).then(() => executeImageBatch(input));
@@ -397,19 +454,26 @@ function queueImageBatch(input: ImageBatchInput) {
 type EvaluatedImage = ShotImageGenerationResult & {
   qaResult?: KeyframeQAResult;
   qaResults?: KeyframeQAResult[];
-  status: "ready" | "needs-review" | "fallback";
+  status: "ready" | "needs-review" | "fallback" | "response_timeout";
 };
 
 async function executeImageBatch(input: ImageBatchInput) {
   try {
     let completedCount = 0;
     const results: EvaluatedImage[] = [];
+    const timedOutGroups = new Set<string>();
     const previousAssetByGroup = new Map<string, string>();
     const firstGroup = input.targetShots[0]?.continuityGroupId ?? input.targetShots[0]?.sceneGroupId;
     if (firstGroup && input.continuityImageAssetId) previousAssetByGroup.set(firstGroup, input.continuityImageAssetId);
 
     await runContinuityAware(input.targetFrames, async ({ shot, frame }) => {
       const groupId = shot.continuityGroupId ?? shot.sceneGroupId;
+      const sequenceId = groupId ?? `shot:${shot.id}`;
+      if (timedOutGroups.has(sequenceId)) {
+        const skippedEventId = input.shotEvents.get(frame.id);
+        if (skippedEventId) await cancelGenerationEvent(input.sessionId, input.projectId, skippedEventId, "前一帧响应超时，本帧尚未提交模型；可稍后继续生成。");
+        return;
+      }
       let project = (await requireOwnedAnonymousProject(input.sessionId, input.projectId)).project;
       const frameShot = shotForFrame(shot, frame);
       const qaShot = { ...frameShot, id: shot.id };
@@ -417,7 +481,11 @@ async function executeImageBatch(input: ImageBatchInput) {
       const eventId = input.shotEvents.get(frame.id);
       const logIds = new Map<string, string>();
       const progressByModel = new Map<string, QwenTaskProgress>();
+      let activeAttempt: QwenModelAttempt | undefined;
+      let lastAttempt: QwenModelAttempt | undefined;
       const onModelAttempt = eventId ? async (attempt: QwenModelAttempt) => {
+        activeAttempt = attempt.status === "running" ? attempt : undefined;
+        lastAttempt = attempt;
         const logKey = `${attempt.model}:${attempt.attempt}`;
         const digest = createHash("sha256").update(`${eventId}:${logKey}`).digest("hex");
         const logId = logIds.get(logKey) ?? `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
@@ -428,6 +496,7 @@ async function executeImageBatch(input: ImageBatchInput) {
           kind: "call", taskId: eventId, jobId: input.batchRunId, projectId: input.projectId,
           stage: "keyframes", provider: "qwen-image", model: attempt.model, mode: attempt.mode, taskType: attempt.taskType,
           shotId: shot.id, frameId: frame.id, attempt: attempt.attempt, status: attempt.status,
+          ...(input.userRetryFrameIds?.has(frame.id) ? { retryReason: "user_retry" as const, previousAttempt: "response_timeout" as const } : {}),
           startedAt: attempt.startedAt, completedAt: attempt.completedAt,
           durationMs: Math.max(0, attempt.completedAt - attempt.startedAt),
           errorCode: attempt.errorCode, errorSummary: attempt.error, providerErrorCode: attempt.providerErrorCode,
@@ -445,7 +514,17 @@ async function executeImageBatch(input: ImageBatchInput) {
           region: attempt.submissionDiagnostic?.region, workspaceIdMasked: attempt.submissionDiagnostic?.workspaceIdMasked,
           apiMode: attempt.submissionDiagnostic?.apiMode, payloadBytes: attempt.submissionDiagnostic?.payloadBytes,
           submissionTimeoutMs: attempt.submissionDiagnostic?.timeoutMs,
+          providerResponseTimeoutMs: attempt.submissionDiagnostic?.apiMode === "dashscope-sync" ? attempt.submissionDiagnostic.timeoutMs : undefined,
+          timeoutSource: attempt.timeoutSource,
+          providerOutcome: attempt.providerOutcome,
+          referenceAssetIds: attempt.submissionDiagnostic?.referenceAssetIds,
+          referenceMetadataSummary: attempt.submissionDiagnostic?.referenceMetadata,
           referenceSourceTypes: attempt.submissionDiagnostic?.referenceTypes,
+          requestStartedAt: attempt.submissionDiagnostic?.requestStartedAt,
+          responseReceivedAt: attempt.responseReceivedAt,
+          assetPersistedAt: attempt.assetPersistedAt,
+          projectPatchedAt: attempt.projectPatchedAt,
+          lastHeartbeatAt: attempt.status === "running" ? Date.now() : undefined,
           failurePhase: attempt.networkFailure?.failurePhase,
           networkErrorName: attempt.networkFailure?.errorName, networkErrorMessage: attempt.networkFailure?.errorMessage,
           networkCauseCode: attempt.networkFailure?.causeCode, networkCauseErrno: attempt.networkFailure?.causeErrno,
@@ -455,6 +534,17 @@ async function executeImageBatch(input: ImageBatchInput) {
           ...(attempt.assetId ? { outputAssetIds: [attempt.assetId] } : {})
         });
       } : undefined;
+      let heartbeatBusy = false;
+      const heartbeat = eventId ? setInterval(() => {
+        if (heartbeatBusy) return;
+        heartbeatBusy = true;
+        void Promise.all([
+          heartbeatGenerationEvent(input.sessionId, input.projectId, input.batchEventId),
+          heartbeatGenerationEvent(input.sessionId, input.projectId, eventId,
+            `关键帧正在生成，已等待 ${Math.floor((Date.now() - (activeAttempt?.startedAt ?? Date.now())) / 1000)} 秒。`),
+          activeAttempt && onModelAttempt ? onModelAttempt({ ...activeAttempt, completedAt: Date.now() }) : Promise.resolve()
+        ]).catch(() => undefined).finally(() => { heartbeatBusy = false; });
+      }, 20_000) : undefined;
       const onTaskProgress = eventId ? async (progress: QwenTaskProgress) => {
         progressByModel.set("qwen-image-3.0", progress);
         await attachGenerationEventProviderTask(input.sessionId, input.projectId, eventId,
@@ -476,15 +566,23 @@ async function executeImageBatch(input: ImageBatchInput) {
         onTaskProgress,
         resumeTaskId: input.resumeTaskIdsByFrame?.get(frame.id)
       }); } catch (error) {
-        if (error instanceof Error && error.message === "SUBMISSION_STATE_UNKNOWN" && eventId) {
-          await blockUnknownSubmission(input.sessionId, input.projectId, eventId);
+        if (error instanceof Error && error.message === "PROVIDER_RESPONSE_TIMEOUT") {
+          generated = responseTimeoutImage(shot, frame, lastAttempt);
+          timedOutGroups.add(sequenceId);
+        } else {
+          if (error instanceof Error && error.message === "SUBMISSION_STATE_UNKNOWN" && eventId) {
+            await blockUnknownSubmission(input.sessionId, input.projectId, eventId);
+          }
+          throw error;
         }
-        throw error;
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
       }
       let result: ShotImageGenerationResult = { ...generated, shotId: shot.id, frameId: frame.id };
       let qaResult: KeyframeQAResult | undefined;
       const qaResults: KeyframeQAResult[] = [];
-      let status: EvaluatedImage["status"] = result.fallbackUsed || !result.assetId ? "fallback" : "ready";
+      let status: EvaluatedImage["status"] = result.errorCode === "PROVIDER_RESPONSE_TIMEOUT" ? "response_timeout"
+        : result.fallbackUsed || !result.assetId ? "fallback" : "ready";
 
       if (!result.fallbackUsed && result.provider === "mockImageProvider") {
         qaResult = createMockKeyframeQA(qaShot, 1, frame.id);
@@ -519,7 +617,7 @@ async function executeImageBatch(input: ImageBatchInput) {
             imagePromptCn: `${frameShot.imagePromptCn}\n只修复当前这一帧，禁止增加面板、拼贴或其他时刻。视觉 QA 定向修复：${qaResult.repairPrompt ?? qaResult.issues.join("；")}`,
             imagePromptEn: `${frameShot.imagePromptEn}\nRepair this frame only. One full-frame image, no panels, collage, contact sheet, or additional moments.`
           };
-          result = { ...await generateShotImage(input.projectId, repairedShot, {
+          try { result = { ...await generateShotImage(input.projectId, repairedShot, {
             aspectRatio: input.aspectRatio,
             hasChineseText: true,
             sessionId: input.sessionId,
@@ -529,7 +627,12 @@ async function executeImageBatch(input: ImageBatchInput) {
             masterReferenceAssetIds: selectImageReferencesForShot(project, shot).masterReferenceAssetIds,
             continuityImageAssetId: groupId ? previousAssetByGroup.get(groupId) : undefined,
             onModelAttempt
-          }), shotId: shot.id, frameId: frame.id };
+          }), shotId: shot.id, frameId: frame.id }; }
+          catch (error) {
+            if (!(error instanceof Error) || error.message !== "PROVIDER_RESPONSE_TIMEOUT") throw error;
+            result = responseTimeoutImage(shot, frame, lastAttempt);
+            timedOutGroups.add(sequenceId);
+          }
           if (!result.fallbackUsed && result.assetId) {
             await persistKeyframeState(input, shot, frame, result, "generated");
             qaResult = await inspectKeyframe({
@@ -545,18 +648,22 @@ async function executeImageBatch(input: ImageBatchInput) {
             qaResults.push(qaResult);
           }
         }
-        status = result.fallbackUsed || !result.assetId ? "fallback" : qaResult?.overallPassed ? "ready" : "needs-review";
+        status = result.errorCode === "PROVIDER_RESPONSE_TIMEOUT" ? "response_timeout"
+          : result.fallbackUsed || !result.assetId ? "fallback" : qaResult?.overallPassed ? "ready" : "needs-review";
       }
 
       const evaluated: EvaluatedImage = { ...result, qaResult, qaResults, status };
       results.push(evaluated);
       await persistEvaluatedKeyframe(input, shot, frame, evaluated);
+      if (lastAttempt?.assetId && onModelAttempt) await onModelAttempt({ ...lastAttempt, projectPatchedAt: Date.now() });
       if (groupId && evaluated.assetId && evaluated.status === "ready") previousAssetByGroup.set(groupId, evaluated.assetId);
 
       const image = toClientImage(evaluated);
       if (eventId) {
         const reason = image.fallbackReason ?? "模型未返回可用图片。";
-        if (image.status === "fallback") await failGenerationEvent(input.sessionId, input.projectId, eventId, `镜头关键帧生成失败：${reason}`, image.errorCode ?? "PROVIDER_REQUEST_FAILED");
+        if (image.status === "response_timeout") await failGenerationEvent(input.sessionId, input.projectId, eventId,
+          "图像模型响应超时，本次结果状态未知。已成功生成的关键帧会继续保留，可查看镜头日志后单独重试当前帧。", "PROVIDER_RESPONSE_TIMEOUT");
+        else if (image.status === "fallback") await failGenerationEvent(input.sessionId, input.projectId, eventId, `镜头关键帧生成失败：${reason}`, image.errorCode ?? "PROVIDER_REQUEST_FAILED");
         else await completeGenerationEvent(
           input.sessionId,
           input.projectId,
@@ -582,9 +689,15 @@ async function executeImageBatch(input: ImageBatchInput) {
     await updateOwnedAnonymousProject(input.sessionId, input.projectId, {
       workflowSteps: {
         ...(current.project.workflowSteps ?? defaultWorkflow()),
-        keyframes: images.some((image) => image.status === "needs-review") ? "needs-review" : images.some((image) => image.status === "fallback") ? "fallback" : "completed"
+        keyframes: images.some((image) => image.status === "response_timeout") ? "failed"
+          : images.some((image) => image.status === "needs-review") ? "needs-review" : images.some((image) => image.status === "fallback") ? "fallback" : "completed"
       }
     });
+    if (results.some((image) => image.status === "response_timeout")) {
+      await failGenerationEvent(input.sessionId, input.projectId, input.batchEventId,
+        "部分关键帧响应超时，结果状态未知；已保存的图片继续保留，请查看对应镜头日志后单独重试。", "PROVIDER_RESPONSE_TIMEOUT");
+      return { images, failedShots, mode: input.mode, requestedShots: input.requestedShots, generatedShots: images.length };
+    }
     await completeGenerationEvent(
       input.sessionId,
       input.projectId,
@@ -653,7 +766,7 @@ async function persistEvaluatedKeyframe(input: ImageBatchInput, shot: TargetShot
       ...project,
       keyframeVersions: versions,
       keyframeQAResults: qaResults,
-      shots: updateShotFrame(project.shots, shot.id, frame.id, image.assetId, image.status === "fallback" ? "failed" : image.status),
+      shots: updateShotFrame(project.shots, shot.id, frame.id, image.assetId, image.status === "fallback" || image.status === "response_timeout" ? "failed" : image.status),
       keyframes: [...(project.keyframes ?? []).filter((item) => keyframeIdentity(item.shotId, item.frameId) !== keyframeIdentity(shot.id, frame.id)), toKeyframeMetadata(image, image.status)]
     };
   });
@@ -731,7 +844,7 @@ function toClientImage(result: EvaluatedImage) {
     shotId: result.shotId,
     frameId: result.frameId,
     assetId: result.assetId,
-    imageUrl: result.localUrl || result.imageUrl,
+    imageUrl: result.assetId ? result.localUrl || result.imageUrl : undefined,
     localUrl: result.localUrl,
     provider: result.provider,
     model: result.model,
@@ -771,12 +884,14 @@ function imageBatchDataFromProject(project: Awaited<ReturnType<typeof requireOwn
       fallbackUsed: frame.fallbackUsed,
       fallbackReason: frame.fallbackReason ?? null,
       referenceUsed: Boolean(frame.assetId),
-      status: frame.status === "ready" ? "ready" as const : frame.status === "needs-review" ? "needs-review" as const : "fallback" as const,
+      status: frame.status === "ready" ? "ready" as const : frame.status === "needs-review" ? "needs-review" as const
+        : frame.status === "response_timeout" ? "response_timeout" as const : "fallback" as const,
       qaResult,
       diagnostic
     };
   });
-  const failedShots = images.filter((image) => image.fallbackUsed || image.status === "needs-review").map((image) => ({ shotId: image.shotId, fallbackReason: image.status === "needs-review" ? "视觉一致性检查未通过。" : image.fallbackReason, diagnostic: image.diagnostic }));
+  const failedShots = images.filter((image) => image.fallbackUsed || image.status === "needs-review" || image.status === "response_timeout")
+    .map((image) => ({ shotId: image.shotId, fallbackReason: image.status === "needs-review" ? "视觉一致性检查未通过。" : image.fallbackReason, diagnostic: image.diagnostic }));
   return { images, failedShots, generatedShots: images.length, requestedShots: events.length };
 }
 

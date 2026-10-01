@@ -5,6 +5,7 @@ import type { KeyframeResult } from "@/components/KeyframePreview";
 export type KeyframeGenerationData = {
   status: "running" | "completed";
   eventId: string;
+  jobId?: string;
   images: KeyframeResult[];
   generatedShots?: number;
   requestedShots?: number;
@@ -15,6 +16,7 @@ export async function generateProjectKeyframes(input: {
   shots: StoryboardShot[];
   aspectRatio: AspectRatio;
   frameIds?: string[];
+  retryResponseTimeout?: boolean;
   onProgress?: () => void | Promise<void>;
 }): Promise<KeyframeGenerationData> {
   const response = await fetch("/api/generate-images", {
@@ -25,7 +27,8 @@ export async function generateProjectKeyframes(input: {
       shots: input.shots,
       mode: "all-shots",
       aspectRatio: input.aspectRatio,
-      ...(input.frameIds?.length ? { frameIds: input.frameIds } : {})
+      ...(input.frameIds?.length ? { frameIds: input.frameIds } : {}),
+      ...(input.retryResponseTimeout ? { retryResponseTimeout: true } : {})
     })
   });
   const result = await readClientApiResponse<KeyframeGenerationData>(response);
@@ -63,6 +66,7 @@ export async function pollProjectKeyframes(
 }
 
 function publicKeyframeError(message?: string | null) {
+  if (message?.includes("响应超时")) return message;
   if (!message || /(?:Zod|JSON|Schema|request.?id|payload|[A-Z][A-Z_]{3,})/.test(message)) {
     return "关键帧暂时未生成成功，请在生成详情中查看原因并重试。";
   }

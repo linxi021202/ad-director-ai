@@ -66,6 +66,8 @@ export type ImageGenerationOptions = {
     submissionElapsedMs?: number; downloadElapsedMs?: number;
     submissionDiagnostic?: import("../image/types").QwenSubmissionDiagnostic;
     networkFailure?: import("../image/types").QwenNetworkFailure;
+    providerOutcome?: import("../image/types").QwenImageResult["providerOutcome"];
+    timeoutSource?: string; responseReceivedAt?: number; assetPersistedAt?: number; projectPatchedAt?: number;
   }) => Promise<void>;
   resumeTaskId?: string;
   onTaskProgress?: (progress: import("../image/types").QwenTaskProgress) => Promise<void>;

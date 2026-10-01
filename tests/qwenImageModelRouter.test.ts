@@ -252,7 +252,7 @@ describe("Qwen task lifecycle", () => {
     } });
     expect(response.submissionDiagnostic).toMatchObject({ requestHost: "dashscope.aliyuncs.com",
       requestPath: "/api/v1/services/aigc/multimodal-generation/generation", region: "cn-beijing",
-      apiMode: "dashscope-sync", timeoutMs: 300000, referenceTypes: ["data-url"] });
+      apiMode: "dashscope-sync", timeoutMs: 600000, timeoutSource: "application-provider-timeout", referenceTypes: ["data-url"] });
     expect(response.submissionDiagnostic?.payloadBytes).toBeGreaterThan(100);
     expect(attempts.some((attempt) => attempt.status === "running" && attempt.submissionDiagnostic?.payloadBytes)).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -272,5 +272,47 @@ describe("Qwen task lifecycle", () => {
     const response = await callQwenImage({ prompt: "单帧广告", model: "qwen-image-2.0", sessionId: input.sessionId });
     expect(response.success).toBe(true);
     expect(timeoutSpy).toHaveBeenCalledWith(300_000);
+  });
+
+  it("waits beyond six simulated minutes for edit-max and keeps the successful response", async () => {
+    vi.useFakeTimers();
+    try {
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+        return controller.signal;
+      });
+      const fetchMock = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 350_000));
+        return new Response(JSON.stringify({ output: { results: [{ image_url: "https://example.com/late-success.png" }] } }));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const pending = callQwenImage({ prompt: "单帧广告", model: "qwen-image-edit-max-2026-01-16", sessionId: input.sessionId });
+      for (let index = 0; index < 20 && !fetchMock.mock.calls.length; index += 1) await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(350_000);
+      expect(await pending).toMatchObject({ success: true, imageUrl: "https://example.com/late-success.png", providerOutcome: "succeeded" });
+      expect(timeoutSpy).toHaveBeenCalledWith(600_000);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("marks synchronous response timeout as unknown without trying a second model", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+        return controller.signal;
+      });
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject((init.signal as AbortSignal).reason), { once: true });
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+      const pending = generateQwenImageAdaptive({ prompt: "单帧广告", referenceImages: ["data:image/png;base64,AA=="], sessionId: input.sessionId });
+      for (let index = 0; index < 30 && !fetchMock.mock.calls.length; index += 1) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(await pending).toMatchObject({ errorCode: "PROVIDER_RESPONSE_TIMEOUT", providerOutcome: "unknown", timeoutSource: "application-provider-timeout" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
   });
 });

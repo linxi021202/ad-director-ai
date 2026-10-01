@@ -9,6 +9,8 @@ export type QwenImageRequest = {
   prompt: string;
   referenceImage?: string;
   referenceImages?: string[];
+  referenceAssetIds?: string[];
+  referenceMetadata?: Array<{ assetId?: string; source: string; width?: number; height?: number; bytes?: number; mimeType?: string }>;
   negativePrompt?: string;
   projectId?: string;
   shotId?: string;
@@ -30,6 +32,9 @@ export type QwenSubmissionDiagnostic = {
   apiMode: "dashscope-async" | "dashscope-sync";
   payloadBytes: number;
   timeoutMs: number;
+  timeoutSource?: string;
+  referenceAssetIds?: string[];
+  referenceMetadata?: Array<{ assetId?: string; source: string; width?: number; height?: number; bytes?: number; mimeType?: string }>;
   referenceTypes: string[];
   requestStartedAt: number;
 };
@@ -68,6 +73,10 @@ export type QwenImageResult = {
   downloadElapsedMs?: number;
   submissionDiagnostic?: QwenSubmissionDiagnostic;
   networkFailure?: QwenNetworkFailure;
+  providerOutcome?: "unknown" | "succeeded" | "failed";
+  timeoutSource?: string;
+  responseReceivedAt?: number;
+  assetPersistedAt?: number;
 };
 
 export type DownloadImageInput = {

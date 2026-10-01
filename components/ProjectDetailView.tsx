@@ -339,7 +339,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       if (cancelled) return;
       const message = resumeError instanceof Error ? resumeError.message : "关键帧任务恢复失败。";
       setImageBatchError(message);
-      markShotsFailed(shots, message);
+      if (message.includes("响应超时")) void fetchProjectSnapshot().catch(() => undefined);
+      else markShotsFailed(shots, message);
     }).finally(() => {
       if (!cancelled) setActiveBatch(null);
     });
@@ -563,12 +564,13 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     markShotsLoading(targetShots, frameIds);
 
     try {
-      await resetGenerationLogForNewRun();
       const completed = await generateProjectKeyframes({
         projectId: displayProject.id,
         shots: targetShots,
         aspectRatio: displayProject.brief.aspectRatio,
         frameIds,
+        retryResponseTimeout: Boolean(frameIds?.length === 1 && displayProject.generationEvents?.some((event) => event.stage === "keyframes"
+          && event.frameId === frameIds[0] && ["PROVIDER_RESPONSE_TIMEOUT", "SUBMISSION_STATE_UNKNOWN"].includes(event.errorCode ?? ""))),
         onProgress: async () => { await fetchProjectSnapshot().catch(() => undefined); }
       });
 
@@ -583,7 +585,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
     } catch (error) {
       const message = error instanceof Error ? error.message : "关键帧生成失败。";
       setImageBatchError(message);
-      markShotsFailed(targetShots, message, frameIds);
+      if (message.includes("响应超时")) await fetchProjectSnapshot().catch(() => undefined);
+      else markShotsFailed(targetShots, message, frameIds);
     } finally {
       setActiveBatch(null);
     }
@@ -609,7 +612,9 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
           if (next[frameId]?.imageUrl || next[frameId]?.localUrl) {
             next[frameId] = { ...next[frameId]!, status: "ready" };
           } else {
-            next[frameId] = { shotId: shot.id, frameId, status: "failed", fallbackUsed: true, fallbackReason: reason };
+            next[frameId] = reason.includes("响应超时")
+              ? { shotId: shot.id, frameId, status: "response_timeout", fallbackUsed: false, fallbackReason: reason }
+              : { shotId: shot.id, frameId, status: "failed", fallbackUsed: true, fallbackReason: reason };
           }
         });
       });
@@ -1303,6 +1308,7 @@ function ShotCard({
   const safeIndex = Math.min(Math.max(0, currentIndex), Math.max(0, frames.length - 1));
   const currentFrame = frames[safeIndex];
   const submissionBlocked = Boolean(currentFrame?.id && blockedFrameIds.includes(currentFrame.id));
+  const responseTimeout = view.frameViews[safeIndex]?.responseTimeout;
   const keyframe = currentFrame
     ? keyframes.find((item) => item.frameId === currentFrame.id)
     : keyframes[0];
@@ -1331,7 +1337,7 @@ function ShotCard({
           fit="contain"
           showBlurredBackdrop={false}
           alt={`镜头 ${shot.index} 第 ${safeIndex + 1} 帧：${currentFrame?.description ?? shot.subtitle}`}
-        /> : <VisualAssetPlaceholder title={submissionBlocked ? "提交状态未知" : "关键帧待生成"} description={submissionBlocked ? "请先检查生成详情和调用日志，避免重复提交。" : "当前镜头还没有关键帧。"} aspectRatio={aspectRatio} status={isLoading ? "running" : keyframe?.status === "failed" || submissionBlocked ? "failed" : "pending"} actionLabel={submissionBlocked ? undefined : "生成关键帧"} onAction={submissionBlocked ? undefined : () => onGenerate(currentFrame?.id)} />}
+        /> : <VisualAssetPlaceholder title={submissionBlocked ? "提交状态未知" : responseTimeout ? "图像模型响应超时，本次结果状态未知" : "关键帧待生成"} description={submissionBlocked ? "请先检查生成详情和调用日志。若旧日志能确认是同步响应超时，可明确重新生成当前帧。" : responseTimeout ? "已成功生成的关键帧会继续保留。查看镜头日志后，可单独重试当前帧。" : "当前镜头还没有关键帧。"} aspectRatio={aspectRatio} status={isLoading ? "running" : keyframe?.status === "failed" || responseTimeout || submissionBlocked ? "failed" : "pending"} actionLabel={submissionBlocked || responseTimeout ? "重新生成当前帧" : "生成关键帧"} onAction={() => onGenerate(currentFrame?.id)} />}
         <div className="keyframe-card-v4__badges">
           {isHeroShot ? <span className="is-hero">当前主镜头</span> : null}
           {shot.exactProductShot ? <span>精确产品镜头</span> : shot.containsProduct ? <span>产品互动镜头</span> : null}
@@ -1356,8 +1362,8 @@ function ShotCard({
         </div>
         {keyframe?.fallbackUsed ? <span className="keyframe-card-v4__fallback"><i aria-hidden="true" />已使用本地降级图</span> : null}
         <div className="keyframe-card-v4__actions">
-          <button type="button" className="project-button-v4 project-button-v4--ai" disabled={isLoading || currentFrame?.isLocked || submissionBlocked} aria-busy={isLoading} onClick={() => onGenerate(currentFrame?.id)}>
-            {submissionBlocked ? "提交状态待核查" : isLoading ? "生成中" : currentFrame?.isLocked ? "当前帧已锁定" : keyframe?.status === "ready" && !keyframe.fallbackUsed ? "重生当前帧" : "生成当前帧"}
+          <button type="button" className="project-button-v4 project-button-v4--ai" disabled={isLoading || currentFrame?.isLocked} aria-busy={isLoading} onClick={() => onGenerate(currentFrame?.id)}>
+             {submissionBlocked || responseTimeout ? "重新生成当前帧" : isLoading ? "生成中" : currentFrame?.isLocked ? "当前帧已锁定" : keyframe?.status === "ready" && !keyframe.fallbackUsed ? "重生当前帧" : "生成当前帧"}
           </button>
           {submissionBlocked ? <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={onRefresh}>重新检查状态</button> : null}
           {submissionBlocked ? <button type="button" className="project-button-v4 project-button-v4--secondary" onClick={() => onOpenDetails("trace")}>查看调用记录</button> : null}

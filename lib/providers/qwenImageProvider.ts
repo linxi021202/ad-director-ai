@@ -1,4 +1,5 @@
 import { generateQwenImageAdaptive } from "../image/qwenImageModelRouter";
+import sharp from "sharp";
 import { qwenImageUserMessage } from "../image/qwenImageErrors";
 import { hasDuplicatedFramePrompts } from "../storyboard/keyframePlan";
 import { composeExactProductAsset } from "../image/exactProductComposite";
@@ -108,8 +109,10 @@ async function generateShotImage(
 ): Promise<ShotImageGenerationResult> {
   const startedAt = Date.now();
   const productReferenceImages: string[] = [];
+  const productReferenceAssetIds: string[] = [];
   let continuityReferenceImage: string | undefined;
   const masterReferenceImages: string[] = [];
+  const masterReferenceAssetIds: string[] = [];
   const containsProduct = shotContainsProduct(shot);
   const productAssetId = options?.productImage?.assetId;
   const safeShot = repairShotProductTerminology(shot, options?.productVisualSpec);
@@ -166,7 +169,7 @@ async function generateShotImage(
     if (!requiresExactComposite) {
       for (const productImage of selectedProducts.slice(0, 3)) {
         const reference = await readProductReferenceDataUrl(productImage, { sessionId: options?.sessionId, projectId });
-        if (reference) productReferenceImages.push(reference);
+        if (reference) { productReferenceImages.push(reference); if (productImage.assetId) productReferenceAssetIds.push(productImage.assetId); }
       }
     }
     if (!requiresExactComposite && selectedProducts.length > 0 && productReferenceImages.length === 0) {
@@ -198,24 +201,33 @@ async function generateShotImage(
         sessionId: options?.sessionId ?? "",
         projectId
       }));
+      masterReferenceAssetIds.push(assetId);
     } catch {
       return fallbackShotImage(shot, buildShotPrompt(shot), "已确认的人物或场景参考图无法读取，已停止生成，避免失去视觉一致性。", Date.now() - startedAt, "REFERENCE_ASSET_UNAVAILABLE");
     }
   }
 
   const requiredReferenceEntries = [
-    ...(productReferenceImages[0] ? [{ image: productReferenceImages[0], role: "product" as const }] : []),
-    ...masterReferenceImages.map((image) => ({ image, role: "master" as const }))
+    ...(productReferenceImages[0] ? [{ image: productReferenceImages[0], role: "product" as const, assetId: productReferenceAssetIds[0] }] : []),
+    ...masterReferenceImages.map((image, index) => ({ image, role: "master" as const, assetId: masterReferenceAssetIds[index] }))
   ];
   if (requiredReferenceEntries.length > 3) {
     return fallbackShotImage(shot, buildShotPrompt(shot), "所需的产品、人物和场景参考图超过模型支持的 3 张，已停止生成，避免静默丢失参考图。", Date.now() - startedAt, "REFERENCE_LIMIT_EXCEEDED");
   }
   const referenceEntries = [
     ...requiredReferenceEntries,
-    ...productReferenceImages.slice(1).map((image) => ({ image, role: "product" as const })),
-    ...(continuityReferenceImage ? [{ image: continuityReferenceImage, role: "continuity" as const }] : [])
+    ...productReferenceImages.slice(1).map((image, index) => ({ image, role: "product" as const, assetId: productReferenceAssetIds[index + 1] })),
+    ...(continuityReferenceImage ? [{ image: continuityReferenceImage, role: "continuity" as const, assetId: options?.continuityImageAssetId }] : [])
   ].slice(0, 3);
   const referenceImages = referenceEntries.map((entry) => entry.image);
+  const referenceMetadata = await Promise.all(referenceEntries.map(async (entry) => {
+    const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(entry.image);
+    if (!match) return { assetId: entry.assetId, source: entry.role };
+    const bytes = Buffer.from(match[2], "base64");
+    const metadata = await sharp(bytes).metadata().catch(() => null);
+    return { assetId: entry.assetId, source: entry.role, width: metadata?.width, height: metadata?.height,
+      bytes: bytes.length, mimeType: match[1] };
+  }));
   if (!referenceImages.length) {
     return fallbackShotImage(shot, buildShotPrompt(shot), "关键帧缺少已确认的参考图，请检查人物、场景或产品素材。",
       Date.now() - startedAt, "REFERENCE_IMAGE_REQUIRED");
@@ -258,6 +270,8 @@ async function generateShotImage(
     requiredCapabilities: { referenceImageInput: true, highConsistency: true },
     prompt,
     ...(referenceImages.length ? { referenceImages } : {}),
+    referenceAssetIds: referenceEntries.flatMap((entry) => entry.assetId ? [entry.assetId] : []),
+    referenceMetadata,
     negativePrompt: hasProductReference ? PRODUCT_REFERENCE_QWEN_NEGATIVE_PROMPT : DEFAULT_QWEN_NEGATIVE_PROMPT,
     projectId,
     shotId: shot.id,
@@ -268,7 +282,7 @@ async function generateShotImage(
   }, options?.onModelAttempt);
 
   if (!result.success) {
-    if (result.errorCode === "TASK_POLL_INTERRUPTED" || result.errorCode === "SUBMISSION_STATE_UNKNOWN") {
+    if (result.errorCode === "TASK_POLL_INTERRUPTED" || result.errorCode === "SUBMISSION_STATE_UNKNOWN" || result.errorCode === "PROVIDER_RESPONSE_TIMEOUT") {
       throw new Error(result.errorCode);
     }
     return fallbackShotImage(

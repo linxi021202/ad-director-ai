@@ -10,7 +10,7 @@ export function projectKeyframesToImages(project: KeyframeProjectSnapshot): Arra
     provider: item.provider ?? "planned", model: item.model ?? "qwen-image", latencyMs: item.latencyMs ?? 0,
     cacheStatus: item.cacheStatus ?? "not-requested", fallbackUsed: item.fallbackUsed,
     localUrl: item.localUrl || (item.assetId ? `/api/projects/${project.id}/assets/${item.assetId}` : undefined),
-    status: item.status === "ready" ? "ready" : item.status === "generated" ? "generated"
+    status: item.status === "response_timeout" ? "response_timeout" : item.status === "ready" ? "ready" : item.status === "generated" ? "generated"
       : ["text-qa", "product-qa", "character-qa", "scene-qa", "qa-review"].includes(item.status) ? "qa-review"
         : item.status === "needs-review" ? "needs-review" : item.status === "pending" ? "loading" : "failed",
     qaResult: project.keyframeQAResults?.filter((qa) => qa.shotId === item.shotId && qa.frameId === item.frameId)
@@ -43,7 +43,8 @@ export function getShotKeyframeViewState(project: KeyframeProjectSnapshot, shotI
       : failed(promptEvent?.status) ? "failed" : "not_started";
     const keyframeGenerationStatus = active(frameEvent?.status) || image && ["loading", "generated", "qa-review"].includes(image.status) ? "generating"
       : imageUrl && metadata?.status === "ready" ? "completed" : imageUrl ? "partial" : assetStatus === "broken" || failed(frameEvent?.status) ? "failed" : "not_started";
-    return { frame, metadata, image, imageUrl, assetStatus, confirmationStatus, promptStatus: framePromptStatus, keyframeGenerationStatus };
+    return { frame, metadata, image, imageUrl, assetStatus, confirmationStatus, promptStatus: framePromptStatus, keyframeGenerationStatus,
+      responseTimeout: metadata?.status === "response_timeout" || frameEvent?.errorCode === "PROVIDER_RESPONSE_TIMEOUT" };
   });
   const completedCount = frameViews.filter((item) => item.imageUrl && item.metadata?.status === "ready").length;
   const hasAnyKeyframe = frameViews.some((item) => item.imageUrl);
