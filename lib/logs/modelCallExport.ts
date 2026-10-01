@@ -3,12 +3,20 @@ import "server-only";
 import { readModelCallLogArchive } from "./modelCallStore";
 import { requireOwnedAnonymousProject } from "../projects/anonymousProjectStore";
 
-type ExportScope = { projectId: string; taskId?: string };
+type ExportScope = { projectId: string; taskId?: string; requestedStage?: string; requestedShotId?: string };
 
 export async function buildModelCallExport(sessionId: string, scope: ExportScope) {
   const record = await requireOwnedAnonymousProject(sessionId, scope.projectId);
-  const archive = await readModelCallLogArchive(sessionId, scope.projectId, scope.taskId);
-  const entries = archive.entries.map((entry) => ({
+  const scopedArchive = await readModelCallLogArchive(sessionId, scope.projectId, scope.taskId);
+  const matches = scopedArchive.entries.filter((entry) => (!scope.requestedStage || entry.stage === scope.requestedStage)
+    && (!scope.requestedShotId || entry.shotId === scope.requestedShotId));
+  const resolvedTaskId = scope.taskId ?? (scope.requestedStage || scope.requestedShotId
+    ? [...matches].sort((a, b) => b.startedAt - a.startedAt).find((entry) => entry.kind === "task")?.taskId
+      ?? [...matches].sort((a, b) => b.startedAt - a.startedAt)[0]?.taskId : undefined);
+  const archive = resolvedTaskId && !scope.taskId
+    ? await readModelCallLogArchive(sessionId, scope.projectId, resolvedTaskId) : scopedArchive;
+  const entries = archive.entries.filter((entry) => (!scope.requestedStage || entry.stage === scope.requestedStage)
+    && (!scope.requestedShotId || entry.shotId === scope.requestedShotId)).map((entry) => ({
     ...entry,
     jobId: entry.jobId ?? null,
     model: entry.model ?? null,
@@ -62,9 +70,12 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
   return {
     schemaVersion: 1,
     exportedAt: new Date().toISOString(),
-    scope: scope.taskId ? "task" as const : "project" as const,
+    scope: resolvedTaskId ? "task" as const : "project" as const,
     project: { id: scope.projectId, name: record.project.brief.productName },
-    taskId: scope.taskId ?? null,
+    taskId: resolvedTaskId ?? null,
+    requestedStage: scope.requestedStage ?? null,
+    requestedShotId: scope.requestedShotId ?? null,
+    resolvedTaskId: resolvedTaskId ?? null,
     environment: { nodeEnv: process.env.NODE_ENV ?? null, commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT_SHA ?? null },
     retention: { days: archive.retentionDays, maxSessionEntries: 500, limitReached: archive.retentionLimitReached, firstAvailableAt: archive.firstAvailableAt ? new Date(archive.firstAvailableAt).toISOString() : null,
       notice: archive.retentionLimitReached ? "会话日志达到保留上限，更早记录可能已被清理；本文件包含当前仍保存的全部匹配记录。" : null },
@@ -86,6 +97,7 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
     "## 一、任务概览",
     `项目：${safe(report.project.name)}（${report.project.id}）`,
     `范围：${report.scope === "task" ? `任务 ${report.taskId}` : "当前项目"}`,
+    `请求阶段：${report.requestedStage ?? "全部"}；请求镜头：${report.requestedShotId ?? "全部"}；匹配任务：${report.resolvedTaskId ?? "无"}`,
     `导出时间：${report.exportedAt}`, `应用提交：${report.environment.commit ?? "未提供"}`,
     `记录数量：${report.summary.total}`, "",
     "## 二、失败摘要",
@@ -121,7 +133,7 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
   lines.push("## 六、模型请求信息");
   for (const entry of report.entries.filter((item) => item.kind === "call" && item.provider !== "system")) {
     if (entry.promptStage) lines.push(`- 提示词阶段 ${entry.promptStage}；版本 ${entry.resultVersion ?? "未采集"}；规范结构 ${entry.canonicalValid ?? "未采集"}；最终采用 ${entry.finalUsed ?? "未采集"}`);
-    lines.push(`- ${entry.id}：批次 ${entry.jobId ?? "未关联"}，任务 ${entry.taskId}，镜头 ${safe(entry.shotId ?? "未知")}，帧 ${safe(entry.frameId ?? "未知")}，${safe(entry.model ?? "未知模型")}，${safe(entry.mode ?? "未知模式")}，参考图 ${entry.referenceImageCount ?? "未知"} 张，资产 ${entry.outputAssetIds?.join("、") ?? "无"}，请求参数 ${entry.requestOptions ? JSON.stringify(entry.requestOptions) : "未采集"}，输入/输出 Token ${entry.inputTokens ?? "未知"}/${entry.outputTokens ?? "未知"}，HTTP ${entry.httpStatus ?? "未知"}，耗时 ${entry.modelCallElapsedMs ?? "未知"} ms`);
+    lines.push(`- ${entry.id}：批次 ${entry.jobId ?? "未关联"}，任务 ${entry.taskId}，镜头 ${safe(entry.shotId ?? "未知")}，帧 ${safe(entry.frameId ?? "未知")}，${safe(entry.model ?? "未知模型")}，${safe(entry.mode ?? "未知模式")}，参考图 ${entry.referenceImageCount ?? "未知"} 张，资产 ${entry.outputAssetIds?.join("、") ?? "无"}，请求参数 ${entry.requestOptions ? JSON.stringify(entry.requestOptions) : "未采集"}，输入/输出 Token ${entry.inputTokens ?? "未知"}/${entry.outputTokens ?? "未知"}，HTTP ${entry.httpStatus ?? "未知"}，耗时 ${entry.modelCallElapsedMs ?? "未知"} ms，素材保存 ${entry.assetPersistedAt ?? "未采集"}，项目写入 ${entry.projectPatchStartedAt ?? "未采集"}/${entry.projectPatchCompletedAt ?? "未采集"}，项目版本 ${entry.projectVersionBefore ?? "未采集"}→${entry.projectVersionAfter ?? "未采集"}，帧记录 ${safe(entry.keyframeRecordId ?? "未采集")}`);
   }
   lines.push("", "## 七、完整错误详情", ...report.entries.filter((entry) => entry.errorSummary).map((entry) => `- ${entry.id}：${safe(entry.errorSummary!)}`), "", "## 八、无法获取的信息", ...report.unavailable.map((item) => `- ${item}`));
   if (report.retention.notice) lines.push("", `保留范围提示：${report.retention.notice}`);

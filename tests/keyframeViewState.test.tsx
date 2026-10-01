@@ -25,7 +25,7 @@ describe("canonical keyframe views", () => {
     for (const shot of project.shots) {
       const html = renderToStaticMarkup(<KeyframeStageWorkspace project={project} selectedShotId={shot.id} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
       if (shot.index < 3) {
-        expect(html).toContain(`/generated/${shot.frames![0]!.id}.png`);
+        expect(html).toContain(`/api/projects/${project.id}/assets/39140ba7-d72a-4110-bbc0-957701a731f0`);
         expect(html).not.toContain("当前镜头还没有关键帧");
         expect(html).toContain("已生成待确认");
       } else expect(html).toContain("当前镜头提示词尚未完成");
@@ -49,7 +49,7 @@ describe("canonical keyframe views", () => {
     expect(view.frameViews[0]!.assetStatus).toBe("persisted");
     expect(view.confirmationStatus).toBe("unconfirmed");
     const html = renderToStaticMarkup(<KeyframeStageWorkspace project={project} selectedShotId="shot-01" busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
-    expect(html).toContain("/generated/shot-01-frame-1.png");
+    expect(html).toContain(`/api/projects/${project.id}/assets/39140ba7-d72a-4110-bbc0-957701a731f0`);
     expect(html).not.toContain("当前镜头还没有关键帧");
   });
   it("never counts ready metadata without a URL or asset as a completed image", () => {
@@ -78,5 +78,18 @@ describe("canonical keyframe views", () => {
     const project = fixture();
     project.workflowSteps = { ...project.workflowSteps!, keyframes: "completed" };
     expect(getProjectKeyframeViewState(project)).toMatchObject({ completedShotCount: 2, keyframeGenerationStatus: "partial" });
+  });
+  it("recovers a persisted frame asset in the project even when its keyframe metadata is missing", () => {
+    const project = fixture();
+    const shot = project.shots[0]!;
+    const frame = shot.frames![0]!;
+    frame.assetId = "39140ba7-d72a-4110-bbc0-957701a731f0";
+    frame.status = "ready";
+    project.keyframes = project.keyframes!.filter((item) => item.frameId !== frame.id);
+    const view = getShotKeyframeViewState(project, shot.id);
+    expect(view.frameViews[0]?.imageUrl).toContain(frame.assetId);
+    expect(view.status).toBe("generated");
+    const html = renderToStaticMarkup(<KeyframeStageWorkspace project={project} selectedShotId={shot.id} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
+    expect(html).not.toContain("当前镜头还没有关键帧");
   });
 });

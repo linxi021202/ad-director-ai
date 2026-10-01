@@ -26,6 +26,7 @@ type Entry = {
   providerResponseTimeoutMs?: number; timeoutSource?: string; providerOutcome?: string; referenceAssetIds?: string[];
   referenceMetadataSummary?: Array<{ assetId?: string; source: string; width?: number; height?: number; bytes?: number; mimeType?: string }>;
   responseReceivedAt?: number; assetPersistedAt?: number; projectPatchedAt?: number;
+  projectPatchStartedAt?: number; projectPatchCompletedAt?: number; projectVersionAfter?: number; keyframeRecordId?: string;
   networkErrorName?: string; networkErrorMessage?: string; networkCauseCode?: string; networkCauseErrno?: number; networkCauseSyscall?: string;
   errorName?: string; causeCode?: string; requestStartedAt?: number; requestCompletedAt?: number;
   errorStack?: string; projectVersionBefore?: number; projectVersionExpected?: number; projectVersionActual?: number;
@@ -114,12 +115,15 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
       ?? entries.find((entry) => entry.shotId === focusShotId && (!focusStage || entry.stage === focusStage) && (!focusFrameId || entry.frameId === focusFrameId))?.id ?? null);
   }, [open, focusShotId, focusFrameId, focusStage, entries, selectedId]);
 
-  const filtered = entries.filter((entry) => (provider === "全部" || providerNames[entry.provider] === provider)
+  const scopedEntries = entries.filter((entry) => (!focusStage || entry.stage === focusStage)
+    && (!focusShotId || entry.shotId === focusShotId) && (!focusFrameId || entry.frameId === focusFrameId));
+  const filtered = scopedEntries.filter((entry) => (provider === "全部" || providerNames[entry.provider] === provider)
     && (status === "全部" || statusNames[entry.status] === status));
-  const active = entries.filter((entry) => entry.kind === "task" && ["queued", "running", "qa-review"].includes(entry.status));
-  const selected = entries.find((entry) => entry.id === selectedId);
+  const active = scopedEntries.filter((entry) => entry.kind === "task" && ["queued", "running", "qa-review"].includes(entry.status));
+  const selected = scopedEntries.find((entry) => entry.id === selectedId);
   const currentProjectId = projectId ?? selected?.projectId ?? entries[0]?.projectId;
-  const currentTaskId = selected?.taskId ?? active[0]?.taskId ?? (focusStage ? entries.find((entry) => entry.stage === focusStage && (!focusShotId || entry.shotId === focusShotId) && (!focusFrameId || entry.frameId === focusFrameId))?.taskId : entries[0]?.taskId);
+  const currentTaskId = selected?.taskId ?? active[0]?.taskId ?? scopedEntries.find((entry) => entry.kind === "task")?.taskId
+    ?? scopedEntries[0]?.taskId;
 
   async function clearLogs() {
     if (!projectId) return;
@@ -141,8 +145,10 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
     try {
       const query = new URLSearchParams({ projectId: currentProjectId, format });
       if (scope === "task" && currentTaskId) query.set("taskId", currentTaskId);
+      if (scope === "task" && focusStage) query.set("requestedStage", focusStage);
+      if (scope === "task" && focusShotId) query.set("requestedShotId", focusShotId);
       const response = await fetch(`/api/call-logs/export?${query}`, { cache: "no-store" });
-      if (!response.ok) throw new Error("日志导出失败，请稍后重试。");
+      if (!response.ok) throw new Error(response.status === 404 ? "当前镜头没有匹配的关键帧生成任务日志。" : "日志导出失败，请稍后重试。");
       const content = await response.text();
       if (copy) await navigator.clipboard.writeText(content.replace(/^\uFEFF/, ""));
       else {
@@ -161,7 +167,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
     <button type="button" className="call-log-trigger" onClick={() => setOpen(true)}>{label}</button>
     <ViewportDrawer open={open} label="调用日志" onClose={() => setOpen(false)} className="call-log-sheet">
       <header className="call-log-sheet__header">
-        <div><span>任务与模型</span><h2>调用日志</h2><p>{projectName ?? (currentProjectId ? `项目 ${currentProjectId.slice(0, 8)}` : "近期任务")}</p></div>
+        <div><span>任务与模型</span><h2>调用日志</h2><p>{focusStage ? `${focusStage === "keyframes" ? "关键帧" : focusStage === "prompts" ? "详细提示词" : focusStage} · ${focusShotId ? `镜头 ${focusShotId.replace(/^shot-0*/, "")}` : "当前项目"}` : projectName ?? (currentProjectId ? `项目 ${currentProjectId.slice(0, 8)}` : "近期任务")}</p></div>
         <button type="button" aria-label="关闭调用日志" onClick={() => setOpen(false)}>×</button>
       </header>
       <div className="call-log-sheet__toolbar">
@@ -194,7 +200,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
           ["保存前项目版本", selected.projectVersionBefore], ["预期项目版本", selected.projectVersionExpected], ["实际项目版本", selected.projectVersionActual], ["内部异常堆栈", selected.errorStack],
           ["模型调用耗时", selected.kind === "call" && selected.durationMs !== undefined ? `${selected.durationMs} 毫秒` : undefined], ["任务跨度", selected.kind === "task" && selected.jobElapsedMs !== undefined ? `${selected.jobElapsedMs} 毫秒` : undefined], ["最后活动", selected.lastHeartbeatAt ? new Date(selected.lastHeartbeatAt).toLocaleString("zh-CN") : undefined], ["中断发现", selected.interruptedAt ? new Date(selected.interruptedAt).toLocaleString("zh-CN") : undefined],
           ["重试序号", selected.attempt], ["重试原因", selected.retryReason === "user_retry" ? "用户明确重试" : undefined], ["前次结果", selected.previousAttempt === "response_timeout" ? "模型响应超时" : undefined], ["错误类型", selected.errorCode], ["异常类型", selected.errorName], ["底层异常码", selected.causeCode], ["请求开始", selected.requestStartedAt ? new Date(selected.requestStartedAt).toLocaleString("zh-CN") : undefined], ["请求完成", selected.requestCompletedAt ? new Date(selected.requestCompletedAt).toLocaleString("zh-CN") : undefined], ["服务商错误码", selected.providerErrorCode], ["错误详情", selected.errorSummary], ["校验路径", selected.validationPath], ["字段问题", selected.validationIssues?.map((issue) => `${issue.path}: ${issue.message}`).join("；")],
-          ["HTTP 状态", selected.httpStatus], ["请求域名", selected.requestHost], ["接口路径", selected.requestPath], ["区域", selected.region], ["工作空间", selected.workspaceIdMasked], ["接口模式", selected.apiMode], ["请求体字节", selected.payloadBytes], ["请求等待上限", (selected.providerResponseTimeoutMs ?? selected.submissionTimeoutMs) === undefined ? undefined : `${selected.providerResponseTimeoutMs ?? selected.submissionTimeoutMs} 毫秒`], ["超时来源", selected.timeoutSource], ["服务商结果", selected.providerOutcome === "unknown" ? "未知" : selected.providerOutcome === "succeeded" ? "成功" : selected.providerOutcome === "failed" ? "失败" : undefined], ["参考图资产", selected.referenceAssetIds?.join("、")], ["参考图信息", selected.referenceMetadataSummary?.map((item) => `${item.source} ${item.assetId ?? ""} ${item.width ?? "?"}×${item.height ?? "?"} ${item.bytes ?? "?"} 字节 ${item.mimeType ?? ""}`).join("；")], ["参考图来源", selected.referenceSourceTypes?.join("、")], ["响应时间", selected.responseReceivedAt ? new Date(selected.responseReceivedAt).toLocaleString("zh-CN") : undefined], ["素材保存时间", selected.assetPersistedAt ? new Date(selected.assetPersistedAt).toLocaleString("zh-CN") : undefined], ["项目更新时间", selected.projectPatchedAt ? new Date(selected.projectPatchedAt).toLocaleString("zh-CN") : undefined], ["失败阶段", selected.failurePhase], ["网络错误名", selected.networkErrorName], ["网络错误详情", selected.networkErrorMessage], ["底层错误码", selected.networkCauseCode], ["底层错误号", selected.networkCauseErrno], ["系统调用", selected.networkCauseSyscall],
+          ["HTTP 状态", selected.httpStatus], ["请求域名", selected.requestHost], ["接口路径", selected.requestPath], ["区域", selected.region], ["工作空间", selected.workspaceIdMasked], ["接口模式", selected.apiMode], ["请求体字节", selected.payloadBytes], ["请求等待上限", (selected.providerResponseTimeoutMs ?? selected.submissionTimeoutMs) === undefined ? undefined : `${selected.providerResponseTimeoutMs ?? selected.submissionTimeoutMs} 毫秒`], ["超时来源", selected.timeoutSource], ["服务商结果", selected.providerOutcome === "unknown" ? "未知" : selected.providerOutcome === "succeeded" ? "成功" : selected.providerOutcome === "failed" ? "失败" : undefined], ["参考图资产", selected.referenceAssetIds?.join("、")], ["参考图信息", selected.referenceMetadataSummary?.map((item) => `${item.source} ${item.assetId ?? ""} ${item.width ?? "?"}×${item.height ?? "?"} ${item.bytes ?? "?"} 字节 ${item.mimeType ?? ""}`).join("；")], ["参考图来源", selected.referenceSourceTypes?.join("、")], ["响应时间", selected.responseReceivedAt ? new Date(selected.responseReceivedAt).toLocaleString("zh-CN") : undefined], ["素材保存时间", selected.assetPersistedAt ? new Date(selected.assetPersistedAt).toLocaleString("zh-CN") : undefined], ["项目写入开始", selected.projectPatchStartedAt ? new Date(selected.projectPatchStartedAt).toLocaleString("zh-CN") : undefined], ["项目写入完成", selected.projectPatchCompletedAt ? new Date(selected.projectPatchCompletedAt).toLocaleString("zh-CN") : undefined], ["写入前版本", selected.projectVersionBefore], ["写入后版本", selected.projectVersionAfter], ["关键帧记录", selected.keyframeRecordId], ["失败阶段", selected.failurePhase], ["网络错误名", selected.networkErrorName], ["网络错误详情", selected.networkErrorMessage], ["底层错误码", selected.networkCauseCode], ["底层错误号", selected.networkCauseErrno], ["系统调用", selected.networkCauseSyscall],
           ["请求编号", selected.providerRequestId], ["服务商任务编号", selected.providerTaskId], ["输入 Token", selected.inputTokens], ["输出 Token", selected.outputTokens], ["输出长度", selected.outputLength], ["结束原因", selected.finishReason], ["JSON 解析", selected.jsonParsed === undefined ? undefined : selected.jsonParsed ? "成功" : "失败"], ["结构校验", selected.schemaValid === undefined ? undefined : selected.schemaValid ? "通过" : "失败"], ["修复", selected.repaired === undefined ? undefined : selected.repaired ? "已执行" : "未执行"], ["请求参数", selected.requestOptions ? JSON.stringify(selected.requestOptions) : undefined]
         ] as Array<[string, string | number | undefined]>).filter(([, value]) => value !== undefined).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl></section> : null}
         {error ? <p className="call-log-error">{error}</p> : null}

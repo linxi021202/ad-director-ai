@@ -5,6 +5,7 @@ export type KeyframeGenerationStatus = "idle" | "loading" | "generated" | "qa-re
 export type KeyframeResult = {
   shotId: string;
   frameId?: string;
+  assetId?: string;
   imageUrl?: string;
   localUrl?: string;
   provider?: string;

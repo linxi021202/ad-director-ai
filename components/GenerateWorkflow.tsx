@@ -19,8 +19,8 @@ import { StageContextPanel, StageDirectorRail, StageInspector, stageStatusLabel 
 import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
 import { KeyframeStageWorkspace } from "@/components/KeyframeStageWorkspace";
-import { generateProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
-import { getMissingKeyframeIds, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
+import { generateProjectKeyframes, pollProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
+import { getMissingKeyframeIds, getShotKeyframeViewState, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
 import { useKeyframeProjectRefresh } from "@/components/workspace/useKeyframeProjectRefresh";
 import { creativeStageStatusLabel, deriveCreativeStageState } from "@/lib/creative/creativeStageState";
 import { StoryboardTimeline } from "@/components/storyboard/StoryboardTimeline";
@@ -250,6 +250,28 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   useKeyframeProjectRefresh(activeProject.id, activeStage === "keyframes" || activeStage === "anchors", async () => {
     applyProjectUpdate(await fetchServerProject(activeProject.id));
   });
+  useEffect(() => {
+    if (activeStage !== "keyframes" || !activeProject.shots.some((shot) => getMissingKeyframeIds(activeProject, shot.id).length)) return;
+    let cancelled = false;
+    void fetch(`/api/projects/${encodeURIComponent(activeProject.id)}/keyframes/recover`, { method: "POST" })
+      .then((response) => response.ok ? response.json() as Promise<{ data?: { recovered?: unknown[] } }> : null)
+      .then(async (result) => { if (!cancelled && result?.data?.recovered?.length) applyProjectUpdate(await fetchServerProject(activeProject.id)); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+    // Run once on entry; the recovery endpoint is idempotent and never requests a model.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject.id, activeStage]);
+  useEffect(() => {
+    if (activeStage !== "keyframes" || !activeProject.shots.some((shot) => getMissingKeyframeIds(activeProject, shot.id).length)) return;
+    let cancelled = false;
+    void fetch(`/api/projects/${encodeURIComponent(activeProject.id)}/keyframes/recover`, { method: "POST" })
+      .then((response) => response.ok ? response.json() as Promise<{ data?: { recovered?: unknown[] } }> : null)
+      .then(async (result) => { if (!cancelled && result?.data?.recovered?.length) applyProjectUpdate(await fetchServerProject(activeProject.id)); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+    // Run once on entry; the recovery endpoint is idempotent and never requests a model.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject.id, activeStage]);
 
   useEffect(() => {
     if (activeStage !== "anchors") return;
@@ -604,7 +626,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       if (cancelled) return;
       setTraceLabel(elapsedSeconds >= 90 ? `生成时间较长，任务仍在处理中（${completed}/${total}）` : `Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
       void refreshServerEvents(project.id);
-    }).then(async (completed) => {
+    }, (reconnecting) => { if (!cancelled && reconnecting) setTraceLabel("连接暂时中断，正在重新连接；关键帧任务仍会继续。"); }).then(async (completed) => {
       if (cancelled) return;
       setLiveKeyframes(completed.images);
       updateWorkflowState({ keyframes: imageWorkflowStatus(completed.images) });
@@ -752,7 +774,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               (elapsedSeconds, completed, total) => {
                 setTraceLabel(elapsedSeconds >= 90 ? `生成时间较长，任务仍在处理中（${completed}/${total}）` : `Qwen-Image 正在生成关键帧（${completed}/${total}，已等待 ${elapsedSeconds} 秒）`);
                 void refreshServerEvents(workingProject.id);
-              }
+              },
+              (reconnecting) => { if (reconnecting) setTraceLabel("连接暂时中断，正在重新连接；关键帧任务仍会继续。"); }
             )
           : imageResponse.data;
         generatedImages = completedImages.images;
@@ -1298,7 +1321,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setKeyframeError(null);
     try {
       let currentProject = activeProject;
-      {
+      if (getShotKeyframeViewState(currentProject, shotId).promptStatus !== "ready") {
         const promptResponse = await postApi<{ processedShotIds: string[] }>("/api/generate-assets", {
           projectId: activeProject.id, brief: activeProject.brief, strategy: activeProject.strategy, shots: [shot], batchSize: 1
         });
@@ -1309,7 +1332,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       if (!frameIds.length && !frameId) return;
       await generateProjectKeyframes({
         projectId: activeProject.id,
-        shots: [shot],
+        shots: [currentProject.shots.find((item) => item.id === shotId) ?? shot],
         aspectRatio: activeProject.brief.aspectRatio,
         ...(frameIds.length ? { frameIds } : {}),
         retryResponseTimeout: Boolean(frameId && activeProject.generationEvents?.some((event) => event.stage === "keyframes"
@@ -1317,7 +1340,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         onProgress: async () => {
           const snapshot = await fetchServerProject(activeProject.id);
           applyProjectUpdate(snapshot);
-        }
+        },
+        onConnectionChange: (reconnecting) => setKeyframeError(reconnecting ? "连接暂时中断，正在重新连接；服务器任务仍会继续。" : null)
       });
       applyProjectUpdate(await fetchServerProject(activeProject.id));
     } catch (generationError) {
@@ -1625,43 +1649,13 @@ async function pollWanVideoUntilComplete(
 async function pollQwenImagesUntilComplete(
   projectId: string,
   eventId: string,
-  onProgress: (elapsedSeconds: number, completed: number, total: number) => void
+  onProgress: (elapsedSeconds: number, completed: number, total: number) => void,
+  onConnectionChange?: (reconnecting: boolean) => void
 ): Promise<GenerateImagesData> {
-  const intervalMs = 3_000;
-  const maxAttempts = 720;
-  let consecutiveTransportErrors = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    await delay(intervalMs);
-    let response: Response;
-    try {
-      response = await fetch(
-        `/api/generate-images?projectId=${encodeURIComponent(projectId)}&eventId=${encodeURIComponent(eventId)}`,
-        { cache: "no-store" }
-      );
-    } catch (error) {
-      consecutiveTransportErrors += 1;
-      if (consecutiveTransportErrors < 12) continue;
-      throw error;
-    }
-
-    const result = await readClientApiResponse<GenerateImagesData>(response);
-    const completed = result.data?.generatedShots ?? 0;
-    const total = result.data?.requestedShots ?? 1;
-    onProgress(Math.round((attempt * intervalMs) / 1_000), completed, total);
-    if (result.success && result.data?.status === "completed") return result.data;
-    if (result.success && result.data?.status === "running") {
-      consecutiveTransportErrors = 0;
-      continue;
-    }
-    if ([502, 503, 504].includes(response.status) && consecutiveTransportErrors < 12) {
-      consecutiveTransportErrors += 1;
-      continue;
-    }
-    throw new Error(result.error || "Qwen-Image 关键帧任务状态查询失败。");
-  }
-
-  throw new Error("Qwen-Image 已等待 15 分钟仍未完成。日志会保留具体任务状态，请稍后重试。");
+  const startedAt = Date.now();
+  return pollProjectKeyframes(projectId, eventId, (progress) => {
+    onProgress(Math.floor((Date.now() - startedAt) / 1000), progress.generatedShots ?? 0, progress.requestedShots ?? 1);
+  }, onConnectionChange) as Promise<GenerateImagesData>;
 }
 
 function delay(ms: number) {

@@ -10,6 +10,8 @@ export const dynamic = "force-dynamic";
 const querySchema = z.object({
   projectId: z.string().uuid(),
   taskId: z.string().uuid().optional(),
+  requestedStage: z.string().min(1).max(40).optional(),
+  requestedShotId: z.string().min(1).max(140).optional(),
   format: z.enum(["json", "markdown"])
 });
 
@@ -17,11 +19,14 @@ export async function GET(request: Request) {
   const sessionResult = await getAnonymousApiSession();
   if (!sessionResult.initialized) return sessionResult.response;
   const query = new URL(request.url).searchParams;
-  const parsed = querySchema.safeParse({ projectId: query.get("projectId"), taskId: query.get("taskId") ?? undefined, format: query.get("format") });
+  const parsed = querySchema.safeParse({ projectId: query.get("projectId"), taskId: query.get("taskId") ?? undefined,
+    requestedStage: query.get("requestedStage") ?? undefined, requestedShotId: query.get("requestedShotId") ?? undefined,
+    format: query.get("format") });
   if (!parsed.success) return NextResponse.json({ error: "导出参数无效。" }, { status: 400 });
   try {
     const report = await buildModelCallExport(sessionResult.session.id, parsed.data);
-    if (parsed.data.taskId && !report.entries.length) return NextResponse.json({ error: "当前项目不存在该任务日志。" }, { status: 404 });
+    if ((parsed.data.taskId || parsed.data.requestedStage || parsed.data.requestedShotId) && !report.entries.length)
+      return NextResponse.json({ error: "当前镜头没有匹配的关键帧生成任务日志。" }, { status: 404 });
     const markdown = parsed.data.format === "markdown";
     const body = markdown ? modelCallExportMarkdown(report) : `${JSON.stringify(report, null, 2)}\n`;
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "_");

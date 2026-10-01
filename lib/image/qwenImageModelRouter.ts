@@ -42,6 +42,8 @@ export type QwenModelAttempt = {
   providerOutcome?: QwenImageResult["providerOutcome"]; timeoutSource?: string;
   responseReceivedAt?: number; assetPersistedAt?: number;
   projectPatchedAt?: number;
+  projectPatchStartedAt?: number; projectPatchCompletedAt?: number;
+  projectVersionBefore?: number; projectVersionAfter?: number; keyframeRecordId?: string;
 };
 
 type Availability = { code: string; cooldownUntil: number; lastCheckedAt: number };

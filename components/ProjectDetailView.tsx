@@ -179,6 +179,15 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   const [currentVersion, setCurrentVersion] = useState(projectVersion);
   const latestSnapshotVersion = useRef(projectVersion);
   useKeyframeProjectRefresh(project.id, true, async () => { await fetchProjectSnapshot(); });
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/projects/${encodeURIComponent(project.id)}/keyframes/recover`, { method: "POST" })
+      .then((response) => response.ok ? response.json() as Promise<{ data?: { recovered?: unknown[] } }> : null)
+      .then(async (result) => { if (!cancelled && result?.data?.recovered?.length) await fetchProjectSnapshot(); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
   const [heroShotId, setHeroShotId] = useState<string | undefined>(project.heroShotId ?? undefined);
   const [keyframes, setKeyframes] = useState<Record<string, KeyframeResult>>(() => projectKeyframesRecord(project));
   const [activeBatch, setActiveBatch] = useState<"hero-only" | "all-shots" | null>(null);
@@ -571,7 +580,8 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
         frameIds,
         retryResponseTimeout: Boolean(frameIds?.length === 1 && displayProject.generationEvents?.some((event) => event.stage === "keyframes"
           && event.frameId === frameIds[0] && ["PROVIDER_RESPONSE_TIMEOUT", "SUBMISSION_STATE_UNKNOWN"].includes(event.errorCode ?? ""))),
-        onProgress: async () => { await fetchProjectSnapshot().catch(() => undefined); }
+        onProgress: async () => { await fetchProjectSnapshot().catch(() => undefined); },
+        onConnectionChange: (reconnecting) => setImageBatchError(reconnecting ? "连接暂时中断，正在重新连接；服务器任务仍会继续。" : null)
       });
 
       setKeyframes((current) => {
@@ -1132,7 +1142,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       ) : null}
       <ShotDetailsSheet
         shot={detailsShot}
-        keyframe={detailsShot ? primaryShotKeyframe(detailsShot, keyframes) : undefined}
+        keyframe={detailsShot ? getShotKeyframeViewState(displayProject, detailsShot.id).primaryImage : undefined}
         project={displayProject}
         initialTab={detailsTab}
         onClose={() => void closeShotDetails()}
@@ -1309,9 +1319,7 @@ function ShotCard({
   const currentFrame = frames[safeIndex];
   const submissionBlocked = Boolean(currentFrame?.id && blockedFrameIds.includes(currentFrame.id));
   const responseTimeout = view.frameViews[safeIndex]?.responseTimeout;
-  const keyframe = currentFrame
-    ? keyframes.find((item) => item.frameId === currentFrame.id)
-    : keyframes[0];
+  const keyframe = view.frameViews[safeIndex]?.image;
   const imageUrl = view.frameViews[safeIndex]?.imageUrl;
   const status = keyframeCardStatus(keyframe);
   const isLoading = view.keyframeGenerationStatus === "generating" || keyframe?.status === "loading" || keyframe?.status === "generated" || keyframe?.status === "qa-review";

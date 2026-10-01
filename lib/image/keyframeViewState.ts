@@ -1,4 +1,4 @@
-import type { DetailedShotPromptPackage, GenerationProject } from "../schemas/project";
+import type { DetailedShotPromptPackage, GenerationProject, KeyframeMetadata } from "../schemas/project";
 import type { KeyframeResult } from "@/components/KeyframePreview";
 
 export type KeyframeProjectSnapshot = Pick<GenerationProject, "id" | "shots" | "keyframes" | "generationEvents" | "shotPromptDrafts" | "keyframeQAResults"> & {
@@ -31,10 +31,18 @@ export function getShotKeyframeViewState(project: KeyframeProjectSnapshot, shotI
     ? "ready" : draft?.foundation || draft?.framePrompts.length ? "partial" : failed(promptEvent?.status) ? "failed" : "not_started";
   const records = projectKeyframesToImages(project).filter((item) => item.shotId === shotId);
   const frameViews = (shot?.frames?.length ? shot.frames : [undefined]).map((frame, index) => {
-    const metadata = project.keyframes?.findLast((item) => item.shotId === shotId && (item.frameId === frame?.id || !item.frameId && index === 0));
-    const image = metadata ? records.findLast((item) => item.frameId === metadata.frameId) : undefined;
-    const imageUrl = metadata && !metadata.fallbackUsed && !["failed", "fallback", "pending"].includes(metadata.status)
-      ? image?.localUrl || image?.imageUrl : undefined;
+    const saved = project.keyframes?.findLast((item) => item.shotId === shotId && (item.frameId === frame?.id || !item.frameId && index === 0));
+    const metadata: KeyframeMetadata | undefined = saved?.assetId || !frame?.assetId ? saved : {
+      shotId, frameId: frame.id, assetId: frame.assetId, status: frame.status === "ready" ? "ready" : "generated",
+      fallbackUsed: false, storageTransition: "PRIVATE_ASSET_V1"
+    };
+    const image = metadata?.assetId ? records.findLast((item) => item.frameId === metadata.frameId && item.assetId === metadata.assetId)
+      ?? { ...metadata, provider: metadata.provider ?? "planned", model: metadata.model ?? "qwen-image", latencyMs: metadata.latencyMs ?? 0,
+        cacheStatus: metadata.cacheStatus ?? "not-requested", localUrl: `/api/projects/${project.id}/assets/${metadata.assetId}`,
+        status: metadata.status === "ready" ? "ready" as const : "generated" as const }
+      : metadata ? records.findLast((item) => item.frameId === metadata.frameId) : undefined;
+    const imageUrl = metadata && !metadata.fallbackUsed && !["failed", "fallback", "pending", "response_timeout"].includes(metadata.status)
+      ? metadata.assetId ? `/api/projects/${project.id}/assets/${metadata.assetId}` : image?.localUrl || image?.imageUrl : undefined;
     const assetStatus = imageUrl ? metadata?.assetId ? "persisted" : "generated" : metadata && metadata.status !== "pending" ? "broken" : "none";
     const confirmationStatus = imageUrl && frame?.isLocked ? "confirmed" : "unconfirmed";
     const frameEvent = project.generationEvents?.filter((event) => event.stage === "keyframes" && event.shotId === shotId && event.frameId === frame?.id)
@@ -56,7 +64,9 @@ export function getShotKeyframeViewState(project: KeyframeProjectSnapshot, shotI
   const label = confirmationStatus === "confirmed" ? "已确认" : generating ? "生成中" : keyframeGenerationStatus === "completed" ? "已生成待确认"
     : hasAnyKeyframe ? `部分已生成 ${completedCount}/${frameViews.length}` : hasFailed ? "生成失败"
       : promptStatus === "failed" || promptStatus === "partial" ? "提示词待完成" : "待生成";
-  return { promptStatus, keyframeGenerationStatus, confirmationStatus, hasAnyKeyframe, completedCount, totalCount: frameViews.length,
+  const status = confirmationStatus === "confirmed" ? "confirmed" : generating ? "generating" : keyframeGenerationStatus === "completed" ? "generated"
+    : hasAnyKeyframe ? "partial" : hasFailed ? "failed" : "not_started";
+  return { promptStatus, keyframeGenerationStatus, confirmationStatus, status, hasAnyKeyframe, completedCount, totalCount: frameViews.length,
     hasFailed, awaitingConfirmation: hasAnyKeyframe && confirmationStatus !== "confirmed", frameViews,
     primaryImage: frameViews.find((item) => item.imageUrl)?.image, label };
 }

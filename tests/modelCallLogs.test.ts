@@ -15,8 +15,10 @@ import { NextRequest } from "next/server";
 import { DELETE, GET } from "../app/api/call-logs/route";
 import { GET as exportLogs } from "../app/api/call-logs/export/route";
 import { listModelCallLogs, upsertModelCallLog } from "../lib/logs/modelCallStore";
-import { createAnonymousProject, requireOwnedAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
+import { createAnonymousProject, mutateOwnedAnonymousProject, requireOwnedAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
 import { appendGenerationEvent, listGenerationEvents, startGenerationEvent } from "../lib/projects/generationEvents";
+import { createPrivateAsset } from "../lib/assets/assetStore";
+import { recoverGeneratedKeyframeAssets } from "../lib/image/keyframeRecovery";
 
 const originalEnv = { ...process.env };
 let root = "";
@@ -162,6 +164,52 @@ describe("persistent model call logs", () => {
     expect(report.summary.failedCalls).toBe(1);
     expect(report.entries.some((entry) => entry.provider === "qwen-image" && entry.frameId === "frame-1")).toBe(true);
     expect(report.entries.some((entry) => entry.stage === "anchors")).toBe(false);
+  });
+
+  it("exports only the requested keyframe shot and never substitutes a successful prompt task", async () => {
+    const prompt = await appendGenerationEvent(sessionMock.id, projectId, {
+      stage: "prompts", provider: "deepseek", action: "生成单镜详细提示词", status: "completed", message: "成功", shotId: "shot-03"
+    });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: prompt.id, projectId,
+      stage: "prompts", provider: "deepseek", shotId: "shot-03", status: "completed", startedAt: Date.now() });
+    const missing = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&format=json&requestedStage=keyframes&requestedShotId=shot-02`));
+    expect(missing.status).toBe(404);
+    const frame = await appendGenerationEvent(sessionMock.id, projectId, {
+      stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", status: "failed", message: "失败", shotId: "shot-02", frameId: "shot-02-frame-2"
+    });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: frame.id, projectId,
+      stage: "keyframes", provider: "qwen-image", shotId: "shot-02", frameId: "shot-02-frame-2", status: "failed", startedAt: Date.now() });
+    const response = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&format=json&requestedStage=keyframes&requestedShotId=shot-02`));
+    const report = await response.json() as { requestedStage: string; requestedShotId: string; resolvedTaskId: string; entries: Array<{ stage: string; shotId: string }> };
+    expect(report).toMatchObject({ requestedStage: "keyframes", requestedShotId: "shot-02", resolvedTaskId: frame.id });
+    expect(report.entries.every((entry) => entry.stage === "keyframes" && entry.shotId === "shot-02")).toBe(true);
+  });
+
+  it("relinks a verified private keyframe from its model call without a new model request or duplicate record", async () => {
+    const original = await requireOwnedAnonymousProject(sessionMock.id, projectId);
+    const shot = original.project.shots[0]!;
+    const frame = shot.frames![1]!;
+    const asset = await createPrivateAsset(sessionMock.id, projectId, { kind: "keyframe", source: "qwen-image",
+      fileName: "frame.png", mimeType: "image/png", bytes: new Uint8Array([1, 2, 3, 4]) });
+    const event = await appendGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image",
+      action: "生成单帧关键帧", status: "failed", message: "项目保存失败", shotId: shot.id, frameId: frame.id });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: event.id, projectId, stage: "keyframes",
+      provider: "qwen-image", model: "qwen-image-edit-max-2026-01-16", shotId: shot.id, frameId: frame.id,
+      status: "completed", startedAt: Date.now(), outputAssetIds: [asset.id] });
+    const first = await recoverGeneratedKeyframeAssets(sessionMock.id, projectId);
+    expect(first.recovered).toMatchObject([{ shotId: shot.id, frameId: frame.id, assetId: asset.id }]);
+    const saved = await requireOwnedAnonymousProject(sessionMock.id, projectId);
+    expect(saved.project.shots[0]?.frames?.[1]).toMatchObject({ assetId: asset.id, status: "ready" });
+    expect(saved.project.keyframes?.filter((item) => item.frameId === frame.id)).toHaveLength(1);
+    const second = await recoverGeneratedKeyframeAssets(sessionMock.id, projectId);
+    expect(second.recovered).toEqual([]);
+    expect((await requireOwnedAnonymousProject(sessionMock.id, projectId)).version).toBe(saved.version);
+    await mutateOwnedAnonymousProject(sessionMock.id, projectId, (project) => ({ ...project,
+      shots: project.shots.map((item) => item.id !== shot.id ? item : { ...item,
+        frames: item.frames?.map((part) => part.id !== frame.id ? part : { ...part, assetId: undefined }) }) }));
+    expect((await recoverGeneratedKeyframeAssets(sessionMock.id, projectId)).recovered).toHaveLength(1);
+    expect((await requireOwnedAnonymousProject(sessionMock.id, projectId)).project.shots[0]?.frames?.[1]?.assetId).toBe(asset.id);
+    await expect(recoverGeneratedKeyframeAssets("another-session", projectId)).rejects.toThrow();
   });
 
   it("exports a failed DeepSeek detailed-prompt task for the selected shot, never anchors", async () => {

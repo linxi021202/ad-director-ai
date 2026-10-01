@@ -524,6 +524,11 @@ async function executeImageBatch(input: ImageBatchInput) {
           responseReceivedAt: attempt.responseReceivedAt,
           assetPersistedAt: attempt.assetPersistedAt,
           projectPatchedAt: attempt.projectPatchedAt,
+          projectPatchStartedAt: attempt.projectPatchStartedAt,
+          projectPatchCompletedAt: attempt.projectPatchCompletedAt,
+          projectVersionBefore: attempt.projectVersionBefore,
+          projectVersionAfter: attempt.projectVersionAfter,
+          keyframeRecordId: attempt.keyframeRecordId,
           lastHeartbeatAt: attempt.status === "running" ? Date.now() : undefined,
           failurePhase: attempt.networkFailure?.failurePhase,
           networkErrorName: attempt.networkFailure?.errorName, networkErrorMessage: attempt.networkFailure?.errorMessage,
@@ -654,8 +659,18 @@ async function executeImageBatch(input: ImageBatchInput) {
 
       const evaluated: EvaluatedImage = { ...result, qaResult, qaResults, status };
       results.push(evaluated);
+      const projectVersionBefore = (await requireOwnedAnonymousProject(input.sessionId, input.projectId)).version;
+      const projectPatchStartedAt = Date.now();
       await persistEvaluatedKeyframe(input, shot, frame, evaluated);
-      if (lastAttempt?.assetId && onModelAttempt) await onModelAttempt({ ...lastAttempt, projectPatchedAt: Date.now() });
+      const saved = await requireOwnedAnonymousProject(input.sessionId, input.projectId);
+      const savedFrame = saved.project.shots.find((item) => item.id === shot.id)?.frames?.find((item) => item.id === frame.id);
+      const savedMetadata = saved.project.keyframes?.find((item) => item.shotId === shot.id && item.frameId === frame.id);
+      if (evaluated.assetId && (savedFrame?.assetId !== evaluated.assetId || savedMetadata?.assetId !== evaluated.assetId))
+        throw new Error("KEYFRAME_PROJECT_PATCH_UNVERIFIED");
+      const projectPatchCompletedAt = Date.now();
+      if (lastAttempt?.assetId && onModelAttempt) await onModelAttempt({ ...lastAttempt, projectPatchedAt: projectPatchCompletedAt,
+        projectPatchStartedAt, projectPatchCompletedAt, projectVersionBefore, projectVersionAfter: saved.version,
+        keyframeRecordId: `${shot.id}:${frame.id}:${evaluated.assetId ?? "none"}` });
       if (groupId && evaluated.assetId && evaluated.status === "ready") previousAssetByGroup.set(groupId, evaluated.assetId);
 
       const image = toClientImage(evaluated);
