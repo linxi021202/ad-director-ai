@@ -73,7 +73,12 @@ export function createDeepSeekClient(config: DeepSeekClientConfig) {
         const responseText = await response.text();
         const raw = parseResponse(responseText);
         const providerRequestId = response.headers.get("x-request-id") ?? undefined;
-        if (!response.ok) return failure(model, startedAt, httpFailure(response.status), { httpStatus: response.status, providerRequestId, providerErrorCode: raw?.error?.code });
+        if (!response.ok) {
+          const quotaError = /insufficient[_\s-]*balance|quota[_\s-]*exhausted|余额不足|额度不足/i.test(`${raw?.error?.code ?? ""} ${raw?.error?.message ?? ""}`);
+          return failure(model, startedAt, quotaError ? httpFailure(402) : httpFailure(response.status), {
+            httpStatus: response.status, providerRequestId, providerErrorCode: raw?.error?.code
+          });
+        }
         if (!raw) return failure(model, startedAt, "DEEPSEEK_INVALID_RESPONSE：DeepSeek 返回了无法解析的响应。", { httpStatus: response.status, providerRequestId });
         const content = raw.choices?.[0]?.message?.content?.trim();
         const finishReason = raw.choices?.[0]?.finish_reason ?? null;

@@ -1,4 +1,6 @@
-import type { GenerationEvent } from "../schemas/project";
+import type { GenerationEvent, GenerationProject } from "../schemas/project";
+import { isShotPromptReady } from "../prompts/shotPromptReadiness";
+import { matchesShotPromptInputFingerprint } from "../prompts/shotPromptFingerprint";
 
 export type ShotPromptStatus = "not-started" | "queued" | "generating" | "checking" | "completed" | "failed" | "outdated";
 
@@ -31,5 +33,42 @@ export function deriveShotPromptProgress(
     completed: shots.filter((shot) => shot.status === "completed").length,
     failed: shots.filter((shot) => shot.status === "failed").length,
     notStarted: shots.filter((shot) => shot.status === "not-started").length
+  };
+}
+
+export function derivePromptStageShotState(project: GenerationProject, shotId: string) {
+  const shot = project.shots.find((item) => item.id === shotId);
+  const totalFrames = shot?.frames?.length ?? 0;
+  const input = shot ? { brief: project.brief, strategy: project.strategy, shot,
+    previousShot: project.shots.find((item) => item.index === shot.index - 1),
+    productVisualSpec: project.productVisualSpec, visualContinuityBible: project.visualContinuityBible,
+    referencePack: project.referencePack } : undefined;
+  const ready = Boolean(shot && isShotPromptReady(project, shot));
+  if (ready) return { shotId, status: "ready" as const, completedFrames: totalFrames, totalFrames, reason: undefined };
+  const latest = (project.generationEvents ?? []).filter((item) => item.stage === "prompts" && item.shotId === shotId)
+    .sort((a, b) => b.startedAt - a.startedAt)[0];
+  const draft = project.shotPromptDrafts?.find((item) => item.shotId === shotId && input
+    && matchesShotPromptInputFingerprint(item.inputFingerprint, input));
+  const frameIds = new Set(shot?.frames?.map((frame) => frame.id) ?? []);
+  const completedFrames = draft?.framePrompts.filter((frame) => frameIds.has(frame.frameId)).length ?? 0;
+  const partial = Boolean(draft?.foundation || completedFrames);
+  const status = latest && ["running", "queued", "qa-review"].includes(latest.status) ? "generating" as const
+    : partial ? "partial" as const
+    : latest && ["failed", "interrupted"].includes(latest.status) ? "failed" as const
+    : "not_started" as const;
+  return { shotId, status, completedFrames, totalFrames, reason: latest?.errorCode };
+}
+
+export function derivePromptStageProgress(project: GenerationProject) {
+  const shots = project.shots.map((shot) => derivePromptStageShotState(project, shot.id));
+  return {
+    shots,
+    completed: shots.filter((shot) => shot.status === "ready").length,
+    failed: shots.filter((shot) => shot.status === "failed" || shot.status === "partial" && Boolean(shot.reason)).length,
+    notStarted: shots.filter((shot) => shot.status === "not_started").length,
+    failedShots: project.shots.filter((shot) => {
+      const current = shots.find((item) => item.shotId === shot.id)!;
+      return current.status === "failed" || current.status === "partial" && Boolean(current.reason);
+    })
   };
 }

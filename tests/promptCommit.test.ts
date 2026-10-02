@@ -15,6 +15,7 @@ import { commitFinalPromptBundle, PromptCommitError } from "../lib/prompts/promp
 import { buildShotPromptInputFingerprint } from "../lib/prompts/shotPromptFingerprint";
 import { isShotPromptReady } from "../lib/prompts/shotPromptReadiness";
 import { deriveShotGenerationState } from "../lib/workflow/shotGenerationState";
+import { derivePromptStageProgress } from "../lib/workflow/shotPromptProgress";
 import { planShotKeyframeMoments } from "../lib/storyboard/keyframePlan";
 import { detailedFramePromptSchema, detailedShotPromptFoundationSchema, detailedShotPromptPackageSchema } from "../lib/schemas/project";
 import { expandShotPrompts } from "../lib/providers/deepseekProvider";
@@ -92,6 +93,49 @@ it("logs schema rejection as a system validation failure while retaining the suc
   const validation = entries.find((entry) => entry.mode === "prompt-stage-validation");
   expect(validation).toMatchObject({ provider: "system", status: "failed", failurePhase: "SCHEMA_VALIDATION_FAILED" });
   expect(entries.find((entry) => entry.mode === "frame" && entry.provider === "deepseek")).toMatchObject({ status: "completed", schemaValid: false });
+});
+
+it("stops at a quota-exhausted third frame, keeps two checkpoints, then resumes only that frame", async () => {
+  const data = await fixture();
+  await store.saveOwnedShotPromptDraft(apiSession.id, data.record.id, { ...data.draft, framePrompts: data.draft.framePrompts.slice(0, 2) });
+  let requests = 0;
+  vi.stubGlobal("fetch", vi.fn(async () => {
+    requests++;
+    return new Response(JSON.stringify({ error: { type: "invalid_request_error", code: "insufficient_balance" } }), { status: 402 });
+  }));
+  const request = () => new Request("http://localhost/api/generate-assets", { method: "POST", body: JSON.stringify({
+    projectId: data.record.id, brief: data.record.project.brief, strategy: data.record.project.strategy,
+    shots: [data.record.project.shots[2]], batchSize: 1
+  }) });
+  const blocked = await POST(request());
+  expect(blocked.status).toBe(207);
+  expect((await blocked.json()).error).toContain("DeepSeek 额度不足");
+  expect(requests).toBe(1);
+  const partial = (await store.requireOwnedAnonymousProject(apiSession.id, data.record.id)).project;
+  expect(partial.shotPromptDrafts?.find((item) => item.shotId === "shot-03")?.framePrompts).toHaveLength(2);
+  expect(partial.generationEvents?.at(-1)).toMatchObject({ status: "failed", errorCode: "DEEPSEEK_QUOTA_EXHAUSTED" });
+  const blockedLogs = await logs.listModelCallLogs(apiSession.id, { projectId: data.record.id, limit: 500 });
+  expect(blockedLogs.find((item) => item.provider === "deepseek" && item.mode === "frame")).toMatchObject({
+    status: "failed", frameId: data.input.shot.frames![2]!.id, httpStatus: 402, errorCode: "DEEPSEEK_QUOTA_EXHAUSTED"
+  });
+  expect(blockedLogs.find((item) => item.mode === "prompt-stage-validation")).toMatchObject({
+    status: "blocked", blockedBy: "DEEPSEEK_QUOTA_EXHAUSTED"
+  });
+  expect(blockedLogs.filter((item) => item.mode?.includes("repair"))).toHaveLength(0);
+
+  vi.stubGlobal("fetch", vi.fn(async () => {
+    requests++;
+    return new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: {
+      content: JSON.stringify(data.draft.framePrompts[2])
+    } }] }), { status: 200 });
+  }));
+  const resumed = await POST(request());
+  expect((await resumed.json()).success).toBe(true);
+  expect(requests).toBe(2);
+  const ready = (await store.requireOwnedAnonymousProject(apiSession.id, data.record.id)).project;
+  expect(isShotPromptReady(ready, ready.shots[2]!)).toBe(true);
+  expect(derivePromptStageProgress(ready).shots[2]?.status).toBe("ready");
+  expect(ready.shotPromptDrafts?.some((item) => item.shotId === "shot-03")).toBe(false);
 });
 
 describe("final prompt commit", () => {

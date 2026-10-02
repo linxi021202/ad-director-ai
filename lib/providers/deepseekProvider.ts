@@ -286,7 +286,7 @@ async function callAndValidate<TData>(
       await reportModelCall(context, result, attempt + 1, {}, requestOptions);
       lastError = result.error ?? "DeepSeek LLM call failed.";
       invalidContent = result.errorCode === "JSON_PARSE_FAILED" ? result.content : undefined;
-      if (isOutputTruncated(lastError)) break;
+      if (result.httpStatus === 402 || result.errorCode === "DEEPSEEK_QUOTA_EXHAUSTED" || isOutputTruncated(lastError)) break;
       messages.push(retryMessage(lastError));
       continue;
     }
@@ -753,37 +753,26 @@ export async function expandShotPrompts(
   const completedFrameIds = new Set(framePrompts.map((frame) => frame.frameId));
   const pendingFrames = frames.filter((frame) => !completedFrameIds.has(frame.id));
   const frameFoundation = foundationData;
-  for (let frameOffset = 0; frameOffset < pendingFrames.length; frameOffset += 2) {
-    const frameBatch = pendingFrames.slice(frameOffset, frameOffset + 2);
-    const results = await Promise.all(frameBatch.map(async (frame) => {
-      const frameSchema = detailedFramePromptSchema.superRefine((value, refinement) => {
-        if (value.frameId !== frame.id || value.timestampSec !== plannedMoments.find((item) => item.frameId === frame.id)?.timestampSec || value.role !== frame.role) {
-          refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["frameId"], message: "FRAME_IDENTITY_MISMATCH" });
-        }
-      });
-      return {
-        frame,
-        result: await callPromptSegment(
-          buildSingleFramePromptExpansionPrompt(input, frame, frameFoundation),
-          buildSingleFramePromptExpansionPrompt(input, frame, frameFoundation, true),
-          frameSchema,
-          TEXT_OUTPUT_BUDGETS.shotPromptFrame,
-          { ...context, modelCallPass: "C", modelCallShotId: input.shot.id, modelCallFrameId: frame.id, modelCallMode: "frame" },
-          detailedFramePromptSchema.shape
-        )
-      };
-    }));
-    let batchError: string | undefined;
-    for (const { frame, result } of results) {
-      tokenUsage = addTokenUsage(tokenUsage, result.tokenUsage);
-      if (!result.success || !result.data) {
-        batchError ??= result.error ?? `第 ${frame.index + 1} 帧提示词生成失败。`;
-        continue;
+  for (const frame of pendingFrames) {
+    const frameSchema = detailedFramePromptSchema.superRefine((value, refinement) => {
+      if (value.frameId !== frame.id || value.timestampSec !== plannedMoments.find((item) => item.frameId === frame.id)?.timestampSec || value.role !== frame.role) {
+        refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["frameId"], message: "FRAME_IDENTITY_MISMATCH" });
       }
-      framePrompts.push(result.data);
-      await context?.onShotPromptFrame?.(result.data);
+    });
+    const result = await callPromptSegment(
+      buildSingleFramePromptExpansionPrompt(input, frame, frameFoundation),
+      buildSingleFramePromptExpansionPrompt(input, frame, frameFoundation, true),
+      frameSchema,
+      TEXT_OUTPUT_BUDGETS.shotPromptFrame,
+      { ...context, modelCallPass: "C", modelCallShotId: input.shot.id, modelCallFrameId: frame.id, modelCallMode: "frame" },
+      detailedFramePromptSchema.shape
+    );
+    tokenUsage = addTokenUsage(tokenUsage, result.tokenUsage);
+    if (!result.success || !result.data) {
+      return failureResponse(model, Date.now() - startedAt, result.error ?? `第 ${frame.index + 1} 帧提示词生成失败。`, tokenUsage);
     }
-    if (batchError) return failureResponse(model, Date.now() - startedAt, batchError, tokenUsage);
+    framePrompts.push(result.data);
+    await context?.onShotPromptFrame?.(result.data);
   }
 
   const orderedFramePrompts = frames.map((frame) => framePrompts.find((item) => item.frameId === frame.id)).filter((frame): frame is DetailedShotPromptPackage["framePrompts"][number] => Boolean(frame));
@@ -875,6 +864,7 @@ async function callPromptSegment<TData>(
 ) {
   const first = await callAndValidate(prompt, schema, { temperature: 0.3, maxTokens }, { ...context, maxProviderAttempts: 1 }, normalizeDetailedPromptOutput);
   if (first.success) return first;
+  if (first.error?.startsWith("DEEPSEEK_QUOTA_EXHAUSTED")) return first;
   let retryPrompt: string;
   let retryMode: string;
   if (isOutputTruncated(first.error ?? "")) {

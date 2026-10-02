@@ -41,6 +41,7 @@ const modelCallLogSchema = z.object({
   progressCurrent: z.number().int().nonnegative().optional(),
   progressTotal: z.number().int().positive().optional(),
   errorCode: z.string().max(80).optional(),
+  blockedBy: z.string().max(80).optional(),
   errorSummary: z.string().max(500).optional(),
   providerErrorCode: z.string().max(100).optional(),
   validationPath: z.string().max(200).optional(),

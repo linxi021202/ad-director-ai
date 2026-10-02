@@ -97,6 +97,14 @@ describe("deepseekClient", () => {
     expect(result.json).toBeUndefined();
   });
 
+  it("classifies explicit insufficient-balance errors as account quota failures even without HTTP 402", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: "insufficient_balance", message: "Account balance is insufficient" }
+    }), { status: 400 })));
+    const result = await callDeepSeekLLM({ messages: [{ role: "user", content: "Return json" }], responseFormat: "json" });
+    expect(result).toMatchObject({ success: false, httpStatus: 400, errorCode: "DEEPSEEK_QUOTA_EXHAUSTED", providerErrorCode: "insufficient_balance" });
+  });
+
   it("does not throw uncaught fetch errors", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
 

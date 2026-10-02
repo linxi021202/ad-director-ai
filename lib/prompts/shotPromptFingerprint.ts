@@ -1,11 +1,12 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 import type { ShotPromptExpansionInput } from "./detailedDirectorPrompts";
 
 export const SHOT_PROMPT_PACKAGE_SCHEMA_VERSION = 2 as const;
 
 export function buildShotPromptInputFingerprint(input: ShotPromptExpansionInput): string {
-  return createHash("sha256").update(stableStringify({
+  return bytesToHex(sha256(new TextEncoder().encode(stableStringify({
     schemaVersion: SHOT_PROMPT_PACKAGE_SCHEMA_VERSION,
     brief: input.brief,
     strategy: input.strategy,
@@ -14,7 +15,7 @@ export function buildShotPromptInputFingerprint(input: ShotPromptExpansionInput)
     productVisualSpec: input.productVisualSpec ?? null,
     visualContinuityBible: input.visualContinuityBible ?? null,
     referencePack: input.referencePack ?? null
-  })).digest("hex");
+  }))));
 }
 
 export function matchesShotPromptInputFingerprint(fingerprint: string | undefined, input: ShotPromptExpansionInput): boolean {

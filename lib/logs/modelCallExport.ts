@@ -32,6 +32,7 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     lastHeartbeatAt: entry.lastHeartbeatAt ?? null,
     interruptedAt: entry.interruptedAt ?? null,
     errorCode: entry.errorCode ?? null,
+    blockedBy: entry.blockedBy ?? null,
     providerErrorCode: entry.providerErrorCode ?? null,
     errorSummary: entry.errorSummary ?? null,
     failurePhase: entry.failurePhase ?? null,

@@ -52,6 +52,7 @@ export function ModelSettingsSheet({
   onClose,
   status,
   onStatusChange,
+  onProviderSaved,
   initialProvider,
   guidance
 }: {
@@ -59,6 +60,7 @@ export function ModelSettingsSheet({
   onClose: () => void;
   status: ModelSettingsStatus | null;
   onStatusChange: (status: ModelSettingsStatus) => void;
+  onProviderSaved?: (provider: ProviderId) => void;
   initialProvider?: ProviderId;
   guidance?: string | null;
 }) {
@@ -136,6 +138,7 @@ export function ModelSettingsSheet({
       setDraftKeys((current) => ({ ...current, [providerConfig.draftKey]: "" }));
       if (provider === "qwen-image") setImageModels(null);
       setMessage("密钥已保存到当前临时会话。");
+      onProviderSaved?.(provider);
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败，请检查密钥格式或稍后重试。");

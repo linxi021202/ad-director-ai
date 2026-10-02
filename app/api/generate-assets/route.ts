@@ -99,6 +99,7 @@ export async function POST(request: Request) {
     }
     const packages: DetailedShotPromptPackage[] = [];
     const failures: string[] = [];
+    let quotaExhausted = false;
     let totalLatencyMs = 0;
     for (const input of sourceInputs) {
       const shot = input.shot;
@@ -198,10 +199,13 @@ export async function POST(request: Request) {
       } else {
         shotFailure = promptExpansionPublicError(result.error);
         shotErrorCode = promptFailureCode(result.error);
+        quotaExhausted = shotErrorCode === "DEEPSEEK_QUOTA_EXHAUSTED";
         await bestEffortPromptLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
           stage: "prompts", provider: "system", mode: "prompt-stage-validation", shotId: shot.id,
-          status: "failed", startedAt: Date.now(), errorCode: shotErrorCode,
-          errorSummary: result.error ?? "详细提示词在最终组装时未通过检查。",
+          status: quotaExhausted ? "blocked" : "failed", startedAt: Date.now(),
+          blockedBy: quotaExhausted ? shotErrorCode : undefined,
+          errorCode: quotaExhausted ? undefined : shotErrorCode,
+          errorSummary: quotaExhausted ? "上游 DeepSeek 额度不足，未执行最终校验。" : result.error ?? "详细提示词在最终组装时未通过检查。",
           promptStage: "qa", resultVersion: "final", finalUsed: false, qualityIssues: result.qualityIssues });
       }
       if (shotFailure) {
@@ -220,6 +224,7 @@ export async function POST(request: Request) {
           ? `本次有 ${failures.length} 个镜头等待重试，之前成功内容已经保留。`
           : `已完成 ${completedAtStart.size + packages.length} / ${promptInputs.length} 个镜头的详细提示词。`
       ).catch((error) => { warnings.push("task-progress-update"); console.warn("PROMPT_PROGRESS_WARNING", sanitizeApiError(error)); });
+      if (quotaExhausted) break;
     }
     const current = await requireOwnedAnonymousProject(session.id, projectId);
     const refreshedInputs = buildPromptInputs(current.project, productSpec.spec, requestedShotIds);
@@ -267,7 +272,8 @@ export async function POST(request: Request) {
       },
       fallbackUsed: false,
       fallbackReason: null,
-      error: failures.length ? `${failures.length} 个镜头的详细提示词尚未完成，已保留成功结果。请重试当前步骤。` : null
+      error: quotaExhausted ? "DeepSeek 额度不足。已生成内容已保留，请补充额度或更换可用密钥后重试。"
+        : failures.length ? `${failures.length} 个镜头的详细提示词尚未完成，已保留成功结果。请重试当前步骤。` : null
     }, failures.length ? 207 : 200);
   } catch (error) {
     const diagnostic = promptErrorDetails(error, failurePhase);
@@ -293,6 +299,9 @@ function promptFailureCode(error?: string | null) {
 }
 
 function promptExpansionPublicError(error?: string | null) {
+  if (/DEEPSEEK_QUOTA_EXHAUSTED/i.test(error ?? "")) {
+    return "DeepSeek 额度不足，已生成内容已保留；请补充额度或更换可用密钥后重试。";
+  }
   if (/DEEPSEEK_OUTPUT_TRUNCATED|输出达到长度上限/i.test(error ?? "")) {
     return "该镜头内容较长，系统拆分生成后仍未完整返回，请单独重试。";
   }

@@ -43,7 +43,7 @@ import {
   type ProjectPatchData
 } from "@/lib/projects/clientMutations";
 import { clearProjectGenerationEvents } from "@/lib/projects/clientGenerationEvents";
-import { deriveShotPromptProgress } from "@/lib/workflow/shotPromptProgress";
+import { derivePromptStageProgress, derivePromptStageShotState } from "@/lib/workflow/shotPromptProgress";
 import {
   DEFAULT_SHOT_DURATION_SEC,
   DEFAULT_TARGET_DURATION_SEC,
@@ -914,9 +914,9 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
   async function expandStoryboardPrompts(source: GenerationProject, onlyShotId?: string) {
     let refreshed = source;
-    const failures: string[] = [];
     const targets = source.shots.filter((shot) => !onlyShotId || shot.id === onlyShotId);
     for (const shot of targets) {
+      if (derivePromptStageShotState(refreshed, shot.id).status === "ready") continue;
       setTraceLabel(`正在生成镜头 ${String(shot.index).padStart(2, "0")} 的详细提示词`);
       const expanded = await postApi<PromptExpansionData>("/api/generate-assets", {
         projectId: refreshed.id,
@@ -927,13 +927,15 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       });
       const snapshot = await fetchServerProject(refreshed.id);
       refreshed = applyProjectUpdate(snapshot);
-      if (!expanded.success) {
-        failures.push(`镜头 ${shot.index}`);
-        continue;
-      }
+      if (!expanded.success && derivePromptStageShotState(refreshed, shot.id).reason === "DEEPSEEK_QUOTA_EXHAUSTED") break;
       setTraceLabel(`镜头 ${String(shot.index).padStart(2, "0")} 的提示词已保存`);
     }
-    if (failures.length) throw new Error(`${failures.join("、")}生成未完成；其他成功镜头已保存，可单独重试失败镜头。`);
+    const progress = derivePromptStageProgress(refreshed);
+    if (progress.completed !== refreshed.shots.length) {
+      const quotaShot = progress.failedShots.find((shot) => derivePromptStageShotState(refreshed, shot.id).reason === "DEEPSEEK_QUOTA_EXHAUSTED");
+      if (quotaShot) throw new Error(`DeepSeek 额度不足，镜头 ${String(quotaShot.index).padStart(2, "0")} 的提示词尚未完成。已成功生成的内容已保留，请补充额度或更换可用 API Key 后重试。`);
+      throw new Error(`${progress.failedShots.map((shot) => `镜头${shot.index}`).join("、") || "部分镜头"}生成未完成；其他成功镜头已保存，可单独重试失败镜头。`);
+    }
     return refreshed;
   }
 
@@ -943,7 +945,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setError(null);
     try {
       const refreshed = await expandStoryboardPrompts(activeProject, shotId);
-      const complete = refreshed.shots.every((shot) => refreshed.shotPromptPackages?.some((item) => item.shotId === shot.id && item.schemaVersion === 2 && item.inputFingerprint));
+      const complete = derivePromptStageProgress(refreshed).completed === refreshed.shots.length;
       setTraceLabel(complete ? "全部镜头提示词已生成" : "该镜头提示词已保存");
       if (complete) selectStage("keyframes");
     } catch (expansionError) {
@@ -1368,11 +1370,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       ? { ...persistedStageStates, brief: { status: "running", updatedAt: Date.now() } }
       : persistedStageStates;
   const activeStageState = stageStates[activeStage];
-  const currentPromptPackageIds = new Set((activeProject.shotPromptPackages ?? [])
-    .filter((item) => item.schemaVersion === 2 && Boolean(item.inputFingerprint))
-    .map((item) => item.shotId));
-  const completedPromptPackageCount = activeProject.shots.filter((shot) => currentPromptPackageIds.has(shot.id)).length;
-  const promptProgress = deriveShotPromptProgress(activeProject.shots.map((shot) => shot.id), currentPromptPackageIds, activeProject.generationEvents ?? []);
+  const promptProgress = derivePromptStageProgress(activeProject);
+  const completedPromptPackageCount = promptProgress.completed;
   const storyboardPromptsIncomplete = activeStage === "storyboard"
     && aiStatus.mode === "real"
     && activeStageState.status === "locked"
@@ -1459,9 +1458,14 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             {storyboardPromptsIncomplete ? <section className="shot-prompt-status" aria-label="详细提示词任务状态">
               <header><div><strong>详细提示词</strong><p>已完成 {promptProgress.completed} / {activeProject.shots.length} 镜；{promptProgress.failed} 个失败，{promptProgress.notStarted} 个未开始。此处是 DeepSeek 提示词准备，不是 Qwen 图片生成；成功内容已保存。</p></div><div className="shot-prompt-status__actions"><CallLogDrawer projectId={activeProject.id} projectName={activeProject.brief.productName} label="查看提示词日志" focusStage="prompts" /><button type="button" className="button-secondary-v3" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion()}>{stageLocking ? "正在生成…" : "继续生成"}</button></div></header>
               <div className="shot-prompt-status__list">{activeProject.shots.map((shot) => {
-                const status = promptProgress.shots.find((item) => item.shotId === shot.id)?.status ?? "not-started";
-                const label = ({ "not-started": "未开始", queued: "排队中", generating: "生成中", checking: "校验中", completed: "已完成", failed: "失败", outdated: "需要更新" } as const)[status];
-                return <div className="shot-prompt-status__row" key={shot.id}><span>镜头 {String(shot.index).padStart(2, "0")}</span><span className={status === "failed" ? "is-error" : ""}>{label}</span><span>{status === "completed" ? "图片与视频提示词已保存" : status === "failed" ? "详细提示词失败；可单独重试" : "等待生成"}</span><span className="shot-prompt-status__row-actions">{status === "failed" ? <CallLogDrawer projectId={activeProject.id} projectName={activeProject.brief.productName} label="日志" focusShotId={shot.id} focusStage="prompts" /> : null}{status !== "completed" ? <button type="button" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion(shot.id)}>{status === "failed" ? "重试" : "生成"}</button> : null}</span></div>;
+                const current = derivePromptStageShotState(activeProject, shot.id);
+                const quota = current.reason === "DEEPSEEK_QUOTA_EXHAUSTED";
+                const label = quota ? "额度不足" : ({ not_started: "未开始", generating: "生成中", partial: "部分完成", ready: "已完成", failed: "失败" } as const)[current.status];
+                const detail = current.status === "ready" ? "图片与视频提示词已保存" : quota
+                  ? `${current.completedFrames} / ${current.totalFrames} 帧已完成；DeepSeek 额度不足，补充额度或更换密钥后重试`
+                  : current.status === "partial" ? `${current.completedFrames} / ${current.totalFrames} 帧已完成，可继续生成`
+                  : current.status === "failed" ? "详细提示词失败；可单独重试" : "等待生成";
+                return <div className="shot-prompt-status__row" key={shot.id}><span>镜头 {String(shot.index).padStart(2, "0")}</span><span className={quota || current.status === "failed" ? "is-error" : ""}>{label}</span><span>{detail}</span><span className="shot-prompt-status__row-actions">{quota || current.status === "failed" ? <CallLogDrawer projectId={activeProject.id} projectName={activeProject.brief.productName} label="日志" focusShotId={shot.id} focusStage="prompts" /> : null}{current.status !== "ready" ? <button type="button" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion(shot.id)}>{quota || current.status === "failed" || current.status === "partial" ? "重试" : "生成"}</button> : null}</span></div>;
               })}</div>
             </section> : null}
 
@@ -1476,7 +1480,9 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
           <StageInspector project={{ ...activeProject, stageStates }} activeStage={activeStage} state={activeStageState} busy={stageLocking} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} canConfirm={!(["brief", "creative", "anchors"] as StageId[]).includes(activeStage)} onLock={() => void lockCurrentStage()} onOpenModels={() => openModelSettings()} open={inspectorOpen} onClose={() => setInspectorOpen(false)} />
         </section>
       </div>
-      <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} initialProvider={settingsProvider} guidance={settingsGuidance} />
+      <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} onProviderSaved={(provider) => {
+        if (provider === "deepseek") setError((current) => current?.includes("DeepSeek 额度不足") ? null : current);
+      }} initialProvider={settingsProvider} guidance={settingsGuidance} />
       <UsageGuideSheet open={usageGuideOpen} introductory={usageGuideIntro} onClose={() => setUsageGuideOpen(false)} />
       {shotCountDialogOpen ? (
         <div className="shot-count-dialog-v4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !shotCountSaving) setShotCountDialogOpen(false); }}>

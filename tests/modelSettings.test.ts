@@ -21,6 +21,15 @@ describe("anonymous model settings secret resolution", () => {
     expect(await resolveProviderApiKey("deepseek", "session-b")).toBe("session-b-secret-value");
   });
 
+  it("clears prior DeepSeek validation state when a new key is saved", async () => {
+    await secretStore.set("session-a", "deepseek", "old-secret-value");
+    await secretStore.setValidated("session-a", "deepseek", false);
+    expect((await getProviderSecretStatus("deepseek", "session-a")).validated).toBe(false);
+    await secretStore.set("session-a", "deepseek", "new-secret-value");
+    expect((await getProviderSecretStatus("deepseek", "session-a")).validated).toBeUndefined();
+    expect(await resolveProviderApiKey("deepseek", "session-a")).toBe("new-secret-value");
+  });
+
   it("keeps Qwen-Image independent from another session", async () => {
     await secretStore.set("session-a", "qwen-image", "dashscope-secret-A1B2");
     const statusA = await getProviderSecretStatus("qwen-image", "session-a");
