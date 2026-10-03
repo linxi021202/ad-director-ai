@@ -32,4 +32,18 @@ describe("client API response parsing", () => {
     expect(result.error).toBe("生成内容较长，系统已拆分处理。未完成的部分可重新生成。");
     expect(result.error).not.toContain("DEEPSEEK_OUTPUT_TRUNCATED");
   });
+
+  it("reads structured job errors and hides raw network failures", async () => {
+    const requestId = crypto.randomUUID();
+    const structured = await readClientApiResponse(new Response(JSON.stringify({
+      ok: false, success: false, data: null,
+      error: { code: "JOB_CREATION_FAILED", message: "关键帧任务创建失败，请重试。", requestId }
+    }), { status: 500 }));
+    expect(structured).toMatchObject({ success: false, data: null, error: "关键帧任务创建失败，请重试。" });
+    const network = await readClientApiResponse(new Response(JSON.stringify({
+      success: false, error: "fetch failed"
+    }), { status: 502 }));
+    expect(network.error).toContain("与服务器连接暂时中断");
+    expect(network.error).not.toContain("fetch failed");
+  });
 });

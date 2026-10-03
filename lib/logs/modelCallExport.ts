@@ -20,6 +20,7 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
   const entries = archive.entries.filter((entry) => (!scope.requestedStage || entry.stage === scope.requestedStage)
     && (!scope.requestedShotId || entry.shotId === scope.requestedShotId)).map((entry) => ({
     ...entry,
+    requestId: entry.requestId ?? null,
     jobId: entry.jobId ?? null,
     model: entry.model ?? null,
     mode: entry.mode ?? null,

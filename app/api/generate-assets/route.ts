@@ -31,7 +31,11 @@ const requestSchema = z.object({
 export async function POST(request: Request) {
   const sessionResult = await getAnonymousApiSession();
   if (!sessionResult.initialized) return sessionResult.response;
-  const { session } = sessionResult;
+  return generateAssetsForSession(sessionResult.session.id, request);
+}
+
+export async function generateAssetsForSession(sessionId: string, request: Request, requestId?: string) {
+  const session = { id: sessionId };
   let eventId: string | undefined;
   let activeShotEventId: string | undefined;
   let projectId: string | undefined;
@@ -58,6 +62,7 @@ export async function POST(request: Request) {
     const pendingInputs = promptInputs.filter((input) => !completedAtStart.has(input.shot.id));
     const sourceInputs = pendingInputs.slice(0, parsed.data.batchSize);
     const event = await startGenerationEvent(session.id, projectId, {
+      requestId,
       stage: "prompts",
       provider: "deepseek",
       action: "生成镜头提示词",
@@ -104,6 +109,7 @@ export async function POST(request: Request) {
     for (const input of sourceInputs) {
       const shot = input.shot;
       const shotEvent = sourceInputs.length === 1 ? event : await startGenerationEvent(session.id, projectId, {
+        requestId,
         stage: "prompts", provider: "deepseek", action: "生成单镜详细提示词", shotId: shot.id,
         runId: event.runId, message: `正在生成镜头 ${shot.index} 的详细提示词。`
       });
@@ -127,7 +133,7 @@ export async function POST(request: Request) {
         onModelCall: async (details) => {
           const endedAt = Date.now();
           await bestEffortPromptLog(session.id, {
-            kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId: projectId!, stage: "prompts", provider: details.promptStage === "qa" || details.mode?.endsWith("canonical-selected") ? "system" : "deepseek",
+            requestId, kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId: projectId!, stage: "prompts", provider: details.promptStage === "qa" || details.mode?.endsWith("canonical-selected") ? "system" : "deepseek",
             model: details.model, pass: details.pass, shotId: details.shotId, frameId: details.frameId,
             mode: details.mode, attempt: details.attempt,
             status: details.schemaValid === false && details.jsonParsed ? "completed" : details.success ? "completed" : "failed",
@@ -145,7 +151,7 @@ export async function POST(request: Request) {
             qualityIssues: details.qualityIssues, canonicalValid: details.canonicalValid, finalUsed: details.finalUsed
           });
           if (details.schemaValid === false && details.jsonParsed) {
-            await bestEffortPromptLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId,
+            await bestEffortPromptLog(session.id, { requestId, kind: "call", taskId: shotEvent.id, jobId: event.runId,
               projectId: projectId!, stage: "prompts", provider: "system", shotId: details.shotId, frameId: details.frameId,
               mode: "prompt-stage-validation", attempt: details.attempt, status: "failed", startedAt: endedAt,
               completedAt: endedAt, durationMs: 0, failurePhase: "SCHEMA_VALIDATION_FAILED", errorCode: "SCHEMA_VALIDATION_FAILED",
@@ -191,7 +197,7 @@ export async function POST(request: Request) {
         } else {
           shotFailure = "详细提示词未通过完整性检查，请单独重试。";
           shotErrorCode = "PROMPT_QUALITY_REVIEW_FAILED";
-          await bestEffortPromptLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
+          await bestEffortPromptLog(session.id, { requestId, kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
             stage: "prompts", provider: "system", mode: "quality-review", shotId: shot.id, status: "failed",
             startedAt: Date.now(), errorCode: shotErrorCode, errorSummary: review.issues.join("；").slice(0, 500),
             promptStage: "qa", resultVersion: "final", canonicalValid: true, finalUsed: false, qualityIssues: review.qualityIssues });
@@ -200,7 +206,7 @@ export async function POST(request: Request) {
         shotFailure = promptExpansionPublicError(result.error);
         shotErrorCode = promptFailureCode(result.error);
         quotaExhausted = shotErrorCode === "DEEPSEEK_QUOTA_EXHAUSTED";
-        await bestEffortPromptLog(session.id, { kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
+        await bestEffortPromptLog(session.id, { requestId, kind: "call", taskId: shotEvent.id, jobId: event.runId, projectId,
           stage: "prompts", provider: "system", mode: "prompt-stage-validation", shotId: shot.id,
           status: quotaExhausted ? "blocked" : "failed", startedAt: Date.now(),
           blockedBy: quotaExhausted ? shotErrorCode : undefined,
@@ -278,7 +284,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const diagnostic = promptErrorDetails(error, failurePhase);
     const code = diagnostic.failurePhase as PromptFailurePhase;
-    if (eventId && projectId) await bestEffortPromptLog(session.id, { kind: "call", taskId: activeShotEventId ?? eventId,
+    if (eventId && projectId) await bestEffortPromptLog(session.id, { requestId, kind: "call", taskId: activeShotEventId ?? eventId,
       jobId: eventId, projectId, shotId: activeShotId, stage: "prompts", provider: "system", mode: "prompt-pipeline-exception",
       status: "failed", startedAt: Date.now(), ...diagnostic });
     if (activeShotEventId && projectId && !completedEvents.has(activeShotEventId)) {

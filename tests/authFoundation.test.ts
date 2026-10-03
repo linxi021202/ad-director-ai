@@ -58,7 +58,7 @@ describe("anonymous session foundation", () => {
 
     for (const file of files) {
       const source = readFileSync(file, "utf8");
-      const methodCount = (source.match(/export async function/g) || []).length;
+      const methodCount = (source.match(/export async function (?:GET|POST|PATCH|PUT|DELETE)\b/g) || []).length;
       const guardCount = (source.match(/const sessionResult = await getAnonymousApiSession/g) || []).length;
       const sharedHandlerDelegations = (source.match(/return handle\(request, context\)/g) || []).length;
       const guardedDirectly = guardCount === methodCount;

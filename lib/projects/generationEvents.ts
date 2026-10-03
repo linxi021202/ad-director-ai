@@ -17,6 +17,8 @@ const MAX_EVENTS = 200;
 const MAX_MESSAGE_LENGTH = 500;
 const ALLOWED_ERROR_CODES = new Set([
   "PROVIDER_REQUEST_FAILED",
+  "JOB_CREATION_FAILED",
+  "REQUEST_VALIDATION_FAILED",
   "MODEL_REQUEST_FAILED",
   "PROMPT_QA_FAILED",
   "PROMPT_BUNDLE_BUILD_FAILED",
@@ -95,6 +97,7 @@ function isStaleRunningEvent(event: GenerationEvent, now: number): boolean {
 }
 
 type NewEventInput = {
+  requestId?: string;
   stage: GenerationStage;
   provider: GenerationProvider;
   action: string;
@@ -128,6 +131,7 @@ export async function appendGenerationEvent(
   const event = sanitizeGenerationEvent({
     id: randomUUID(),
     runId: input.runId ?? randomUUID(),
+    ...(input.requestId ? { requestId: input.requestId } : {}),
     projectId,
     stage: input.stage,
     provider: input.provider,

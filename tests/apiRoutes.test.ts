@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as generateAssetsPOST } from "../app/api/generate-assets/route";
+import { GET as getShotKeyframeJob, POST as submitShotKeyframeJob } from "../app/api/shot-keyframes/route";
 import { GET as generateImagesGET, POST as generateImagesPOST } from "../app/api/generate-images/route";
 import { POST as generateStoryboardPOST } from "../app/api/generate-storyboard/route";
 import { POST as generateStrategyPOST } from "../app/api/generate-strategy/route";
@@ -685,6 +686,56 @@ describe("second-stage API routes", () => {
     expect(report.summary.failedCalls).toBe(1);
     expect(report.entries.some((entry) => entry.model === "qwen-image-2.0-pro-2026-06-22")).toBe(true);
   });
+
+  it("creates a single-shot job, persists its image and keeps request correlation", async () => {
+    process.env.AI_MODE = "real";
+    process.env.ENABLE_REAL_IMAGE = "true";
+    const shot = testProjectShots[0]!;
+    const frameId = shot.frames![0]!.id;
+    await mutateOwnedAnonymousProject("test-session", testProjectId, (project) => ({ ...project,
+      stageStates: { ...project.stageStates!, storyboard: { status: "locked", updatedAt: Date.now() } }
+    }));
+    const asset = await createPrivateAsset("test-session", testProjectId, {
+      kind: "keyframe", source: "qwen-image", role: "test-job-frame", fileName: "frame.png",
+      mimeType: "image/png", bytes: VALID_PNG_BYTES
+    });
+    const imageProvider = qwenImageProvider as typeof qwenImageProvider & { generateShotImage: NonNullable<typeof qwenImageProvider.generateShotImage> };
+    vi.spyOn(imageProvider, "generateShotImage").mockImplementation(async (_projectId, target) => ({
+      shotId: target.id, imageUrl: `/api/projects/${testProjectId}/assets/${asset.id}`,
+      localUrl: `/api/projects/${testProjectId}/assets/${asset.id}`, assetId: asset.id, prompt: "test",
+      provider: "qwenImageProvider", model: "qwen-image-edit-max-2026-01-16", latencyMs: 100,
+      size: "2048*1152", cacheStatus: "cached", fallbackUsed: false
+    }));
+    const requestId = crypto.randomUUID();
+    const fetchMock = vi.fn(async () => { throw new Error("No server self-fetch allowed"); });
+    vi.stubGlobal("fetch", fetchMock);
+    const submitted = await submitShotKeyframeJob(new Request("http://localhost/api/shot-keyframes", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-request-id": requestId },
+      body: JSON.stringify({ projectId: testProjectId, shotId: shot.id, frameId })
+    }));
+    expect(submitted.status).toBe(202);
+    const task = (await submitted.json()).data as { eventId: string; jobId: string; requestId: string };
+    expect(task).toMatchObject({ eventId: expect.any(String), jobId: expect.any(String), requestId });
+    let status = "running";
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const progress = await getShotKeyframeJob(new Request(`http://localhost/api/shot-keyframes?projectId=${testProjectId}&eventId=${task.eventId}`));
+      status = ((await progress.json()).data as { status: string }).status;
+      if (["completed", "failed", "interrupted"].includes(status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(status).toBe("completed");
+    const saved = (await requireOwnedAnonymousProject("test-session", testProjectId)).project;
+    expect(saved.keyframes?.find((item) => item.shotId === shot.id && item.frameId === frameId)).toMatchObject({
+      status: "ready", assetId: asset.id
+    });
+    expect(saved.generationEvents?.find((item) => item.id === task.eventId)).toMatchObject({
+      requestId, shotId: shot.id, stage: "keyframes", status: "completed"
+    });
+    const logs = await listModelCallLogs("test-session", { projectId: testProjectId, stage: "keyframes", shotId: shot.id });
+    expect(logs.find((item) => item.id === task.eventId)).toMatchObject({ requestId, shotId: shot.id, stage: "keyframes" });
+    expect(logs.some((item) => item.kind === "task" && item.frameId === frameId && item.requestId === requestId)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  }, 15_000);
 
   it("generate-strategy can call DeepSeek through providerRouter in real text mode", async () => {
     process.env.AI_MODE = "real";

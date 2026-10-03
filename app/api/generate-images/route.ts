@@ -67,6 +67,7 @@ const batchEventIdSchema = z.string().uuid();
 type TargetShot = z.infer<typeof storyboardShotSchema>;
 type TargetFrame = { shot: TargetShot; frame: ShotFrame };
 type ImageBatchInput = {
+  requestId?: string;
   sessionId: string;
   projectId: string;
   targetShots: TargetShot[];
@@ -117,7 +118,11 @@ function selectTargetFrames(shots: TargetShot[], frameIds?: string[]): TargetFra
 export async function POST(request: Request) {
   const sessionResult = await getAnonymousApiSession();
   if (!sessionResult.initialized) return sessionResult.response;
-  const { session } = sessionResult;
+  return generateImagesForSession(sessionResult.session.id, request);
+}
+
+export async function generateImagesForSession(sessionId: string, request: Request, requestId?: string) {
+  const session = { id: sessionId };
   let batchEventId: string | undefined;
   let activeProjectId: string | undefined;
   let admissionHeld = false;
@@ -228,6 +233,7 @@ export async function POST(request: Request) {
     }
     activeProjectId = parsed.data.projectId;
     const batchEvent = await startGenerationEvent(session.id, activeProjectId, {
+      requestId,
       stage: "keyframes", provider: "qwen-image", action: "生成关键帧批次",
       shotId: targetShots.length === 1 ? targetShots[0].id : undefined,
       message: `Qwen-Image 正在逐帧生成 ${targetFrames.length} 张独立关键帧。`, progressCurrent: 0, progressTotal: targetFrames.length
@@ -236,6 +242,7 @@ export async function POST(request: Request) {
     const shotEvents = new Map<string, string>();
     for (const { shot, frame } of targetFrames) {
       const event = await startGenerationEvent(session.id, activeProjectId, {
+        requestId,
         stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧",
         message: `正在生成镜头 ${shot.index} 的第 ${frame.index + 1} 帧。`, shotId: shot.id, frameId: frame.id,
         submissionFingerprint: fingerprintByFrame.get(frame.id), runId: batchEvent.runId
@@ -245,6 +252,7 @@ export async function POST(request: Request) {
     const imageRoute = selectProviderModel({ taskType: "image", hasChineseText: true });
     const productImage = selectPrimaryProductImage(owned.project.brief.productImages);
     const batchInput: ImageBatchInput = {
+      requestId,
       sessionId: session.id,
       projectId: activeProjectId,
       targetShots,
@@ -334,7 +342,11 @@ export async function POST(request: Request) {
 export async function GET(request: Request) {
   const sessionResult = await getAnonymousApiSession();
   if (!sessionResult.initialized) return sessionResult.response;
-  const { session } = sessionResult;
+  return getImageBatchForSession(sessionResult.session.id, request);
+}
+
+export async function getImageBatchForSession(sessionId: string, request: Request) {
+  const session = { id: sessionId };
 
   try {
     const url = new URL(request.url);
@@ -372,7 +384,7 @@ export async function GET(request: Request) {
           if (targetFrames.length === frameEvents.length) {
             const targetShots = [...new Map(targetFrames.map(({ shot }) => [shot.id, shot])).values()];
             const anchorProject = ensureVisualAnchorWorkspace(owned.project);
-            launchImageBatch({ sessionId: session.id, projectId: projectId.data, targetShots, targetFrames,
+            launchImageBatch({ requestId: event.requestId, sessionId: session.id, projectId: projectId.data, targetShots, targetFrames,
               aspectRatio: owned.project.brief.aspectRatio ?? "9:16", productImage: selectPrimaryProductImage(owned.project.brief.productImages),
               productImages: owned.project.brief.productImages ?? [], mode: "all-shots", requestedShots: targetShots.length,
               continuityImageAssetId: findPreviousContinuityAssetId(owned.project, targetShots), productVisualSpec: anchorProject.productVisualSpec,
@@ -497,6 +509,7 @@ async function executeImageBatch(input: ImageBatchInput) {
         logIds.set(logKey, logId);
         const progress = progressByModel.get(attempt.model);
         await upsertModelCallLog(input.sessionId, {
+          requestId: input.requestId,
           id: logId,
           kind: "call", taskId: eventId, jobId: input.batchRunId, projectId: input.projectId,
           stage: "keyframes", provider: "qwen-image", model: attempt.model, mode: attempt.mode, taskType: attempt.taskType,

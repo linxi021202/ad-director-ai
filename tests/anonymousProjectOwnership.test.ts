@@ -89,12 +89,12 @@ describe("anonymous project ownership and persistence", () => {
     const projectB = await createForCurrentSession();
 
     sessionMock.id = "session-a";
-    const listA = await listProjects().then((response) => response.json()) as { data: { projects: Array<{ projectId: string }> } };
+    const listA = await listProjects(new Request("http://localhost/api/projects")).then((response) => response.json()) as { data: { projects: Array<{ projectId: string }> } };
     expect(listA.data.projects.map((item) => item.projectId)).toEqual([projectA]);
     expect(await getProject(new Request("http://localhost"), context(projectB))).toHaveProperty("status", 404);
 
     sessionMock.id = "session-b";
-    const listB = await listProjects().then((response) => response.json()) as { data: { projects: Array<{ projectId: string }> } };
+    const listB = await listProjects(new Request("http://localhost/api/projects")).then((response) => response.json()) as { data: { projects: Array<{ projectId: string }> } };
     expect(listB.data.projects.map((item) => item.projectId)).toEqual([projectB]);
     expect(await getProject(new Request("http://localhost"), context(projectA))).toHaveProperty("status", 404);
   });

@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { getAnonymousApiSession } from "@/lib/session/api";
 import { productBriefSchema } from "@/lib/schemas/project";
-import { selectLastActiveProjectAfterDelete, setLastActiveProjectId } from "@/lib/projects/anonymousWorkspace";
+import { getLastActiveProjectId, selectLastActiveProjectAfterDelete, setLastActiveProjectId } from "@/lib/projects/anonymousWorkspace";
 import {
   anonymousProjectPatchSchema,
   deleteOwnedAnonymousProject,
@@ -103,8 +103,10 @@ export async function DELETE(_request: Request, context: RouteContext) {
 
   try {
     await requireOwnedAnonymousProject(sessionResult.session.id, projectId);
+    const wasActive = await getLastActiveProjectId(sessionResult.session.id) === projectId;
     await deleteOwnedAnonymousProject(sessionResult.session.id, projectId);
-    return NextResponse.json({ success: true, data: { projectId } });
+    await selectLastActiveProjectAfterDelete(sessionResult.session.id, projectId);
+    return NextResponse.json({ success: true, data: { projectId, wasActive } });
   } catch (error) {
     return projectStoreErrorResponse(error) ?? projectNotFoundResponse();
   }

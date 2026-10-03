@@ -7,10 +7,11 @@ type WorkspaceHeaderProps = {
   projectHref: string;
   workbenchHref?: string;
   projectName?: string;
+  onProjectsClick?: () => void;
   trailing?: ReactNode;
 };
 
-export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generate", projectName, trailing }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generate", projectName, onProjectsClick, trailing }: WorkspaceHeaderProps) {
   const navItems = [
     { label: "首页", href: "/" },
     { label: "工作台", href: workbenchHref },
@@ -30,6 +31,7 @@ export function WorkspaceHeader({ active, projectHref, workbenchHref = "/generat
             key={item.label}
             className={active === item.label ? "is-active" : ""}
             href={item.href}
+            onClick={item.label === "项目" && onProjectsClick ? (event) => { event.preventDefault(); onProjectsClick(); } : undefined}
           >
             {item.label}
           </Link>

@@ -10,11 +10,14 @@ export function ViewportDrawer({ open, label, onClose, children, className = "" 
   const panelRef = useRef<HTMLElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const [layer, setLayer] = useState(300);
+  const [mounted, setMounted] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  useEffect(() => setMounted(true), []);
+
   useEffect(() => {
-    if (!open) return;
+    if (!open || !mounted) return;
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const overlay = acquireViewportOverlay(document);
     setLayer(overlay.layer);
@@ -36,9 +39,9 @@ export function ViewportDrawer({ open, label, onClose, children, className = "" 
       overlay.release();
       if (restoreFocus) previousFocus.current?.focus({ preventScroll: true });
     };
-  }, [open]);
+  }, [open, mounted]);
 
-  if (!open || typeof document === "undefined") return null;
+  if (!mounted || !open) return null;
   return createPortal(
     <div className="viewport-drawer-backdrop" style={{ zIndex: layer }} onMouseDown={onClose}>
       <section ref={panelRef} tabIndex={-1} className={`viewport-drawer-panel ${className}`} role="dialog" aria-modal="true" aria-label={label} onMouseDown={(event) => event.stopPropagation()}>

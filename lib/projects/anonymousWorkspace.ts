@@ -5,7 +5,7 @@ import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
-import { getOwnedAnonymousProject, listAnonymousProjects } from "@/lib/projects/anonymousProjectStore";
+import { getOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
 
 const workspaceSchema = z.object({
   lastActiveProjectId: z.string().uuid().optional(),
@@ -34,9 +34,7 @@ export async function clearLastActiveProjectId(sessionId: string): Promise<void>
 export async function selectLastActiveProjectAfterDelete(sessionId: string, deletedProjectId: string): Promise<void> {
   const current = await readWorkspace(sessionId);
   if (current?.lastActiveProjectId !== deletedProjectId) return;
-  const next = (await listAnonymousProjects(sessionId))[0];
-  if (next) await writeWorkspace(sessionId, { lastActiveProjectId: next.id, updatedAt: Date.now() });
-  else await clearLastActiveProjectId(sessionId);
+  await clearLastActiveProjectId(sessionId);
 }
 
 async function readWorkspace(sessionId: string): Promise<AnonymousWorkspaceState | null> {

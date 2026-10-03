@@ -5,7 +5,7 @@ import { ViewportDrawer } from "./ViewportDrawer";
 import { resolveScopedTask } from "@/lib/logs/taskAssociation";
 
 type Entry = {
-  id: string; kind: "task" | "call"; taskId: string; jobId?: string; projectId: string; stage: string;
+  id: string; requestId?: string; kind: "task" | "call"; taskId: string; jobId?: string; projectId: string; stage: string;
   provider: string; model?: string; mode?: string; pass?: string; shotId?: string; frameId?: string;
   anchorType?: "character" | "scene"; candidateId?: string; candidateIndex?: number;
   status: string; startedAt: number; completedAt?: number; durationMs?: number;
@@ -190,7 +190,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
           ["规范结构", selected.canonicalValid === undefined ? undefined : selected.canonicalValid ? "有效" : "无效"],
           ["最终采用", selected.finalUsed === undefined ? undefined : selected.finalUsed ? "是" : "否"],
           ["质量问题", selected.qualityIssues?.map((issue) => `${issue.path}：${issue.reason}；建议：${issue.suggestion}`).join("\n")],
-          ["调用编号", selected.id], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["候选", anchorLabel(selected)], ["候选编号", selected.candidateId], ["模型", selected.model], ["生成模式", selected.mode ? commitModeNames[selected.mode] ?? selected.mode : undefined], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
+          ["调用编号", selected.id], ["请求关联编号", selected.requestId], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["候选", anchorLabel(selected)], ["候选编号", selected.candidateId], ["模型", selected.model], ["生成模式", selected.mode ? commitModeNames[selected.mode] ?? selected.mode : undefined], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
           ["生成前项目版本", selected.projectVersionAtStart], ["持久化前项目版本", selected.projectVersionBeforePersist],
           ["持久化后项目版本", selected.projectVersionAfterPersist], ["保存尝试次数", selected.persistAttempt],
           ["持久化状态", selected.persistStatus], ["场景需求编号", selected.anchorTargetId],

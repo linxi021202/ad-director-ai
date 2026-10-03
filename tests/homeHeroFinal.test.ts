@@ -11,8 +11,10 @@ const backdrop = readFileSync("components/SiteVideoBackdrop.tsx", "utf8");
 const cinemaStyles = readFileSync("app/cinema-system.css", "utf8");
 
 describe("homepage final hero", () => {
-  it("routes anonymous visitors directly to public product pages", () => {
-    expect(page).toContain('const workspaceTarget = "/generate"');
+  it("opens project selection before navigating to a workbench", () => {
+    expect(page).toContain('setProjectEntryOpen(true)');
+    expect(page).toContain('<ProjectEntryDialog open={projectEntryOpen}');
+    expect(page).toContain('startTransition(`/generate?projectId=${encodeURIComponent(projectId)}`)');
     expect(page).not.toContain('const projectPath = "/demo/project"');
     expect(page).not.toContain("查看演示项目");
     expect(page).not.toContain(">项目</Link>");

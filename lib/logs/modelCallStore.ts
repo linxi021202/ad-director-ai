@@ -11,6 +11,7 @@ import { promptQualityIssueSchema } from "../ai/contracts/detailedPrompts";
 
 const modelCallLogSchema = z.object({
   id: z.string().uuid(),
+  requestId: z.string().uuid().optional(),
   kind: z.enum(["task", "call"]),
   taskId: z.string().uuid(),
   jobId: z.string().uuid().optional(),
@@ -186,7 +187,7 @@ export async function clearModelCallLogs(sessionId: string, projectId: string): 
 export async function mirrorGenerationEvent(sessionId: string, raw: z.infer<typeof generationEventSchema>): Promise<void> {
   const event = generationEventSchema.parse(raw);
   await upsertModelCallLog(sessionId, {
-    id: event.id, kind: "task", taskId: event.id, jobId: event.runId, projectId: event.projectId,
+    id: event.id, requestId: event.requestId, kind: "task", taskId: event.id, jobId: event.runId, projectId: event.projectId,
     stage: event.stage, provider: event.provider, shotId: event.shotId, frameId: event.frameId,
     status: event.status, startedAt: event.startedAt, completedAt: event.completedAt,
     durationMs: event.latencyMs,

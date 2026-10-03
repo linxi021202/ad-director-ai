@@ -19,6 +19,7 @@ import { StageContextPanel, StageDirectorRail, StageInspector, stageStatusLabel 
 import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
 import { KeyframeStageWorkspace } from "@/components/KeyframeStageWorkspace";
+import { ProjectEntryDialog } from "@/components/projects/ProjectEntryDialog";
 import { generateProjectKeyframes, pollProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
 import { firstIncompleteKeyframeShotId, getMissingKeyframeIds, getShotKeyframeViewState, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
 import { useKeyframeProjectRefresh } from "@/components/workspace/useKeyframeProjectRefresh";
@@ -221,7 +222,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [anchorVersionIntent, setAnchorVersionIntent] = useState<AnchorVersionIntent | null>(null);
   const [liveKeyframes, setLiveKeyframes] = useState<GenerateImagesData["images"]>(() => projectKeyframesToImages(initialProject));
   const [keyframeBusyShotId, setKeyframeBusyShotId] = useState<string | null>(null);
+  const shotPollingActiveRef = useRef(true);
+  useEffect(() => () => { shotPollingActiveRef.current = false; }, []);
   const [keyframeError, setKeyframeError] = useState<string | null>(null);
+  const [projectEntryOpen, setProjectEntryOpen] = useState(false);
   const [selectedKeyframeShotId, setSelectedKeyframeShotId] = useState<string | undefined>(() => {
     const requested = searchParams.get("shotId");
     return initialProject.shots.some((shot) => shot.id === requested) ? requested! : firstIncompleteKeyframeShotId(initialProject);
@@ -1243,6 +1247,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   async function generateCurrentShotKeyframes(shotId: string, frameId?: string) {
+    if (!activeProject?.id) { setKeyframeError("请先选择项目。"); return; }
     if (keyframeBusyShotId) return;
     setKeyframeBusyShotId(shotId);
     setKeyframeError(null);
@@ -1263,12 +1268,14 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         if (!window.confirm("将重新生成当前镜头的关键帧。已确认状态会取消，旧图片会保留。继续吗？")) return;
         currentProject = await postWorkflowAction({ action: "unlock-shot-frames", shotId });
       }
-      const response = await fetch("/api/shot-keyframes", { method: "POST", headers: { "Content-Type": "application/json" },
+      const response = await fetch("/api/shot-keyframes", { method: "POST", headers: { "Content-Type": "application/json", "x-request-id": crypto.randomUUID() },
         body: JSON.stringify({ projectId: currentProject.id, shotId, ...(frameId ? { frameId } : {}) }) });
       const submitted = await readClientApiResponse<{ eventId: string; jobId: string }>(response);
       if (!response.ok || !submitted.success || !submitted.data) throw new Error(submitted.error || "当前镜头任务启动失败。");
       for (;;) {
+        if (!shotPollingActiveRef.current) return;
         await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        if (!shotPollingActiveRef.current) return;
         const progressResponse = await fetch(`/api/shot-keyframes?projectId=${encodeURIComponent(currentProject.id)}&eventId=${encodeURIComponent(submitted.data!.eventId)}`, { cache: "no-store" });
         const progress = await readClientApiResponse<{ status: string; message?: string }>(progressResponse);
         applyProjectUpdate(await fetchServerProject(currentProject.id));
@@ -1277,8 +1284,17 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         if (["failed", "interrupted", "blocked", "cancelled"].includes(progress.data.status)) throw new Error(progress.data.message || "当前镜头未生成成功，请查看镜头日志。");
       }
     } catch (generationError) {
-      setKeyframeError(generationError instanceof Error ? generationError.message : "关键帧生成失败，请稍后重试。");
-      try { applyProjectUpdate(await fetchServerProject(activeProject.id)); } catch { /* Keep the last saved snapshot. */ }
+      let activeJob = false;
+      try {
+        const snapshot = await fetchServerProject(activeProject.id);
+        applyProjectUpdate(snapshot);
+        activeJob = Boolean(snapshot.project.generationEvents?.some((event) => event.stage === "keyframes"
+          && event.action === "制作单镜关键帧" && event.shotId === shotId && ["queued", "running", "qa-review"].includes(event.status)));
+      } catch { /* Keep the last saved snapshot during a transport error. */ }
+      if (!activeJob) setKeyframeError(generationError instanceof TypeError
+        ? "与服务器连接暂时中断，请稍后重试；已创建的任务会继续运行。"
+        : generationError instanceof Error && !/fetch failed|failed to fetch|ECONNRESET|AbortError/i.test(generationError.message)
+          ? generationError.message : "关键帧任务创建失败，请重试。");
     } finally {
       setKeyframeBusyShotId(null);
     }
@@ -1308,6 +1324,12 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }
 
+  function openProjectEntry() {
+    if ((briefSaveStatus === "dirty" || briefSaveStatus === "error")
+      && !window.confirm("当前修改尚未保存，是否切换项目？")) return;
+    setProjectEntryOpen(true);
+  }
+
   const persistedStageStates = activeProject.stageStates!;
   const stageStates: StageStates = briefSaveStatus === "dirty" || briefSaveStatus === "error"
     ? { ...persistedStageStates, brief: { status: "draft", updatedAt: Date.now() } }
@@ -1325,7 +1347,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   return (
     <main className="workbench-v3">
       <CinematicWorkspaceBackground />
-      <WorkspaceHeader active="工作台" workbenchHref={"/generate?projectId=" + activeProject.id} projectHref={"/projects/" + activeProject.id} projectName={activeProject.brief.productName} trailing={<><button type="button" className="workspace-guide-trigger" onClick={() => { setUsageGuideIntro(false); setUsageGuideOpen(true); }}>使用说明</button><Link href={canCreateProject ? "/generate?new=1" : "/projects?notice=project-limit"} className="workspace-new-project">{canCreateProject ? "新建项目" : "管理项目"}</Link><ModelSettingsTrigger status={modelStatus} onClick={() => openModelSettings()} className="workspace-model-settings-trigger" /><AIModeBadge status={aiStatus} /></>} />
+      <WorkspaceHeader active="工作台" workbenchHref={"/generate?projectId=" + activeProject.id} projectHref="/projects" onProjectsClick={openProjectEntry} projectName={activeProject.brief.productName} trailing={<><button type="button" className="workspace-guide-trigger" onClick={() => { setUsageGuideIntro(false); setUsageGuideOpen(true); }}>使用说明</button>{canCreateProject ? <button type="button" className="workspace-new-project" onClick={openProjectEntry}>新建项目</button> : <Link href="/projects?notice=project-limit" className="workspace-new-project">管理项目</Link>}<ModelSettingsTrigger status={modelStatus} onClick={() => openModelSettings()} className="workspace-model-settings-trigger" /><AIModeBadge status={aiStatus} /></>} />
+      <ProjectEntryDialog open={projectEntryOpen} onClose={() => setProjectEntryOpen(false)}
+        onEnter={(projectId) => { shotPollingActiveRef.current = false; router.push(`/generate?projectId=${encodeURIComponent(projectId)}`); }}
+        onManage={() => { shotPollingActiveRef.current = false; router.push("/projects"); }} />
 
       <div className="workbench-v3__page">
         <nav className="workspace-breadcrumb" aria-label="面包屑">

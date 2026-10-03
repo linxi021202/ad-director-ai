@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { DeleteAnonymousProjectButton } from "@/components/DeleteAnonymousProjectButton";
+import { CreateProjectButton } from "@/components/projects/CreateProjectButton";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { MAX_ANONYMOUS_PROJECTS, listAnonymousProjects } from "@/lib/projects/anonymousProjectStore";
 import { requireAnonymousSession } from "@/lib/session/anonymousSession";
@@ -29,7 +30,7 @@ export default async function ProjectsPage({ searchParams }: ProjectsPageProps) 
             <h1>你的广告项目</h1>
             <p>继续制作、查看成片，或从一份新简报开始。</p>
           </div>
-          {!atLimit ? <Link className="projects-index-create" href="/generate?new=1">新建项目</Link> : null}
+          {!atLimit ? <CreateProjectButton className="projects-index-create">新建项目</CreateProjectButton> : null}
         </header>
         {showLimitNotice ? (
           <div className="project-limit-notice" role="alert">
@@ -41,7 +42,7 @@ export default async function ProjectsPage({ searchParams }: ProjectsPageProps) 
           <div className="projects-index-empty">
             <strong>还没有项目</strong>
             <p>创建第一份广告需求，开始生成广告。</p>
-            <Link href="/generate?new=1">开始创作</Link>
+            <CreateProjectButton>开始创作</CreateProjectButton>
           </div>
         ) : (
           <div className="project-list">

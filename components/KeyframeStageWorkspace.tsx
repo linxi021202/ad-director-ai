@@ -32,9 +32,11 @@ export function KeyframeStageWorkspace({ project, selectedShotId, initialFrameId
   const keyframe = view.frameViews[safeIndex]?.image;
   const savedUrl = view.frameViews[safeIndex]?.imageUrl;
   const imageUrl = savedUrl === brokenUrl ? undefined : savedUrl;
-  const busy = busyShotId === shot?.id || view.keyframeGenerationStatus === "generating";
+  const shotJob = project.generationEvents?.findLast((item) => item.stage === "keyframes" && item.shotId === shot?.id
+    && item.action === "制作单镜关键帧" && ["queued", "running", "qa-review"].includes(item.status));
+  const busy = busyShotId === shot?.id || Boolean(shotJob) || view.keyframeGenerationStatus === "generating";
   const activeEvent = project.generationEvents?.findLast((item) => item.stage === "keyframes" && item.shotId === shot?.id
-    && item.frameId === frame?.id && ["queued", "running", "qa-review"].includes(item.status));
+    && item.frameId === frame?.id && ["queued", "running", "qa-review"].includes(item.status)) ?? shotJob;
   const elapsed = activeEvent ? Math.floor((now - activeEvent.startedAt) / 1000) : 0;
   const waitingText = activeEvent ? `模型正在生成，已等待 ${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒。` : "正在制作当前镜头画面。";
   const responseTimeout = view.frameViews[safeIndex]?.responseTimeout;
@@ -59,7 +61,7 @@ export function KeyframeStageWorkspace({ project, selectedShotId, initialFrameId
   return <section className="keyframe-workspace" aria-label="关键帧制作">
     <header className="keyframe-workspace__header">
       <div><span>当前镜头</span><h2>镜头 {String(shot.index).padStart(2, "0")}</h2><p>{shot.durationSec} 秒 · {shot.cameraAngle || "镜头画面"} · {shot.sceneId || "场景"}</p></div>
-      <div className="keyframe-workspace__header-actions"><CallLogDrawer projectId={project.id} projectName={project.brief.productName} label="查看镜头日志" focusShotId={shot.id} /><button type="button" className="button-primary-v3" disabled={busy} onClick={generate}>{busy ? preparing ? "准备中…" : "生成中…" : allGenerated ? "重新生成当前镜头" : failedCount ? "重试失败关键帧" : "生成关键帧"}</button></div>
+      <div className="keyframe-workspace__header-actions"><CallLogDrawer projectId={project.id} projectName={project.brief.productName} label="查看镜头日志" focusStage="keyframes" focusShotId={shot.id} /><button type="button" className="button-primary-v3" disabled={busy} onClick={generate}>{busy ? preparing ? "准备中…" : `生成中 ${view.completedCount}/${view.totalCount}` : allGenerated ? "重新生成当前镜头" : failedCount ? "重试失败关键帧" : "生成关键帧"}</button></div>
     </header>
     {frame ? <div className="keyframe-workspace__moment"><strong>关键帧 {safeIndex + 1} · {(moment?.timestampSec ?? frame.timestampSec).toFixed(1)} 秒</strong><span>{moment?.narrativePurpose ?? frame.description}</span>{safeIndex > 0 && moment ? <small>与上一帧变化：{moment.continuityFromPreviousFrame}</small> : null}</div> : null}
     <div className="keyframe-workspace__preview">

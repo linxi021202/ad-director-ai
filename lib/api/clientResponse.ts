@@ -9,7 +9,7 @@ export type ClientApiResponse<T> = {
 
 export async function readClientApiResponse<T>(response: Response): Promise<ClientApiResponse<T>> {
   const raw = await response.text();
-  const parsed = parseJson(raw) as Partial<ClientApiResponse<T>> | null;
+  const parsed = parseJson(raw) as (Partial<ClientApiResponse<T>> & { error?: unknown }) | null;
 
   if (parsed && typeof parsed === "object") {
     return {
@@ -32,7 +32,11 @@ export async function readClientApiResponse<T>(response: Response): Promise<Clie
 }
 
 function publicClientError(error: unknown): string | null {
+  if (error && typeof error === "object" && "message" in error) return publicClientError(error.message);
   if (typeof error !== "string" || !error.trim()) return null;
+  if (/\b(?:fetch failed|failed to fetch|ECONNRESET|AbortError)\b/i.test(error)) {
+    return "与服务器连接暂时中断，请稍后重试；已创建的任务会继续运行。";
+  }
   if (/DEEPSEEK_OUTPUT_TRUNCATED|输出达到长度上限/i.test(error)) {
     return "生成内容较长，系统已拆分处理。未完成的部分可重新生成。";
   }

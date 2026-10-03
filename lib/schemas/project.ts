@@ -732,6 +732,7 @@ export const generationEventStatusSchema = z.enum([
 export const generationEventSchema = z.object({
   id: z.string().uuid(),
   runId: z.string().uuid(),
+  requestId: z.string().uuid().optional(),
   projectId: z.string().min(1),
   stage: generationStageSchema,
   provider: generationProviderSchema,
