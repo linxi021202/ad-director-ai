@@ -3,12 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { ensureShotArchitecture } from "../lib/storyboard/shotArchitecture";
-import { getMissingKeyframeIds, getProjectKeyframeViewState, getShotKeyframeViewState } from "../lib/image/keyframeViewState";
+import { firstIncompleteKeyframeShotId, getMissingKeyframeIds, getProjectKeyframeViewState, getShotKeyframeViewState } from "../lib/image/keyframeViewState";
 import { KeyframeStageWorkspace } from "../components/KeyframeStageWorkspace";
-import { StageContextPanel } from "../components/StageDirectorRail";
+import { StageContextPanel, StageInspector } from "../components/StageDirectorRail";
 import { StoryboardTimeline } from "../components/storyboard/StoryboardTimeline";
 import { derivePromptStageShotState } from "../lib/workflow/shotPromptProgress";
 import type { GenerationProject } from "../lib/schemas/project";
+import { ensureStageWorkflow } from "../lib/workflow/stageGates";
 
 function fixture(): GenerationProject {
   const shots = coldBrewDemo.shots.slice(0, 3).map((shot, index) => ensureShotArchitecture({ ...shot, id: `shot-0${index + 1}`, frames: undefined }));
@@ -26,17 +27,18 @@ describe("canonical keyframe views", () => {
     const cards = renderToStaticMarkup(<StoryboardTimeline project={project} selectedShotId={selectedShotId} />);
     expect(nav.match(/<button type="button"/g)?.length).toBeGreaterThanOrEqual(3);
     expect(nav).toContain('aria-current="location"');
-    expect(nav).toContain(`${project.shots[1]!.durationSec} 秒 · 未开始`);
+    expect(nav).toContain(`${project.shots[1]!.durationSec} 秒 · 待确认`);
     for (const shot of project.shots) {
       expect(cards).toContain(`data-shot-id="${shot.id}"`);
       expect(derivePromptStageShotState(project, shot.id).status).toBe("not_started");
     }
     expect(cards).toContain(`id="storyboard-shot-${selectedShotId}"`);
+    expect(cards).not.toContain("完整生成提示词");
   });
   it("shows generated-but-unconfirmed shots 01/02 and a genuinely empty shot 03 consistently", () => {
     const project = fixture();
     const nav = renderToStaticMarkup(<StageContextPanel project={project} activeStage="keyframes" />);
-    expect(nav.match(/已生成待确认/g)).toHaveLength(2);
+    expect(nav.match(/已生成/g)).toHaveLength(2);
     expect(nav.match(/待生成/g)).toHaveLength(1);
     for (const shot of project.shots) {
       const html = renderToStaticMarkup(<KeyframeStageWorkspace project={project} selectedShotId={shot.id} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
@@ -44,7 +46,10 @@ describe("canonical keyframe views", () => {
         expect(html).toContain(`/api/projects/${project.id}/assets/39140ba7-d72a-4110-bbc0-957701a731f0`);
         expect(html).not.toContain("当前镜头还没有关键帧");
         expect(html).toContain("已生成待确认");
-      } else expect(html).toContain("当前镜头提示词尚未完成");
+      } else {
+        expect(html).toContain("关键帧待生成");
+        expect(html).not.toContain("详细提示词");
+      }
     }
   });
   it("preserves persisted results on reload and targets only missing or failed frames", () => {
@@ -52,10 +57,12 @@ describe("canonical keyframe views", () => {
     expect(getMissingKeyframeIds(project, "shot-01")).toEqual([]);
     expect(getMissingKeyframeIds(project, "shot-03")).toEqual(project.shots[2]!.frames!.map((frame) => frame.id));
     expect(getShotKeyframeViewState(JSON.parse(JSON.stringify(project)), "shot-02").keyframeGenerationStatus).toBe("completed");
+    expect(firstIncompleteKeyframeShotId(project)).toBe("shot-03");
     const second = project.keyframes!.find((item) => item.shotId === "shot-01")!;
     second.status = "failed";
     expect(getMissingKeyframeIds(project, "shot-01")).toEqual([second.frameId]);
     expect(getShotKeyframeViewState(project, "shot-01").keyframeGenerationStatus).toBe("partial");
+    expect(firstIncompleteKeyframeShotId(project)).toBe("shot-01");
   });
   it("displays a generated QA-pending image without requiring user confirmation", () => {
     const project = fixture();
@@ -86,7 +93,7 @@ describe("canonical keyframe views", () => {
     const view = getShotKeyframeViewState(project, "shot-01");
     expect(view.frameViews[0]).toMatchObject({ responseTimeout: true, imageUrl: undefined });
     const html = renderToStaticMarkup(<KeyframeStageWorkspace project={project} selectedShotId="shot-01" busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
-    expect(html).toContain("图像模型响应超时，本次结果状态未知");
+    expect(html).toContain("图像模型响应超时");
     expect(html).toContain("重新生成当前帧");
     expect(html).not.toContain("/landing-cold-brew-hero.png");
   });
@@ -94,6 +101,22 @@ describe("canonical keyframe views", () => {
     const project = fixture();
     project.workflowSteps = { ...project.workflowSteps!, keyframes: "completed" };
     expect(getProjectKeyframeViewState(project)).toMatchObject({ completedShotCount: 2, keyframeGenerationStatus: "partial" });
+  });
+  it("shows the video action only when every shot has saved keyframes", () => {
+    const partial = ensureStageWorkflow(fixture());
+    const state = partial.stageStates!.keyframes;
+    const first = renderToStaticMarkup(<StageInspector project={partial} activeStage="keyframes" state={state}
+      busy={false} onLock={noop} onEnterVideo={noop} onOpenModels={noop} />);
+    expect(first).not.toContain("进入视频制作</button>");
+    const last = partial.shots[2]!;
+    const complete = { ...partial, keyframes: [...partial.keyframes!, ...last.frames!.map((frame) => ({
+      shotId: last.id, frameId: frame.id, assetId: "39140ba7-d72a-4110-bbc0-957701a731f0",
+      status: "ready" as const, fallbackUsed: false, storageTransition: "PRIVATE_ASSET_V1" as const
+    }))] };
+    const final = renderToStaticMarkup(<StageInspector project={complete} activeStage="keyframes" state={state}
+      busy={false} onLock={noop} onEnterVideo={noop} onOpenModels={noop} />);
+    expect(final).toContain("全部镜头关键帧已完成");
+    expect(final).toContain("进入视频制作</button>");
   });
   it("recovers a persisted frame asset in the project even when its keyframe metadata is missing", () => {
     const project = fixture();

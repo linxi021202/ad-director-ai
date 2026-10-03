@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AIModeBadge, type AITraceStatus } from "@/components/AIModeBadge";
@@ -11,7 +12,7 @@ import { ShotDetailsSheet, type ShotDetailsTab } from "@/components/ShotDetailsS
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { readClientApiResponse } from "@/lib/api/clientResponse";
-import { generateProjectKeyframes, pollProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
+import { pollProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
 import { getMissingKeyframeIds, getProjectKeyframeViewState, getShotKeyframeViewState, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
 import { useKeyframeProjectRefresh } from "@/components/workspace/useKeyframeProjectRefresh";
 import {
@@ -175,6 +176,7 @@ type NextProjectAction = {
 };
 
 export function ProjectDetailView({ project, projectId, projectVersion, aiStatus }: ProjectDetailViewProps) {
+  const router = useRouter();
   const [displayProject, setDisplayProject] = useState<GenerationProject>(() => normalizeProjectDuration(project));
   const [currentVersion, setCurrentVersion] = useState(projectVersion);
   const latestSnapshotVersion = useRef(projectVersion);
@@ -566,42 +568,6 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
       setShotCountRegenerating(false);
     }
   }
-  async function generateImages(mode: "hero-only" | "all-shots", explicitShots?: StoryboardShot[], frameIds?: string[]) {
-    setImageBatchError(null);
-    setActiveBatch(mode);
-    const targetShots = explicitShots ?? (mode === "hero-only" ? [heroShot] : displayProject.shots);
-    markShotsLoading(targetShots, frameIds);
-
-    try {
-      const completed = await generateProjectKeyframes({
-        projectId: displayProject.id,
-        shots: targetShots,
-        aspectRatio: displayProject.brief.aspectRatio,
-        frameIds,
-        retryResponseTimeout: Boolean(frameIds?.length === 1 && displayProject.generationEvents?.some((event) => event.stage === "keyframes"
-          && event.frameId === frameIds[0] && ["PROVIDER_RESPONSE_TIMEOUT", "SUBMISSION_STATE_UNKNOWN"].includes(event.errorCode ?? ""))),
-        onProgress: async () => { await fetchProjectSnapshot().catch(() => undefined); },
-        onConnectionChange: (reconnecting) => setImageBatchError(reconnecting ? "连接暂时中断，正在重新连接；服务器任务仍会继续。" : null)
-      });
-
-      setKeyframes((current) => {
-        const next = { ...current };
-        completed.images.forEach((image) => {
-          next[keyframeStorageKey(image)] = image;
-        });
-        return next;
-      });
-      await fetchProjectSnapshot().catch(() => undefined);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "关键帧生成失败。";
-      setImageBatchError(message);
-      if (message.includes("响应超时")) await fetchProjectSnapshot().catch(() => undefined);
-      else markShotsFailed(targetShots, message, frameIds);
-    } finally {
-      setActiveBatch(null);
-    }
-  }
-
   function markShotsLoading(shots: StoryboardShot[], frameIds?: string[]) {
     setKeyframes((current) => {
       const next = { ...current };
@@ -844,7 +810,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
 
   async function handlePrimaryAction() {
     if (nextAction.kind === "keyframes") {
-      await generateImages("all-shots", missingKeyframeShots);
+      router.push(`/generate?projectId=${encodeURIComponent(displayProject.id)}&stage=keyframes`);
       return;
     }
     if (nextAction.kind === "render" && heroVideo && !renderIsActive) {
@@ -986,8 +952,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
             <div><small>关键帧</small><h2 id="project-keyframes-title">{displayProject.shots.length} 镜头 · {totalKeyframeCount} 张独立帧 · 共 {projectDurationSec} 秒</h2><p>已完成 {completedKeyframeCount} / {totalKeyframeCount} 帧</p></div>
             <div className="project-section-heading-v4__actions">
               <button type="button" className="project-button-v4 project-button-v4--ghost" onClick={() => { setRequestedShotCount(Math.max(MIN_SHOT_COUNT, Math.min(MAX_SHOT_COUNT, displayProject.shots.length))); setShotCountDialogOpen(true); }}>调整分镜数量</button>
-              {missingKeyframeShots.length > 0 ? <button type="button" className="project-button-v4 project-button-v4--ai" disabled={activeBatch !== null} onClick={() => void generateImages("all-shots", missingKeyframeShots, missingKeyframeShots.flatMap((shot) => getMissingKeyframeIds(displayProject, shot.id)))}>生成缺失关键帧</button> : null}
-              <button type="button" className="project-button-v4 project-button-v4--secondary" disabled={activeBatch !== null} onClick={() => void generateImages("all-shots")}>重新生成全部</button>
+              <Link className="project-button-v4 project-button-v4--ai" href={`/generate?projectId=${encodeURIComponent(displayProject.id)}&stage=keyframes`}>逐镜头制作关键帧</Link>
             </div>
           </header>
 
@@ -1152,7 +1117,7 @@ export function ProjectDetailView({ project, projectId, projectVersion, aiStatus
   );
 
   async function generateSingleShot(shot: StoryboardShot, frameId?: string) {
-    await generateImages("all-shots", [shot], frameId ? [frameId] : undefined);
+    router.push(`/generate?projectId=${encodeURIComponent(displayProject.id)}&stage=keyframes&shotId=${encodeURIComponent(shot.id)}${frameId ? `&frameId=${encodeURIComponent(frameId)}` : ""}`);
   }
 
   async function toggleFrameLock(shot: StoryboardShot, frame: ShotFrame) {
@@ -1567,7 +1532,7 @@ function resolveNextProjectAction({
   renderStatus?: RenderStatusState["status"];
   hasFinalVideo: boolean;
 }): NextProjectAction {
-  if (missingKeyframes > 0) return { kind: "keyframes", label: "生成全部关键帧", section: "keyframes" };
+  if (missingKeyframes > 0) return { kind: "keyframes", label: "逐镜头制作关键帧", section: "keyframes" };
   if (!hasHeroShot) return { kind: "navigate", label: "选择主镜头", section: "keyframes" };
   if (!hasHeroVideo) return { kind: "navigate", label: "生成或导入广告视频", section: "hero-shot" };
   if (hasFinalVideo || renderStatus === "completed") return { kind: "navigate", label: "查看最终成片", section: "final" };

@@ -26,7 +26,6 @@ export function StoryboardTimeline({ project, selectedShotId, onVisibleShotChang
     return () => observer.disconnect();
   }, [project.shots, onVisibleShotChange]);
   const detailShot = project.shots.find((shot) => shot.id === selectedStoryboardShotId);
-  const promptPackage = detailShot ? project.shotPromptPackages?.find((item) => item.shotId === detailShot.id) : undefined;
   return <>
     <section ref={timelineRef} className="storyboard-text-timeline" aria-label="文字分镜时间线">
       {project.shots.map((shot) => <article id={`storyboard-shot-${shot.id}`} data-shot-id={shot.id} className={selectedShotId === shot.id ? "is-current" : undefined} key={shot.id}>
@@ -57,13 +56,6 @@ export function StoryboardTimeline({ project, selectedShotId, onVisibleShotChang
         ]} />
         {detailShot.microBeats?.length ? <section className="storyboard-detail-section"><h3>动作节奏</h3>{detailShot.microBeats.map((beat) => <article className="microbeat-detail" key={beat.id}><strong>{beat.startSec.toFixed(1)}s–{beat.endSec.toFixed(1)}s</strong><p>{beat.characterAction ?? beat.action}</p><small>{[beat.handAction, beat.gazeAction, beat.productAction, beat.cameraAction, beat.environmentAction, beat.expressionChange].filter(Boolean).join("；")}</small></article>)}</section> : null}
         {detailShot.frames?.length ? <section className="storyboard-detail-section"><h3>关键帧计划</h3>{detailShot.frames.map((frame) => <article className="microbeat-detail" key={frame.id}><strong>{frame.timestampSec.toFixed(1)} 秒</strong><p>{frame.keyframeMoment?.momentDescription ?? frame.description}</p><small>{frame.keyframeMoment?.continuityFromPreviousFrame}</small></article>)}</section> : null}
-        {promptPackage ? <section className="storyboard-detail-section"><h3>完整生成提示词</h3>
-          <PromptBlock title="中文图片提示词" text={promptPackage.framePrompts.map((frame) => frame.imagePromptCn).join("\n\n")} />
-          <PromptBlock title="英文图片提示词" text={promptPackage.framePrompts.map((frame) => frame.imagePromptEn).join("\n\n")} />
-          <PromptBlock title="中文视频提示词" text={promptPackage.videoPromptCn} />
-          <PromptBlock title="英文视频提示词" text={promptPackage.videoPromptEn} />
-          <PromptBlock title="限制条件" text={[promptPackage.negativePromptCn, promptPackage.negativePromptEn, ...promptPackage.continuityContext.immutableElements].join("\n")} />
-        </section> : <section className="storyboard-detail-section"><h3>完整生成提示词</h3><p>确认文字分镜后，将为这个镜头单独扩写图片和视频提示词。</p></section>}
         </div>
       </> : null}
     </ViewportDrawer>
@@ -73,9 +65,4 @@ export function StoryboardTimeline({ project, selectedShotId, onVisibleShotChang
 function DetailSection({ title, rows }: { title: string; rows: Array<[string, string | undefined]> }) {
   if (!rows.some((row) => row[1])) return null;
   return <section className="storyboard-detail-section"><h3>{title}</h3><dl>{rows.filter((row): row is [string, string] => Boolean(row[1])).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>;
-}
-
-function PromptBlock({ title, text }: { title: string; text: string }) {
-  const [copied, setCopied] = useState(false);
-  return <article className="full-prompt-block"><header><strong>{title}</strong><button type="button" onClick={async () => { await navigator.clipboard.writeText(text); setCopied(true); window.setTimeout(() => setCopied(false), 1200); }}>{copied ? "已复制" : "复制"}</button></header><pre>{text}</pre></article>;
 }

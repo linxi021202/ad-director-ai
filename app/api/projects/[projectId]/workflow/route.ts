@@ -13,6 +13,7 @@ import {
 import { parseOwnedProjectId, projectNotFoundResponse, projectStoreErrorResponse, publicAnonymousProject } from "@/lib/projects/api";
 import { stageIdSchema, versionedResourceTypeSchema } from "@/lib/schemas/project";
 import { getAnonymousApiSession } from "@/lib/session/api";
+import { getShotKeyframeViewState } from "@/lib/image/keyframeViewState";
 import { STAGE_RESOURCE, StageGateError, createResourceVersionInProject } from "@/lib/workflow/stageGates";
 
 const workflowActionSchema = z.discriminatedUnion("action", [
@@ -46,6 +47,15 @@ const workflowActionSchema = z.discriminatedUnion("action", [
     shotId: z.string().min(1),
     frameId: z.string().min(1),
     locked: z.boolean()
+  }).strict(),
+  z.object({
+    action: z.literal("confirm-generated-keyframes"),
+    expectedVersion: z.number().int().positive()
+  }).strict(),
+  z.object({
+    action: z.literal("unlock-shot-frames"),
+    expectedVersion: z.number().int().positive(),
+    shotId: z.string().min(1)
   }).strict()
 ]);
 
@@ -120,6 +130,31 @@ export async function POST(request: Request, context: RouteContext) {
                   keyframes: { status: allLocked ? "ready" : "draft", updatedAt: Date.now() }
                 } : base.stageStates
               };
+            }, body.expectedVersion)
+          : body.action === "confirm-generated-keyframes"
+          ? await mutateOwnedAnonymousProject(sessionResult.session.id, projectId, (project) => {
+              if (project.stageStates?.storyboard.status !== "locked") throw new StageGateError("STORYBOARD_NOT_LOCKED", "请先确认文字分镜。");
+              if (!project.shots.length || project.shots.some((shot) => {
+                const view = getShotKeyframeViewState(project, shot.id);
+                return !shot.frames?.length || view.completedCount !== view.totalCount;
+              })) {
+                throw new StageGateError("STAGE_NOT_READY", "仍有关键帧尚未生成成功，请先完成对应镜头。");
+              }
+              const shots = project.shots.map((shot) => ({ ...shot, frames: shot.frames?.map((frame) => ({ ...frame, isLocked: true })) }));
+              return { ...project, shots, stageStates: {
+                ...project.stageStates!, keyframes: { status: "ready" as const, updatedAt: Date.now() }
+              } };
+            }, body.expectedVersion)
+          : body.action === "unlock-shot-frames"
+          ? await mutateOwnedAnonymousProject(sessionResult.session.id, projectId, (project) => {
+              if (!project.shots.some((shot) => shot.id === body.shotId)) throw new StageGateError("STAGE_NOT_READY", "当前镜头不存在。");
+              const shots = project.shots.map((shot) => shot.id === body.shotId ? {
+                ...shot, frames: shot.frames?.map((frame) => ({ ...frame, isLocked: false }))
+              } : shot);
+              const base = project.stageStates?.keyframes.status === "locked"
+                ? createResourceVersionInProject(project, { resourceId: "keyframes", resourceType: "shot-frame", stageId: "keyframes",
+                    label: "重新制作当前镜头", snapshot: shots }).project : project;
+              return { ...base, shots, stageStates: { ...base.stageStates!, keyframes: { status: "draft" as const, updatedAt: Date.now() } } };
             }, body.expectedVersion)
           : await createVersion(sessionResult.session.id, projectId, body);
     return NextResponse.json({ success: true, data: publicAnonymousProject(record) });

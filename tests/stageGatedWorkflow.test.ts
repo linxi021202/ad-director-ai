@@ -14,6 +14,7 @@ import {
   createAnonymousProject,
   getOwnedAnonymousProject,
   lockOwnedProjectStage,
+  mutateOwnedAnonymousProject,
   resetAnonymousProjectQueuesForTests,
   saveOwnedProjectBrief,
   setOwnedProjectStageStatus,
@@ -148,6 +149,36 @@ describe("stage-gated workflow", () => {
     }), routeContext);
     expect(lock.status).toBe(404);
     expect(await getOwnedAnonymousProject("stage-session-b", created.id)).not.toBeNull();
+  });
+
+  it("enters video only after every shot has a persisted keyframe record", async () => {
+    const created = await createAnonymousProject(sessionMock.id, { templateId: "cold-brew-demo" });
+    const prepared = await mutateOwnedAnonymousProject(sessionMock.id, created.id, (project) => ({ ...project,
+      stageStates: { ...project.stageStates!, storyboard: { status: "locked", updatedAt: Date.now() },
+        keyframes: { status: "draft", updatedAt: Date.now() } }
+    }));
+    const context = { params: Promise.resolve({ projectId: created.id }) };
+    const confirm = (version: number) => postWorkflow(new Request(`http://localhost/api/projects/${created.id}/workflow`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "confirm-generated-keyframes", expectedVersion: version })
+    }), context);
+    expect((await confirm(prepared.version)).status).toBe(400);
+    const generated = await mutateOwnedAnonymousProject(sessionMock.id, created.id, (project) => ({ ...project,
+      keyframes: project.shots.flatMap((shot) => (shot.frames ?? []).map((frame) => ({ shotId: shot.id, frameId: frame.id,
+        assetId: "39140ba7-d72a-4110-bbc0-957701a731f0", status: "ready" as const, fallbackUsed: false,
+        storageTransition: "PRIVATE_ASSET_V1" as const })))
+    }));
+    const response = await confirm(generated.version);
+    expect(response.status).toBe(200);
+    const confirmed = await getOwnedAnonymousProject(sessionMock.id, created.id);
+    expect(confirmed!.project.stageStates?.keyframes.status).toBe("ready");
+    expect(confirmed!.project.shots.every((shot) => shot.frames?.every((frame) => frame.isLocked))).toBe(true);
+    const locked = await postWorkflow(new Request(`http://localhost/api/projects/${created.id}/workflow`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "lock-stage", stageId: "keyframes", expectedVersion: confirmed!.version })
+    }), context);
+    expect(locked.status).toBe(200);
+    expect((await getOwnedAnonymousProject(sessionMock.id, created.id))!.project.stageStates?.video.status).toBe("draft");
   });
 });
 

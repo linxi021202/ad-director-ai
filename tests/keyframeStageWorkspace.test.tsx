@@ -13,8 +13,8 @@ describe("keyframe production workspace", () => {
 
   it("shows one real-ratio pending frame and an in-place generation action", () => {
     const html = renderToStaticMarkup(<KeyframeStageWorkspace project={{ ...project, keyframes: [] }} busyShotId={null} error={null} onGenerate={noop} onConfirm={noop} />);
-    expect(html).toContain("当前镜头提示词尚未完成");
-    expect(html).toContain("继续生成提示词");
+    expect(html).toContain("关键帧待生成");
+    expect(html).not.toContain("继续生成提示词");
     expect(html).toContain("生成关键帧");
     expect(html).toContain("镜头日志");
     expect(html).toContain(`aspect-ratio:${project.brief.aspectRatio.replace(":", " / ")}`);

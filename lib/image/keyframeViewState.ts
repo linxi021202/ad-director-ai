@@ -22,6 +22,7 @@ export function getShotKeyframeViewState(project: KeyframeProjectSnapshot, shotI
   const latest = (stage: "prompts" | "keyframes") => project.generationEvents?.filter((event) => event.stage === stage && event.shotId === shotId)
     .sort((a, b) => b.startedAt - a.startedAt)[0];
   const imageEvent = latest("keyframes");
+  const shotJob = project.generationEvents?.findLast((event) => event.action === "制作单镜关键帧" && event.shotId === shotId);
   const active = (status?: string) => ["queued", "running", "qa-review"].includes(status ?? "");
   const failed = (status?: string) => ["failed", "interrupted"].includes(status ?? "");
   const promptState = derivePromptStageShotState(project, shotId);
@@ -53,19 +54,29 @@ export function getShotKeyframeViewState(project: KeyframeProjectSnapshot, shotI
   });
   const completedCount = frameViews.filter((item) => item.imageUrl && item.metadata?.status === "ready").length;
   const hasAnyKeyframe = frameViews.some((item) => item.imageUrl);
-  const hasFailed = frameViews.some((item) => item.assetStatus === "broken" || item.metadata?.status === "needs-review") || failed(imageEvent?.status);
-  const generating = active(imageEvent?.status) || busy && promptStatus === "ready" || frameViews.some((item) => item.image && ["loading", "generated", "qa-review"].includes(item.image.status));
+  const hasFailed = frameViews.some((item) => item.assetStatus === "broken" || item.metadata?.status === "needs-review") || failed(imageEvent?.status) || failed(shotJob?.status);
+  const generating = active(imageEvent?.status) || active(shotJob?.status) || busy || frameViews.some((item) => item.image && ["loading", "generated", "qa-review"].includes(item.image.status));
   const keyframeGenerationStatus = generating ? "generating" : completedCount === frameViews.length ? "completed"
     : hasAnyKeyframe ? "partial" : hasFailed ? "failed" : "not_started";
   const confirmationStatus = hasAnyKeyframe && frameViews.every((item) => item.confirmationStatus === "confirmed") ? "confirmed" : "unconfirmed";
-  const label = confirmationStatus === "confirmed" ? "已确认" : generating ? "生成中" : keyframeGenerationStatus === "completed" ? "已生成待确认"
-    : hasAnyKeyframe ? `部分已生成 ${completedCount}/${frameViews.length}` : hasFailed ? "生成失败"
-      : promptStatus === "failed" || promptStatus === "partial" ? "提示词待完成" : "待生成";
+  const label = confirmationStatus === "confirmed" ? "已确认" : generating ? promptStatus === "ready" ? "生成中" : "准备中"
+    : keyframeGenerationStatus === "completed" ? "已生成" : hasAnyKeyframe ? `部分完成 ${completedCount}/${frameViews.length}`
+      : hasFailed || promptStatus === "failed" ? "生成失败" : "待生成";
   const status = confirmationStatus === "confirmed" ? "confirmed" : generating ? "generating" : keyframeGenerationStatus === "completed" ? "generated"
     : hasAnyKeyframe ? "partial" : hasFailed ? "failed" : "not_started";
-  return { promptStatus, keyframeGenerationStatus, confirmationStatus, status, hasAnyKeyframe, completedCount, totalCount: frameViews.length,
+  return { promptStatus, keyframeGenerationStatus, confirmationStatus, status, hasAnyKeyframe, completedCount, generatedCount: completedCount,
+    totalCount: frameViews.length, failedFrameIds: frameViews.flatMap((item) => item.keyframeGenerationStatus === "failed" && item.frame ? [item.frame.id] : []),
+    currentAssets: frameViews.flatMap((item) => item.metadata?.assetId && item.imageUrl ? [item.metadata] : []),
+    confirmedCount: frameViews.filter((item) => item.confirmationStatus === "confirmed").length,
     hasFailed, awaitingConfirmation: hasAnyKeyframe && confirmationStatus !== "confirmed", frameViews,
     primaryImage: frameViews.find((item) => item.imageUrl)?.image, label };
+}
+
+export function firstIncompleteKeyframeShotId(project: KeyframeProjectSnapshot) {
+  return project.shots.find((shot) => {
+    const view = getShotKeyframeViewState(project, shot.id);
+    return view.completedCount < view.totalCount;
+  })?.id ?? project.shots[0]?.id;
 }
 
 export function getMissingKeyframeIds(project: KeyframeProjectSnapshot, shotId: string) {

@@ -56,7 +56,7 @@ function frameSubmissionFingerprint(project: GenerationProject, shot: TargetShot
 const requestSchema = z.object({
   projectId: anonymousProjectIdSchema,
   shots: z.array(storyboardShotSchema).min(1).max(12),
-  mode: z.enum(["hero-only", "all-shots"]),
+  mode: z.enum(["hero-only", "all-shots", "single-shot"]),
   aspectRatio: aspectRatioSchema.optional().default("9:16"),
   productImages: z.array(productImageSchema).max(3).optional(),
   frameIds: z.array(z.string().min(1)).max(60).optional(),
@@ -74,7 +74,7 @@ type ImageBatchInput = {
   aspectRatio: z.infer<typeof aspectRatioSchema>;
   productImage: ReturnType<typeof selectPrimaryProductImage>;
   productImages: z.infer<typeof productImageSchema>[];
-  mode: "hero-only" | "all-shots";
+  mode: "hero-only" | "all-shots" | "single-shot";
   requestedShots: number;
   continuityImageAssetId?: string;
   productVisualSpec?: ProductVisualSpec;
@@ -96,7 +96,7 @@ const admittingProjects = new Set<string>();
 
 function selectTargetShots(
   shots: z.infer<typeof storyboardShotSchema>[],
-  mode: "hero-only" | "all-shots",
+  mode: "hero-only" | "all-shots" | "single-shot",
   _maxImagesPerRun: number,
   heroShotId?: string | null
 ) {
@@ -132,6 +132,10 @@ export async function POST(request: Request) {
         fallbackUsed: false,
         error: "项目 ID 或关键帧请求无效。"
       }, 400);
+    }
+    if (parsed.data.mode === "single-shot" && parsed.data.shots.length !== 1) {
+      return apiJson({ success: false, data: null, fallbackUsed: false,
+        trace: { route: "generate-images", stage: "single-shot-validation" }, error: "单镜头任务只能包含一个镜头。" }, 400);
     }
 
     activeProjectId = parsed.data.projectId;
@@ -225,6 +229,7 @@ export async function POST(request: Request) {
     activeProjectId = parsed.data.projectId;
     const batchEvent = await startGenerationEvent(session.id, activeProjectId, {
       stage: "keyframes", provider: "qwen-image", action: "生成关键帧批次",
+      shotId: targetShots.length === 1 ? targetShots[0].id : undefined,
       message: `Qwen-Image 正在逐帧生成 ${targetFrames.length} 张独立关键帧。`, progressCurrent: 0, progressTotal: targetFrames.length
     });
     batchEventId = batchEvent.id;

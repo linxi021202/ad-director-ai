@@ -20,7 +20,7 @@ import { VisualAnchorsCanvas } from "@/components/VisualAnchorsCanvas";
 import { CreativeCandidateGrid } from "@/components/creative/CreativeCandidateGrid";
 import { KeyframeStageWorkspace } from "@/components/KeyframeStageWorkspace";
 import { generateProjectKeyframes, pollProjectKeyframes } from "@/lib/image/keyframeGenerationClient";
-import { getMissingKeyframeIds, getShotKeyframeViewState, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
+import { firstIncompleteKeyframeShotId, getMissingKeyframeIds, getShotKeyframeViewState, projectKeyframesToImages } from "@/lib/image/keyframeViewState";
 import { useKeyframeProjectRefresh } from "@/components/workspace/useKeyframeProjectRefresh";
 import { creativeStageStatusLabel, deriveCreativeStageState } from "@/lib/creative/creativeStageState";
 import { StoryboardTimeline } from "@/components/storyboard/StoryboardTimeline";
@@ -43,7 +43,6 @@ import {
   type ProjectPatchData
 } from "@/lib/projects/clientMutations";
 import { clearProjectGenerationEvents } from "@/lib/projects/clientGenerationEvents";
-import { derivePromptStageProgress, derivePromptStageShotState } from "@/lib/workflow/shotPromptProgress";
 import {
   DEFAULT_SHOT_DURATION_SEC,
   DEFAULT_TARGET_DURATION_SEC,
@@ -94,16 +93,6 @@ type ProviderDiagnostic = {
 };
 
 type ApiResponse<T> = ClientApiResponse<T>;
-type PromptExpansionData = {
-  shots: StoryboardShot[];
-  processedShotIds: string[];
-  remainingShotIds: string[];
-  completedCount: number;
-  totalCount: number;
-  continuationRequired: boolean;
-  failures: string[];
-};
-
 type WanVideoAsset = { publicUrl: string; shotId: string; source: "wan-api" };
 type WanVideoData = {
   status: "running" | "qa-review" | "needs-review" | "completed";
@@ -233,7 +222,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [liveKeyframes, setLiveKeyframes] = useState<GenerateImagesData["images"]>(() => projectKeyframesToImages(initialProject));
   const [keyframeBusyShotId, setKeyframeBusyShotId] = useState<string | null>(null);
   const [keyframeError, setKeyframeError] = useState<string | null>(null);
-  const [selectedKeyframeShotId, setSelectedKeyframeShotId] = useState<string | undefined>(initialProject.shots[0]?.id);
+  const [selectedKeyframeShotId, setSelectedKeyframeShotId] = useState<string | undefined>(() => {
+    const requested = searchParams.get("shotId");
+    return initialProject.shots.some((shot) => shot.id === requested) ? requested! : firstIncompleteKeyframeShotId(initialProject);
+  });
   const [selectedStoryboardShotId, setSelectedStoryboardShotId] = useState<string | undefined>(initialProject.shots[0]?.id);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsProvider, setSettingsProvider] = useState<ProviderId | undefined>();
@@ -244,17 +236,6 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   useKeyframeProjectRefresh(activeProject.id, activeStage === "keyframes" || activeStage === "anchors", async () => {
     applyProjectUpdate(await fetchServerProject(activeProject.id));
   });
-  useEffect(() => {
-    if (activeStage !== "keyframes" || !activeProject.shots.some((shot) => getMissingKeyframeIds(activeProject, shot.id).length)) return;
-    let cancelled = false;
-    void fetch(`/api/projects/${encodeURIComponent(activeProject.id)}/keyframes/recover`, { method: "POST" })
-      .then((response) => response.ok ? response.json() as Promise<{ data?: { recovered?: unknown[] } }> : null)
-      .then(async (result) => { if (!cancelled && result?.data?.recovered?.length) applyProjectUpdate(await fetchServerProject(activeProject.id)); })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-    // Run once on entry; the recovery endpoint is idempotent and never requests a model.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProject.id, activeStage]);
   useEffect(() => {
     if (activeStage !== "keyframes" || !activeProject.shots.some((shot) => getMissingKeyframeIds(activeProject, shot.id).length)) return;
     let cancelled = false;
@@ -847,7 +828,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setInspectorOpen(false);
     router.replace(stageUrl(activeProject.id, stageId), { scroll: false });
     if (["anchors", "storyboard", "keyframes"].includes(stageId)) {
-      void fetchServerProject(activeProject.id).then((snapshot) => applyProjectUpdate(snapshot)).catch(() => {
+      void fetchServerProject(activeProject.id).then((snapshot) => {
+        const refreshed = applyProjectUpdate(snapshot);
+        if (stageId === "keyframes") setSelectedKeyframeShotId(firstIncompleteKeyframeShotId(refreshed));
+      }).catch(() => {
         setError("项目最新状态读取失败，请稍后重试。");
       });
     }
@@ -898,62 +882,16 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setStageLocking(true);
     setError(null);
     try {
-      let refreshed = await postWorkflowAction({ action: "lock-stage", stageId: activeStage });
-      if (activeStage === "storyboard") {
-        refreshed = await expandStoryboardPrompts(refreshed);
-      }
+      const refreshed = await postWorkflowAction({ action: "lock-stage", stageId: activeStage });
       const nextStage = STAGE_ORDER[STAGE_ORDER.indexOf(activeStage) + 1];
       setTraceLabel(`${STAGE_LABELS[activeStage]}已确认`);
+      if (activeStage === "storyboard") return;
       if (nextStage) selectStage(nextStage);
       else setActiveProject(refreshed);
     } catch (lockError) {
       setError(lockError instanceof Error ? lockError.message : "阶段锁定失败。");
     } finally {
       setStageLocking(false);
-    }
-  }
-
-  async function expandStoryboardPrompts(source: GenerationProject, onlyShotId?: string) {
-    let refreshed = applyProjectUpdate(await fetchServerProject(source.id));
-    const targets = refreshed.shots.filter((shot) => !onlyShotId || shot.id === onlyShotId);
-    for (const shot of targets) {
-      if (derivePromptStageShotState(refreshed, shot.id).status === "ready") continue;
-      setTraceLabel(`正在生成镜头 ${String(shot.index).padStart(2, "0")} 的详细提示词`);
-      const expanded = await postApi<PromptExpansionData>("/api/generate-assets", {
-        projectId: refreshed.id,
-        brief: refreshed.brief,
-        strategy: refreshed.strategy,
-        shots: [shot],
-        batchSize: 1
-      });
-      const snapshot = await fetchServerProject(refreshed.id);
-      refreshed = applyProjectUpdate(snapshot);
-      if (!expanded.success && derivePromptStageShotState(refreshed, shot.id).reason === "DEEPSEEK_QUOTA_EXHAUSTED") break;
-      setTraceLabel(`镜头 ${String(shot.index).padStart(2, "0")} 的提示词已保存`);
-    }
-    const progress = derivePromptStageProgress(refreshed);
-    if (progress.completed !== refreshed.shots.length) {
-      const quotaShot = progress.failedShots.find((shot) => derivePromptStageShotState(refreshed, shot.id).reason === "DEEPSEEK_QUOTA_EXHAUSTED");
-      if (quotaShot) throw new Error(`DeepSeek 额度不足，镜头 ${String(quotaShot.index).padStart(2, "0")} 的提示词尚未完成。已成功生成的内容已保留，请补充额度或更换可用 API Key 后重试。`);
-      throw new Error(`${progress.failedShots.map((shot) => `镜头${shot.index}`).join("、") || "部分镜头"}生成未完成；其他成功镜头已保存，可单独重试失败镜头。`);
-    }
-    return refreshed;
-  }
-
-  async function retryStoryboardPromptExpansion(shotId?: string) {
-    if (stageLocking) return;
-    setStageLocking(true);
-    setError(null);
-    try {
-      const refreshed = await expandStoryboardPrompts(activeProject, shotId);
-      const complete = derivePromptStageProgress(refreshed).completed === refreshed.shots.length;
-      setTraceLabel(complete ? "全部镜头提示词已生成" : "该镜头提示词已保存");
-      if (complete) selectStage("keyframes");
-    } catch (expansionError) {
-      setError(expansionError instanceof Error ? expansionError.message : "提示词续跑失败，请稍后重试。");
-    } finally {
-      setStageLocking(false);
-      await refreshServerEvents(activeProject.id);
     }
   }
 
@@ -1306,47 +1244,38 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
   async function generateCurrentShotKeyframes(shotId: string, frameId?: string) {
     if (keyframeBusyShotId) return;
-    if (activeProject.stageStates?.anchors.status !== "locked") {
-      setKeyframeError("请先完成人物与场景确认。");
-      return;
-    }
-    if (activeProject.stageStates?.storyboard.status !== "locked") {
-      setKeyframeError("请先确认文字分镜。");
-      return;
-    }
-    const shot = activeProject.shots.find((item) => item.id === shotId);
-    if (!shot) return;
-    if (frameId && shot.frames?.find((frame) => frame.id === frameId)?.isLocked) {
-      setKeyframeError("这张关键帧已确认。请先取消确认，再生成新版本；旧图片仍保留在私有资产中。");
-      return;
-    }
     setKeyframeBusyShotId(shotId);
     setKeyframeError(null);
     try {
-      let currentProject = activeProject;
-      if (getShotKeyframeViewState(currentProject, shotId).promptStatus !== "ready") {
-        const promptResponse = await postApi<{ processedShotIds: string[] }>("/api/generate-assets", {
-          projectId: activeProject.id, brief: activeProject.brief, strategy: activeProject.strategy, shots: [shot], batchSize: 1
-        });
-        if (!promptResponse.success) throw new Error(promptResponse.error || "镜头提示词生成失败，请查看提示词日志后重试。");
-        currentProject = applyProjectUpdate(await fetchServerProject(activeProject.id));
+      let currentProject = applyProjectUpdate(await fetchServerProject(activeProject.id));
+      if (currentProject.stageStates?.anchors.status !== "locked") throw new Error("请先完成人物与场景确认。");
+      if (currentProject.stageStates?.storyboard.status !== "locked") throw new Error("请先确认文字分镜。");
+      const shot = currentProject.shots.find((item) => item.id === shotId);
+      if (!shot) throw new Error("当前镜头不存在，请刷新页面。");
+      if (frameId && shot.frames?.find((frame) => frame.id === frameId)?.isLocked) {
+        throw new Error("这张关键帧已确认。请先取消确认，再生成新版本；旧图片仍保留在私有资产中。");
       }
-      const frameIds = frameId ? [frameId] : getMissingKeyframeIds(currentProject, shotId);
-      if (!frameIds.length && !frameId) return;
-      await generateProjectKeyframes({
-        projectId: activeProject.id,
-        shots: [currentProject.shots.find((item) => item.id === shotId) ?? shot],
-        aspectRatio: activeProject.brief.aspectRatio,
-        ...(frameIds.length ? { frameIds } : {}),
-        retryResponseTimeout: Boolean(frameId && activeProject.generationEvents?.some((event) => event.stage === "keyframes"
-          && event.frameId === frameId && ["PROVIDER_RESPONSE_TIMEOUT", "SUBMISSION_STATE_UNKNOWN"].includes(event.errorCode ?? ""))),
-        onProgress: async () => {
-          const snapshot = await fetchServerProject(activeProject.id);
-          applyProjectUpdate(snapshot);
-        },
-        onConnectionChange: (reconnecting) => setKeyframeError(reconnecting ? "连接暂时中断，正在重新连接；服务器任务仍会继续。" : null)
-      });
-      applyProjectUpdate(await fetchServerProject(activeProject.id));
+      const shotView = getShotKeyframeViewState(currentProject, shotId);
+      if (!frameId && shotView.completedCount < shotView.totalCount && shotView.frameViews.some((item) => item.responseTimeout)) {
+        throw new Error("有关键帧的模型响应状态尚不明确，请查看镜头日志，并单独重试对应帧。");
+      }
+      if (!frameId && shotView.completedCount === shotView.totalCount && shotView.confirmedCount) {
+        if (!window.confirm("将重新生成当前镜头的关键帧。已确认状态会取消，旧图片会保留。继续吗？")) return;
+        currentProject = await postWorkflowAction({ action: "unlock-shot-frames", shotId });
+      }
+      const response = await fetch("/api/shot-keyframes", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: currentProject.id, shotId, ...(frameId ? { frameId } : {}) }) });
+      const submitted = await readClientApiResponse<{ eventId: string; jobId: string }>(response);
+      if (!response.ok || !submitted.success || !submitted.data) throw new Error(submitted.error || "当前镜头任务启动失败。");
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        const progressResponse = await fetch(`/api/shot-keyframes?projectId=${encodeURIComponent(currentProject.id)}&eventId=${encodeURIComponent(submitted.data!.eventId)}`, { cache: "no-store" });
+        const progress = await readClientApiResponse<{ status: string; message?: string }>(progressResponse);
+        applyProjectUpdate(await fetchServerProject(currentProject.id));
+        if (!progressResponse.ok || !progress.success || !progress.data) throw new Error(progress.error || "镜头生成进度读取失败，请刷新页面查看。");
+        if (progress.data.status === "completed") break;
+        if (["failed", "interrupted", "blocked", "cancelled"].includes(progress.data.status)) throw new Error(progress.data.message || "当前镜头未生成成功，请查看镜头日志。");
+      }
     } catch (generationError) {
       setKeyframeError(generationError instanceof Error ? generationError.message : "关键帧生成失败，请稍后重试。");
       try { applyProjectUpdate(await fetchServerProject(activeProject.id)); } catch { /* Keep the last saved snapshot. */ }
@@ -1364,6 +1293,21 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }
 
+  async function enterVideoProduction() {
+    if (stageLocking) return;
+    setStageLocking(true);
+    setKeyframeError(null);
+    try {
+      await postWorkflowAction({ action: "confirm-generated-keyframes" });
+      await postWorkflowAction({ action: "lock-stage", stageId: "keyframes" });
+      selectStage("video");
+    } catch (stageError) {
+      setKeyframeError(stageError instanceof Error ? stageError.message : "关键帧确认失败，请稍后重试。");
+    } finally {
+      setStageLocking(false);
+    }
+  }
+
   const persistedStageStates = activeProject.stageStates!;
   const stageStates: StageStates = briefSaveStatus === "dirty" || briefSaveStatus === "error"
     ? { ...persistedStageStates, brief: { status: "draft", updatedAt: Date.now() } }
@@ -1371,12 +1315,6 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       ? { ...persistedStageStates, brief: { status: "running", updatedAt: Date.now() } }
       : persistedStageStates;
   const activeStageState = stageStates[activeStage];
-  const promptProgress = derivePromptStageProgress(activeProject);
-  const completedPromptPackageCount = promptProgress.completed;
-  const storyboardPromptsIncomplete = activeStage === "storyboard"
-    && aiStatus.mode === "real"
-    && activeStageState.status === "locked"
-    && completedPromptPackageCount < activeProject.shots.length;
   const latestStoryboardEvent = [...(activeProject.generationEvents ?? [])].reverse().find((event) => event.stage === "storyboard");
   const visualSetupState = deriveVisualSetupStageState({ ...activeProject, stageStates });
   const stageStatus = activeStage === "anchors" ? visualSetupStatusLabel(visualSetupState.status) : stageStatusLabel(activeStageState.status);
@@ -1459,21 +1397,15 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
             {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : activeStageState.status === "repairing" ? <div className="storyboard-loading"><strong>正在校正文字分镜结构…</strong><span>系统只整理数据结构，不会缩短或重写已经生成的创意内容。</span></div> : activeStageState.status === "failed" ? <div className="creative-empty-state"><strong>文字分镜生成失败</strong><p>{latestStoryboardEvent?.progressCurrent ? `已完成 ${latestStoryboardEvent.progressCurrent} / ${latestStoryboardEvent.progressTotal ?? activeProject.shots.length} 镜头，成功内容已经保留。` : "文字分镜的数据结构不完整，系统未保存错误结果。"}</p><button type="button" className="button-secondary-v3" disabled={isGenerating} onClick={() => void runStoryboardStage()}>{latestStoryboardEvent?.progressCurrent ? "继续生成剩余镜头" : "重新生成文字分镜"}</button></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} selectedShotId={selectedStoryboardShotId} onVisibleShotChange={setSelectedStoryboardShotId} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}
 
-            {storyboardPromptsIncomplete ? <section className="shot-prompt-status" aria-label="详细提示词任务状态">
-              <header><div><strong>详细提示词</strong><p>已完成 {promptProgress.completed} / {activeProject.shots.length} 镜；{promptProgress.failed} 个失败，{promptProgress.notStarted} 个未开始。此处是 DeepSeek 提示词准备，不是 Qwen 图片生成；成功内容已保存。</p></div><div className="shot-prompt-status__actions"><CallLogDrawer projectId={activeProject.id} projectName={activeProject.brief.productName} label="查看提示词日志" focusStage="prompts" /><button type="button" className="button-secondary-v3" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion()}>{stageLocking ? "正在生成…" : "继续生成"}</button></div></header>
-              <div className="shot-prompt-status__list">{activeProject.shots.map((shot) => {
-                const current = derivePromptStageShotState(activeProject, shot.id);
-                const quota = current.reason === "DEEPSEEK_QUOTA_EXHAUSTED";
-                const label = quota ? "额度不足" : ({ not_started: "未开始", generating: "生成中", partial: "部分完成", ready: "已完成", failed: "失败" } as const)[current.status];
-                const detail = current.status === "ready" ? "图片与视频提示词已保存" : quota
-                  ? `${current.completedFrames} / ${current.totalFrames} 帧已完成；DeepSeek 额度不足，补充额度或更换密钥后重试`
-                  : current.status === "partial" ? `${current.completedFrames} / ${current.totalFrames} 帧已完成，可继续生成`
-                  : current.status === "failed" ? "详细提示词失败；可单独重试" : "等待生成";
-                return <div className="shot-prompt-status__row" key={shot.id}><span>镜头 {String(shot.index).padStart(2, "0")}</span><span className={quota || current.status === "failed" ? "is-error" : ""}>{label}</span><span>{detail}</span><span className="shot-prompt-status__row-actions">{quota || current.status === "failed" ? <CallLogDrawer projectId={activeProject.id} projectName={activeProject.brief.productName} label="日志" focusShotId={shot.id} focusStage="prompts" /> : null}{current.status !== "ready" ? <button type="button" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion(shot.id)}>{quota || current.status === "failed" || current.status === "partial" ? "重试" : "生成"}</button> : null}</span></div>;
-              })}</div>
-            </section> : null}
+            {activeStage === "storyboard" && ["ready", "locked"].includes(activeStageState.status) ? <footer className="storyboard-stage-action">
+              <span>{activeStageState.status === "locked" ? "文字分镜已确认" : "文字分镜待确认"}</span>
+              <button type="button" className="button-primary-v3" disabled={stageLocking}
+                onClick={() => activeStageState.status === "locked" ? selectStage("keyframes") : void lockCurrentStage()}>
+                {stageLocking ? "确认中…" : activeStageState.status === "locked" ? "进入关键帧制作" : "确认文字分镜"}
+              </button>
+            </footer> : null}
 
-            {activeStage === "keyframes" && activeStageState.status !== "blocked" ? <KeyframeStageWorkspace project={activeProject} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} error={keyframeError} onGenerate={(shotId, frameId) => void generateCurrentShotKeyframes(shotId, frameId)} onConfirm={(shotId, frameId, locked) => void confirmCurrentFrame(shotId, frameId, locked)} /> : null}
+            {activeStage === "keyframes" && activeStageState.status !== "blocked" ? <KeyframeStageWorkspace project={activeProject} selectedShotId={selectedKeyframeShotId} initialFrameId={searchParams.get("frameId") ?? undefined} busyShotId={keyframeBusyShotId} error={keyframeError} onGenerate={(shotId, frameId) => void generateCurrentShotKeyframes(shotId, frameId)} onConfirm={(shotId, frameId, locked) => void confirmCurrentFrame(shotId, frameId, locked)} /> : null}
             {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已确认关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
             {activeStage === "final" ? <section className="stage-readiness-grid"><StageReadiness label="关键帧" value={`${liveKeyframes.filter((item) => item.status === "ready").length} 个已完成`} /><StageReadiness label="视频" value={activeProject.heroVideo ? "已完成" : "未完成"} /><StageReadiness label="旁白" value={activeProject.narrationAssetId ? "已完成" : "待生成"} /><StageReadiness label="成片时长" value={`${getProjectDurationSec(activeProject)} 秒`} /><Link href={`/projects/${activeProject.id}#final`} className="button-primary-v3">进入最终成片检查</Link></section> : null}
 
@@ -1481,7 +1413,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
             {error ? <div className="inline-generation-error">{error}</div> : null}
           </section>
 
-          <StageInspector project={{ ...activeProject, stageStates }} activeStage={activeStage} state={activeStageState} busy={stageLocking} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} canConfirm={!(["brief", "creative", "anchors"] as StageId[]).includes(activeStage)} onLock={() => void lockCurrentStage()} onOpenModels={() => openModelSettings()} open={inspectorOpen} onClose={() => setInspectorOpen(false)} />
+          <StageInspector project={{ ...activeProject, stageStates }} activeStage={activeStage} state={activeStageState} busy={stageLocking} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} canConfirm={!(["brief", "creative", "anchors"] as StageId[]).includes(activeStage)} onLock={() => void lockCurrentStage()} onEnterKeyframes={() => selectStage("keyframes")} onEnterVideo={() => void enterVideoProduction()} onOpenModels={() => openModelSettings()} open={inspectorOpen} onClose={() => setInspectorOpen(false)} />
         </section>
       </div>
       <ModelSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} status={modelStatus} onStatusChange={setModelStatus} onProviderSaved={(provider) => {

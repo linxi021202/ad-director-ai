@@ -74,21 +74,13 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
       const query = new URLSearchParams({ limit: "50" });
       if (projectId) query.set("projectId", projectId);
       if (focusStage) query.set("stage", focusStage);
-      if (focusShotId && focusStage) query.set("shotId", focusShotId);
-      if (focusFrameId && focusStage) query.set("frameId", focusFrameId);
+      if (focusShotId) query.set("shotId", focusShotId);
+      if (focusFrameId) query.set("frameId", focusFrameId);
       if (before) query.set("before", String(before));
       const response = await fetch(`/api/call-logs?${query}`, { cache: "no-store" });
       if (!response.ok) throw new Error("调用日志暂时无法读取。");
       const data = await response.json() as { data?: { entries?: Entry[] } };
-      let next = data.data?.entries ?? [];
-      if (!focusStage && !before && projectId && focusShotId && !next.some((entry) => entry.shotId === focusShotId)) {
-        const focusedQuery = new URLSearchParams({ projectId, shotId: focusShotId, limit: "1" });
-        const focusedResponse = await fetch(`/api/call-logs?${focusedQuery}`, { cache: "no-store" });
-        if (focusedResponse.ok) {
-          const focusedData = await focusedResponse.json() as { data?: { entries?: Entry[] } };
-          next = [...next, ...(focusedData.data?.entries ?? [])];
-        }
-      }
+      const next = data.data?.entries ?? [];
       if (epoch !== loadEpoch.current) return;
       setEntries((current) => [...new Map([...current, ...next].map((entry) => [entry.id, entry])).values()]
         .sort((left, right) => right.startedAt - left.startedAt || right.id.localeCompare(left.id)));
@@ -148,7 +140,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
       const query = new URLSearchParams({ projectId: currentProjectId, format });
       if (scope === "task" && currentTaskId && !focusShotId) query.set("taskId", currentTaskId);
       if (focusStage) query.set("requestedStage", focusStage);
-      if (focusShotId && focusStage) query.set("requestedShotId", focusShotId);
+      if (focusShotId) query.set("requestedShotId", focusShotId);
       const response = await fetch(`/api/call-logs/export?${query}`, { cache: "no-store" });
       if (!response.ok) {
         const failure = await response.json().catch(() => null) as { error?: string } | null;
@@ -172,7 +164,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
     <button type="button" className="call-log-trigger" onClick={() => setOpen(true)}>{label}</button>
     <ViewportDrawer open={open} label="调用日志" onClose={() => setOpen(false)} className="call-log-sheet">
       <header className="call-log-sheet__header">
-        <div><span>任务与模型</span><h2>调用日志</h2><p>{focusStage ? `${focusStage === "keyframes" ? "关键帧" : focusStage === "prompts" ? "详细提示词" : focusStage} · ${focusShotId ? `镜头 ${focusShotId.replace(/^shot-0*/, "").padStart(2, "0")}` : "全部镜头"}` : projectName ?? (currentProjectId ? `项目 ${currentProjectId.slice(0, 8)}` : "近期任务")}</p></div>
+        <div><span>任务与模型</span><h2>调用日志</h2><p>{focusShotId ? `镜头 ${focusShotId.replace(/^shot-0*/, "").padStart(2, "0")}${focusStage ? ` · ${focusStage === "keyframes" ? "关键帧" : focusStage === "prompts" ? "生成准备" : focusStage}` : " · 完整生成链路"}` : focusStage ? focusStage : projectName ?? (currentProjectId ? `项目 ${currentProjectId.slice(0, 8)}` : "近期任务")}</p></div>
         <button type="button" aria-label="关闭调用日志" onClick={() => setOpen(false)}>×</button>
       </header>
       <div className="call-log-sheet__toolbar">
@@ -180,11 +172,11 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
         <select aria-label="按状态筛选" value={status} onChange={(event) => setStatus(event.target.value)}>{statusOptions.map((option) => <option key={option}>{option}</option>)}</select>
         <details className="call-log-export"><summary>导出日志</summary><div>
           {!entries.length ? <p>当前没有可导出的调用记录。</p> : null}
-          <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "json")}>当前任务 · JSON</button>
-          <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "markdown")}>当前任务 · Markdown</button>
+          {!focusShotId ? <><button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "json")}>当前任务 · JSON</button>
+          <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "markdown")}>当前任务 · Markdown</button></> : null}
           <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "json")}>{focusShotId ? "当前镜头" : focusStage ? "当前阶段" : "当前项目"} · JSON</button>
           <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "markdown")}>{focusShotId ? "当前镜头" : focusStage ? "当前阶段" : "当前项目"} · Markdown</button>
-          <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "markdown", true)}>复制诊断摘要</button>
+          <button type="button" disabled={exporting || !entries.length || !currentProjectId} onClick={() => void exportLogs(focusShotId ? "project" : "task", "markdown", true)}>复制诊断摘要</button>
         </div></details>
         <button type="button" className="call-log-clear" disabled={!projectId || !entries.length || clearing} title={!entries.length ? "当前没有可清空的调用记录" : undefined} onClick={() => setConfirmClear(true)}>清空日志</button>
       </div>

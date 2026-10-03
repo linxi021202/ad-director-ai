@@ -14,7 +14,7 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
   const selectedTask = scope.requestedStage && scope.requestedShotId
     ? resolveScopedTask(matches, scope.requestedStage, scope.requestedShotId)
     : scope.taskId ? matches.find((entry) => entry.kind === "task" && entry.taskId === scope.taskId) : undefined;
-  const resolvedTaskId = scope.requestedShotId ? selectedTask?.taskId : scope.taskId;
+  const resolvedTaskId = scope.requestedStage && scope.requestedShotId ? selectedTask?.taskId : scope.taskId;
   const archive = resolvedTaskId && !scope.taskId
     ? await readModelCallLogArchive(sessionId, scope.projectId, resolvedTaskId) : scopedArchive;
   const entries = archive.entries.filter((entry) => (!scope.requestedStage || entry.stage === scope.requestedStage)
@@ -85,7 +85,7 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     requestedShotId: scope.requestedShotId ?? null,
     resolvedTaskId: resolvedTaskId ?? null,
     resolvedStage: selectedTask?.stage ?? null,
-    resolvedShotId: selectedTask?.shotId ?? null,
+    resolvedShotId: selectedTask?.shotId ?? scope.requestedShotId ?? null,
     environment: { nodeEnv: process.env.NODE_ENV ?? null, commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT_SHA ?? null },
     retention: { days: archive.retentionDays, maxSessionEntries: 500, limitReached: archive.retentionLimitReached, firstAvailableAt: archive.firstAvailableAt ? new Date(archive.firstAvailableAt).toISOString() : null,
       notice: archive.retentionLimitReached ? "会话日志达到保留上限，更早记录可能已被清理；本文件包含当前仍保存的全部匹配记录。" : null },

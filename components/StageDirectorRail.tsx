@@ -9,7 +9,6 @@ import { GuardedActionButton } from "@/components/workflow/GuardedActionButton";
 import { deriveVisualSetupStageState, visualSetupStatusLabel } from "@/lib/visual/visualSetupStage";
 import { creativeStageStatusLabel, deriveCreativeStageState } from "@/lib/creative/creativeStageState";
 import { getShotKeyframeViewState } from "@/lib/image/keyframeViewState";
-import { derivePromptStageShotState } from "@/lib/workflow/shotPromptProgress";
 
 const MAJOR_STEPS: Array<{ label: string; stages: StageId[] }> = [
   { label: "商品与创意", stages: ["brief", "creative"] },
@@ -42,9 +41,8 @@ export function StageContextPanel({ project, activeStage, onSelect, selectedShot
       const view = getShotKeyframeViewState(project, shot.id, busyShotId === shot.id);
       return <button type="button" key={shot.id} className={shot.id === selectedShotId ? "is-current" : ""} onClick={() => onShotSelect?.(shot.id)}><strong>镜头 {String(shot.index).padStart(2, "0")}</strong><small>{shot.durationSec} 秒 · {view.label}</small></button>;
     })}</div> : activeStage === "storyboard" ? <div className="stage-shot-navigator storyboard-shot-nav"><span>镜头列表</span>{project.shots.map((shot) => {
-      const state = derivePromptStageShotState(project, shot.id);
-      const label = state.status === "ready" ? "已完成" : state.status === "failed" ? "失败"
-        : state.status === "partial" ? "部分完成" : state.status === "generating" ? "生成中" : "未开始";
+      const label = project.stageStates?.storyboard.status === "locked" ? "已确认"
+        : project.stageStates?.storyboard.status === "failed" ? "生成失败" : "待确认";
       return <button type="button" key={shot.id} aria-current={shot.id === selectedShotId ? "location" : undefined}
         className={shot.id === selectedShotId ? "is-current" : ""} onClick={() => onShotSelect?.(shot.id)}>
         <strong>镜头 {String(shot.index).padStart(2, "0")}</strong><small>{shot.durationSec} 秒 · {label}</small>
@@ -54,7 +52,7 @@ export function StageContextPanel({ project, activeStage, onSelect, selectedShot
   </aside>;
 }
 
-export function StageInspector({ project, activeStage, state, busy, selectedShotId, busyShotId, onLock, onOpenModels, canConfirm = true, open, onClose, children }: { project: GenerationProject; activeStage: StageId; state: StageState; busy: boolean; selectedShotId?: string; busyShotId?: string | null; onLock: () => void; onOpenModels: () => void; canConfirm?: boolean; open?: boolean; onClose?: () => void; children?: ReactNode }) {
+export function StageInspector({ project, activeStage, state, busy, selectedShotId, busyShotId, onLock, onEnterKeyframes, onEnterVideo, onOpenModels, canConfirm = true, open, onClose, children }: { project: GenerationProject; activeStage: StageId; state: StageState; busy: boolean; selectedShotId?: string; busyShotId?: string | null; onLock: () => void; onEnterKeyframes?: () => void; onEnterVideo?: () => void; onOpenModels: () => void; canConfirm?: boolean; open?: boolean; onClose?: () => void; children?: ReactNode }) {
   const states = project.stageStates!;
   const allowed = canRunStage(states, activeStage);
   const visualSetup = activeStage === "anchors" ? deriveVisualSetupStageState(project) : null;
@@ -70,16 +68,23 @@ export function StageInspector({ project, activeStage, state, busy, selectedShot
   const shotView = selectedShot ? getShotKeyframeViewState(project, selectedShot.id, busyShotId === selectedShot.id) : undefined;
   const shotConfirmed = shotView?.confirmationStatus === "confirmed";
   const shotGenerated = shotView?.hasAnyKeyframe;
+  const allKeyframesGenerated = project.shots.length > 0 && project.shots.every((shot) => {
+    const view = getShotKeyframeViewState(project, shot.id);
+    return view.totalCount > 0 && view.completedCount === view.totalCount && view.keyframeGenerationStatus !== "generating";
+  });
   const currentStatusLabel = visualSetup ? visualSetupStatusLabel(visualSetup.status)
     : activeStage === "creative" ? creativeStageStatusLabel(deriveCreativeStageState(project).status)
+    : activeStage === "keyframes" && allKeyframesGenerated ? "全部镜头关键帧已完成"
     : selectedShot ? shotView!.label
     : stageStatusLabel(state.status);
   return <aside className={`stage-inspector workspace-column workspace-column--right${open ? " is-open" : ""}`} aria-label="步骤状态">
     <header><div><span>制作状态</span><h2>{userStageLabel(activeStage)}</h2></div>{onClose ? <button type="button" className="stage-sheet-close" aria-label="关闭状态面板" onClick={onClose}>×</button> : null}</header>
     <section className="stage-inspector-status"><div><span>当前状态</span><strong className={`is-${state.status}`}>{currentStatusLabel}</strong></div></section>
-    {visualSetup && ["ready-to-complete", "completed"].includes(visualSetup.status) ? <section className="stage-inspector-section"><h3>完成情况</h3><div className="visual-setup-checklist"><span>✓ 产品</span><span>✓ 主角</span><span>✓ 场景</span></div></section> : <section className="stage-inspector-section"><h3>还需要</h3><p>{selectedShot ? shotConfirmed ? "当前镜头已确认" : shotGenerated ? "检查并确认当前镜头关键帧" : "生成当前镜头关键帧" : remaining}</p></section>}
-    <section className="stage-inspector-section"><h3>下一步</h3><p>{selectedShot ? "完成并确认所有镜头关键帧" : next}</p>{!allowed.allowed ? <div className="stage-gate-blocked">{friendlyGateReason(activeStage)}</div> : null}</section>
-    {state.status === "ready" && canConfirm ? <GuardedActionButton className="stage-lock-button" blockers={blockers} busy={busy} busyLabel="确认中…" onAction={onLock}>{confirmLabel(activeStage)}</GuardedActionButton> : null}
+    {visualSetup && ["ready-to-complete", "completed"].includes(visualSetup.status) ? <section className="stage-inspector-section"><h3>完成情况</h3><div className="visual-setup-checklist"><span>✓ 产品</span><span>✓ 主角</span><span>✓ 场景</span></div></section> : <section className="stage-inspector-section"><h3>还需要</h3><p>{activeStage === "keyframes" && allKeyframesGenerated ? "没有待办" : selectedShot ? shotView?.keyframeGenerationStatus === "generating" ? "等待当前镜头生成完成" : shotView && shotView.completedCount < shotView.totalCount ? "补齐当前镜头关键帧" : shotConfirmed ? "当前镜头已确认" : shotGenerated ? "检查并确认当前镜头关键帧" : "生成当前镜头关键帧" : remaining}</p></section>}
+    <section className="stage-inspector-section"><h3>下一步</h3><p>{activeStage === "keyframes" && allKeyframesGenerated ? "进入视频制作" : selectedShot ? "完成当前镜头关键帧" : next}</p>{!allowed.allowed ? <div className="stage-gate-blocked">{friendlyGateReason(activeStage)}</div> : null}</section>
+    {state.status === "ready" && canConfirm && activeStage !== "keyframes" ? <GuardedActionButton className="stage-lock-button" blockers={blockers} busy={busy} busyLabel="确认中…" onAction={onLock}>{confirmLabel(activeStage)}</GuardedActionButton> : null}
+    {activeStage === "storyboard" && state.status === "locked" ? <button type="button" className="stage-lock-button" onClick={onEnterKeyframes}>进入关键帧制作</button> : null}
+    {activeStage === "keyframes" && allKeyframesGenerated ? <button type="button" className="stage-lock-button" disabled={busy} onClick={onEnterVideo}>进入视频制作</button> : null}
     {(visualSetup ? visualSetup.status === "completed" : state.status === "locked") ? <div className="stage-locked-note">这一步已经确认，后续生成会继续使用当前内容。</div> : null}
     <details className="stage-provider-details"><summary>生成详情</summary><p>{record ? `已保存第 ${record.version} 次内容记录。` : "尚未生成内容记录。"}</p>{impact?.affectedStages.length ? <p>再次修改会让后续 {impact.affectedStages.length} 个步骤需要更新。</p> : null}<button type="button" onClick={onOpenModels}>模型设置</button></details>
     {children}
@@ -130,7 +135,7 @@ function remainingTasks(project: GenerationProject, stage: StageId, state: Stage
 function nextStep(stage: StageId, state: StageState) {
   if (stage === "anchors") return state.status === "locked" ? "制作分镜" : "确认这些设定并开始制作分镜";
   if (state.status !== "locked") return `完成并确认${userStageLabel(stage)}`;
-  return ({ brief: "选择创意方向", creative: "生成人物与场景", anchors: "生成文字分镜", storyboard: "制作当前镜头关键帧", keyframes: "生成视频", video: "合成并检查成片", final: "项目已完成" } as const)[stage];
+  return ({ brief: "选择创意方向", creative: "生成人物与场景", anchors: "生成文字分镜", storyboard: "进入关键帧制作", keyframes: "生成视频", video: "合成并检查成片", final: "项目已完成" } as const)[stage];
 }
 
 function visualSetupStatusToStageStatus(status: ReturnType<typeof deriveVisualSetupStageState>["status"]): StageState["status"] {
@@ -138,7 +143,7 @@ function visualSetupStatusToStageStatus(status: ReturnType<typeof deriveVisualSe
 }
 
 function confirmLabel(stage: StageId) {
-  return ({ brief: "确认商品信息", creative: "确认创意", anchors: "确认视觉设定", storyboard: "确认分镜并继续", keyframes: "确认关键帧", video: "确认视频", final: "确认成片" } as const)[stage];
+  return ({ brief: "确认商品信息", creative: "确认创意", anchors: "确认视觉设定", storyboard: "确认文字分镜", keyframes: "确认关键帧", video: "确认视频", final: "确认成片" } as const)[stage];
 }
 
 function friendlyGateReason(stage: StageId) {

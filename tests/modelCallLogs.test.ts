@@ -265,6 +265,25 @@ describe("persistent model call logs", () => {
     expect(report.entries.some((entry) => entry.stage === "anchors")).toBe(false);
   });
 
+  it("exports both prompt and keyframe calls when scoped to one shot without a stage", async () => {
+    for (const stage of ["prompts", "keyframes"] as const) {
+      const event = await appendGenerationEvent(sessionMock.id, projectId, { stage,
+        provider: stage === "prompts" ? "deepseek" : "qwen-image", action: stage, status: "completed", message: "已完成", shotId: "shot-1" });
+      await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: event.id, projectId, stage,
+        provider: stage === "prompts" ? "deepseek" : "qwen-image", shotId: "shot-1", status: "completed", startedAt: Date.now() });
+    }
+    const other = await appendGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image",
+      action: "其他镜头", status: "completed", message: "已完成", shotId: "shot-2" });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: other.id, projectId,
+      stage: "keyframes", provider: "qwen-image", shotId: "shot-2", status: "completed", startedAt: Date.now() });
+    const response = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&requestedShotId=shot-1&format=json`));
+    expect(response.status).toBe(200);
+    const report = await response.json() as { resolvedShotId: string; entries: Array<{ stage: string; shotId: string }> };
+    expect(report.resolvedShotId).toBe("shot-1");
+    expect(new Set(report.entries.map((entry) => entry.stage))).toEqual(new Set(["prompts", "keyframes"]));
+    expect(report.entries.every((entry) => entry.shotId === "shot-1")).toBe(true);
+  });
+
   it("clears only current-project diagnostic history without changing project content or version", async () => {
     const frame = await appendGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", status: "failed", message: "失败", shotId: "shot-1", frameId: "frame-1" });
     await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: frame.id, projectId, stage: "keyframes", provider: "qwen-image", model: "qwen-image-3.0", shotId: "shot-1", frameId: "frame-1", status: "failed", startedAt: Date.now() });

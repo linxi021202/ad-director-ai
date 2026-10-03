@@ -54,10 +54,13 @@ describe("DeepSeek staged director quality", () => {
     expect(getActionBlockers(project, "CONFIRM_PRODUCT")).toEqual([]);
   });
 
-  it("ships explainable actions, onboarding and full prompt copy controls", () => {
+  it("keeps explainable actions and onboarding while hiding prompt internals from storyboard", () => {
     expect(readFileSync("components/workflow/GuardedActionButton.tsx", "utf8")).toContain('aria-disabled={blocked || undefined}');
     expect(readFileSync("components/workspace/UsageGuideSheet.tsx", "utf8")).toContain("用 1 分钟了解广告怎么生成");
-    expect(readFileSync("components/storyboard/StoryboardTimeline.tsx", "utf8")).toContain("navigator.clipboard.writeText");
+    const timeline = readFileSync("components/storyboard/StoryboardTimeline.tsx", "utf8");
+    expect(timeline).toContain("查看镜头详情");
+    expect(timeline).toContain("ViewportDrawer");
+    expect(timeline).not.toContain("完整生成提示词");
   });
 });
 

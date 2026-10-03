@@ -25,7 +25,7 @@ export async function GET(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "导出参数无效。" }, { status: 400 });
   try {
     const report = await buildModelCallExport(sessionResult.session.id, parsed.data);
-    if (parsed.data.requestedShotId && (!report.resolvedTaskId || !report.entries.length))
+    if (parsed.data.requestedShotId && (!report.entries.length || parsed.data.requestedStage && !report.resolvedTaskId))
       return NextResponse.json({ error: parsed.data.requestedStage === "prompts"
         ? `未找到镜头 ${parsed.data.requestedShotId.replace(/^shot-0*/, "").padStart(2, "0")} 的详细提示词生成日志。`
         : "当前镜头没有匹配的关键帧生成任务日志。" }, { status: 404 });
