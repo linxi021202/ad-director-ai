@@ -188,6 +188,26 @@ describe("server generation event persistence", () => {
     expect(restored?.latencyMs).toBeUndefined();
   });
 
+  it("interrupts an orphaned single-shot job without changing active Qwen image submissions", async () => {
+    const shotJob = await startGenerationEvent(SESSION_A, projectId, {
+      stage: "keyframes", provider: "system", action: "制作单镜关键帧", message: "正在制作镜头。"
+    });
+    const imageBatch = await startGenerationEvent(SESSION_A, projectId, {
+      stage: "keyframes", provider: "qwen-image", action: "生成关键帧批次", message: "模型正在生成。"
+    });
+    await mutateOwnedAnonymousProject(SESSION_A, projectId, (project) => ({
+      ...project,
+      generationEvents: project.generationEvents.map((item) => ({
+        ...item, startedAt: Date.now() - 3 * 60_000, lastHeartbeatAt: Date.now() - 3 * 60_000
+      }))
+    }));
+
+    await normalizeInterruptedEvents(SESSION_A, projectId);
+    const events = await listGenerationEvents(SESSION_A, projectId);
+    expect(events.find((item) => item.id === shotJob.id)?.status).toBe("interrupted");
+    expect(events.find((item) => item.id === imageBatch.id)?.status).toBe("running");
+  });
+
   it("restores and replaces the last active project explicitly", async () => {
     const second = await createAnonymousProject(SESSION_A, { templateId: "cold-brew-demo" });
     await setLastActiveProjectId(SESSION_A, projectId);

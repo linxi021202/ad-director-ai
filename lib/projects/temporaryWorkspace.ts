@@ -70,7 +70,7 @@ export async function getArchivedVideo(sessionId: string, projectId: string, ass
   return groups.find((group) => group.projectId === projectId)?.assets.find((asset) => asset.id === assetId) ?? null;
 }
 
-export function resetWorkspaceForVisit(sessionId: string, visitId: string): Promise<{ reset: boolean; deletedProjects: number; preservedVideos: number }> {
+export function resetWorkspaceForVisit(sessionId: string, visitId: string): Promise<{ reset: boolean; deferred: boolean; deletedProjects: number; preservedVideos: number }> {
   const previous = queues.get(sessionId) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(() => reset(sessionId, visitId));
   queues.set(sessionId, next);
@@ -83,12 +83,15 @@ async function reset(sessionId: string, visitId: string) {
   const directory = sessionDirectory(sessionId);
   const marker = path.join(directory, "visit.json");
   const current = await readJson(marker) as { visitId?: string } | null;
-  if (current?.visitId === visitId) return { reset: false, deletedProjects: 0, preservedVideos: 0 };
+  if (current?.visitId === visitId) return { reset: false, deferred: false, deletedProjects: 0, preservedVideos: 0 };
   const projects = await listAnonymousProjects(sessionId);
-  // Do not remove assets while an outstanding model request may still persist its result.
+  // Keep the current visit usable without deleting assets that an outstanding task may still write.
   if (projects.some((record) => record.project.generationEvents?.some((event) =>
     ["queued", "running", "qa-review"].includes(event.status)))) {
-    throw new Error("WORKSPACE_GENERATION_ACTIVE");
+    await mkdir(directory, { recursive: true });
+    await assertRegularDirectory(directory);
+    await atomicJson(marker, { visitId, updatedAt: Date.now() });
+    return { reset: false, deferred: true, deletedProjects: 0, preservedVideos: 0 };
   }
   await mkdir(directory, { recursive: true });
   await assertRegularDirectory(directory);
@@ -146,5 +149,5 @@ async function reset(sessionId: string, visitId: string) {
     await rm(path.join(directory, name), { force: true });
   }
   await atomicJson(marker, { visitId, updatedAt: Date.now() });
-  return { reset: true, deletedProjects, preservedVideos };
+  return { reset: true, deferred: false, deletedProjects, preservedVideos };
 }

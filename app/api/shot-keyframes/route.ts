@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getMissingKeyframeIds, getShotKeyframeViewState } from "@/lib/image/keyframeViewState";
 import { projectStoreErrorResponse } from "@/lib/projects/api";
 import { anonymousProjectIdSchema, requireOwnedAnonymousProject } from "@/lib/projects/anonymousProjectStore";
-import { completeGenerationEvent, failGenerationEvent, startGenerationEvent, updateGenerationEventProgress } from "@/lib/projects/generationEvents";
+import { completeGenerationEvent, failGenerationEvent, heartbeatGenerationEvent, normalizeInterruptedEvents, startGenerationEvent, updateGenerationEventProgress } from "@/lib/projects/generationEvents";
 import { getAnonymousApiSession } from "@/lib/session/api";
 
 const inputSchema = z.object({ projectId: anonymousProjectIdSchema, shotId: z.string().min(1).max(140), frameId: z.string().min(1).max(140).optional() }).strict();
@@ -24,6 +24,7 @@ export async function POST(request: Request) {
   if (admitting.has(key)) return json({ success: false, error: "当前镜头任务正在创建，请稍候查看进度。" }, 409);
   admitting.add(key);
   try {
+    await normalizeInterruptedEvents(sessionResult.session.id, projectId);
     const { project } = await requireOwnedAnonymousProject(sessionResult.session.id, projectId);
     if (project.stageStates?.storyboard.status !== "locked") return json({ success: false, error: "请先确认文字分镜。" }, 409);
     const shot = project.shots.find((item) => item.id === shotId);
@@ -58,6 +59,7 @@ export async function GET(request: Request) {
   const eventId = z.string().uuid().safeParse(url.searchParams.get("eventId"));
   if (!projectId.success || !eventId.success) return json({ success: false, error: "任务编号无效。" }, 400);
   try {
+    await normalizeInterruptedEvents(sessionResult.session.id, projectId.data);
     const { project } = await requireOwnedAnonymousProject(sessionResult.session.id, projectId.data);
     const event = project.generationEvents?.find((item) => item.id === eventId.data && item.action === "制作单镜关键帧");
     if (!event) return json({ success: false, error: "未找到当前镜头任务。" }, 404);
@@ -72,6 +74,13 @@ async function runShotJob(input: { sessionId: string; projectId: string; shotId:
   const { sessionId, projectId, shotId, eventId } = input;
   const endpoint = (path: string) => new URL(path, input.origin).toString();
   const headers = { "content-type": "application/json", cookie: input.cookie };
+  let heartbeatBusy = false;
+  const heartbeat = setInterval(() => {
+    if (heartbeatBusy) return;
+    heartbeatBusy = true;
+    void heartbeatGenerationEvent(sessionId, projectId, eventId).catch(() => undefined)
+      .finally(() => { heartbeatBusy = false; });
+  }, 20_000);
   try {
     let project = (await requireOwnedAnonymousProject(sessionId, projectId)).project;
     let shot = project.shots.find((item) => item.id === shotId)!;
@@ -113,6 +122,8 @@ async function runShotJob(input: { sessionId: string; projectId: string; shotId:
   } catch (error) {
     const message = error instanceof Error ? error.message : "当前镜头制作失败，请查看镜头日志后重试。";
     await failGenerationEvent(sessionId, projectId, eventId, message, "MODEL_REQUEST_FAILED").catch(() => undefined);
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 

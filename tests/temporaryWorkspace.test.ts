@@ -11,7 +11,7 @@ import path from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAnonymousProject, listAnonymousProjects } from "../lib/projects/anonymousProjectStore";
-import { startGenerationEvent } from "../lib/projects/generationEvents";
+import { completeGenerationEvent, startGenerationEvent } from "../lib/projects/generationEvents";
 import { createPrivateAsset } from "../lib/assets/assetStore";
 import { getSessionStorageNamespace, resolveInsideStorage } from "../lib/assets/path";
 import { resetWorkspaceForVisit, listArchivedVideos } from "../lib/projects/temporaryWorkspace";
@@ -108,12 +108,31 @@ describe("temporary workspace lifecycle", () => {
     expect((await resetWorkspaceForVisit(session.id, randomUUID())).deletedProjects).toBe(1);
   });
 
-  it("does not delete a workspace with an outstanding generation request", async () => {
+  it("allows entry without deleting an outstanding generation request, then clears on the next visit", async () => {
     const project = await createAnonymousProject(session.id);
-    await startGenerationEvent(session.id, project.id, {
+    const event = await startGenerationEvent(session.id, project.id, {
       stage: "anchors", action: "生成候选", provider: "qwen-image", message: "正在生成候选"
     });
-    await expect(resetWorkspaceForVisit(session.id, randomUUID())).rejects.toThrow("WORKSPACE_GENERATION_ACTIVE");
+    const visitId = randomUUID();
+    expect(await resetWorkspaceForVisit(session.id, visitId)).toMatchObject({ reset: false, deferred: true });
+    expect(await resetWorkspaceForVisit(session.id, visitId)).toMatchObject({ reset: false, deletedProjects: 0 });
+    expect(await listAnonymousProjects(session.id)).toHaveLength(1);
+    await completeGenerationEvent(session.id, project.id, event.id, "生成完成");
+    expect(await resetWorkspaceForVisit(session.id, visitId)).toMatchObject({ reset: false, deletedProjects: 0 });
+    expect(await resetWorkspaceForVisit(session.id, randomUUID())).toMatchObject({ reset: true, deletedProjects: 1 });
+    expect(await listAnonymousProjects(session.id)).toHaveLength(0);
+  });
+
+  it("returns a usable visit response while a generation request is active", async () => {
+    const project = await createAnonymousProject(session.id);
+    await startGenerationEvent(session.id, project.id, {
+      stage: "keyframes", action: "制作单镜关键帧", provider: "system", message: "正在生成关键帧"
+    });
+    const response = await visit(new NextRequest("http://localhost:3000/api/workspace/visit", {
+      method: "POST", headers: { origin: "http://localhost:3000" }, body: JSON.stringify({ visitId: randomUUID() })
+    }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({ reset: false, deferred: true });
     expect(await listAnonymousProjects(session.id)).toHaveLength(1);
   });
 

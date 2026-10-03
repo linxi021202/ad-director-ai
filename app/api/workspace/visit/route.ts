@@ -15,9 +15,6 @@ export async function POST(request: NextRequest) {
   try {
     return NextResponse.json({ success: true, data: await resetWorkspaceForVisit(sessionResult.session.id, input.data.visitId) });
   } catch (error) {
-    const active = error instanceof Error && error.message === "WORKSPACE_GENERATION_ACTIVE";
-    return NextResponse.json({ error: { message: active
-      ? "上一轮生成任务仍在执行，请完成后再重新进入。"
-      : "临时工作台清理未完成，上传视频已保留，请重试。" } }, { status: active ? 409 : 500 });
+    return NextResponse.json({ error: { message: "临时工作台清理未完成，上传视频已保留，请重试。" } }, { status: 500 });
   }
 }

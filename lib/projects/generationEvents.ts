@@ -85,6 +85,14 @@ const STAGE_TIMEOUT_MS: Record<GenerationStage, number> = {
   final: 60 * 60_000,
   composition: 60 * 60_000
 };
+const SHOT_JOB_HEARTBEAT_TIMEOUT_MS = 2 * 60_000;
+
+function isStaleRunningEvent(event: GenerationEvent, now: number): boolean {
+  if (event.status !== "running") return false;
+  if (event.stage === "keyframes" && event.action !== "制作单镜关键帧") return false;
+  const timeout = event.action === "制作单镜关键帧" ? SHOT_JOB_HEARTBEAT_TIMEOUT_MS : STAGE_TIMEOUT_MS[event.stage];
+  return now - (event.lastHeartbeatAt ?? event.startedAt) > timeout;
+}
 
 type NewEventInput = {
   stage: GenerationStage;
@@ -273,15 +281,13 @@ export async function clearGenerationEvents(
 export async function normalizeInterruptedEvents(sessionId: string, projectId: string): Promise<void> {
   const record = await requireOwnedAnonymousProject(sessionId, projectId);
   const now = Date.now();
-  const hasStale = (record.project.generationEvents ?? []).some(
-    (event) => event.status === "running" && event.stage !== "keyframes" && now - (event.lastHeartbeatAt ?? event.startedAt) > STAGE_TIMEOUT_MS[event.stage]
-  );
+  const hasStale = (record.project.generationEvents ?? []).some((event) => isStaleRunningEvent(event, now));
   if (!hasStale) return;
 
   const updated = await mutateOwnedAnonymousProject(sessionId, projectId, (project) => ({
     ...project,
     generationEvents: (project.generationEvents ?? []).map((event) => {
-      if (event.status !== "running" || event.stage === "keyframes" || now - (event.lastHeartbeatAt ?? event.startedAt) <= STAGE_TIMEOUT_MS[event.stage]) return event;
+      if (!isStaleRunningEvent(event, now)) return event;
       return sanitizeGenerationEvent({
         ...event,
         status: "interrupted",

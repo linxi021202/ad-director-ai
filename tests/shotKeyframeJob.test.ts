@@ -7,8 +7,9 @@ vi.mock("@/lib/session/api", () => ({
   getAnonymousApiSession: vi.fn(async () => ({ initialized: true as const, session: { id: "shot-job-session" } }))
 }));
 
-import { POST as submitShotJob } from "../app/api/shot-keyframes/route";
+import { GET as getShotJob, POST as submitShotJob } from "../app/api/shot-keyframes/route";
 import { createAnonymousProject, mutateOwnedAnonymousProject, requireOwnedAnonymousProject, resetAnonymousProjectQueuesForTests } from "../lib/projects/anonymousProjectStore";
+import { startGenerationEvent } from "../lib/projects/generationEvents";
 
 const originalEnv = { ...process.env };
 let storageRoot = "";
@@ -28,6 +29,23 @@ afterEach(async () => {
 });
 
 describe("single-shot keyframe job", () => {
+  it("reports an orphaned shot job as interrupted instead of polling forever", async () => {
+    const created = await createAnonymousProject("shot-job-session");
+    const shotId = created.project.shots[0]!.id;
+    const event = await startGenerationEvent("shot-job-session", created.id, {
+      stage: "keyframes", provider: "system", action: "制作单镜关键帧", shotId, message: "正在制作镜头。"
+    });
+    await mutateOwnedAnonymousProject("shot-job-session", created.id, (project) => ({
+      ...project,
+      generationEvents: project.generationEvents.map((item) => item.id === event.id
+        ? { ...item, lastHeartbeatAt: Date.now() - 3 * 60_000 } : item)
+    }));
+
+    const response = await getShotJob(new Request(`http://localhost/api/shot-keyframes?projectId=${created.id}&eventId=${event.id}`));
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({ status: "interrupted", eventId: event.id });
+  });
+
   it("rejects generation before storyboard confirmation without starting a task", async () => {
     const created = await createAnonymousProject("shot-job-session", { templateId: "cold-brew-demo" });
     const shotId = created.project.shots[0]!.id;
