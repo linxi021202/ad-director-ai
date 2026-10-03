@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
 import { deriveShotGenerationState } from "../lib/workflow/shotGenerationState";
-import type { GenerationEvent } from "../lib/schemas/project";
+import type { GenerationEvent, GenerationProject } from "../lib/schemas/project";
 
 const shotId = coldBrewDemo.shots[0]!.id;
 const failedPrompt: GenerationEvent = { id: "prompt-event", runId: "run", projectId: coldBrewDemo.id, stage: "prompts", provider: "deepseek",
@@ -12,11 +12,10 @@ describe("shot prompt and image state separation", () => {
     expect(deriveShotGenerationState(project, shotId)).toBe("prompt_failed");
     expect(deriveShotGenerationState(project, shotId, true)).toBe("prompt_generating");
   });
-  it("uses valid current packages rather than historical failed calls", () => {
+  it("does not treat an incomplete package as ready because of its version alone", () => {
     const project = { ...coldBrewDemo, generationEvents: [{ ...failedPrompt, shotId }], keyframes: [],
-      shotPromptPackages: [{ shotId, schemaVersion: 2 as const, inputFingerprint: "a".repeat(64) }] };
-    expect(deriveShotGenerationState(project, shotId)).toBe("prompt_ready");
-    expect(deriveShotGenerationState(project, shotId, true)).toBe("keyframe_generating");
-    expect(deriveShotGenerationState({ ...project, generationEvents: [{ ...failedPrompt, shotId, stage: "keyframes", provider: "qwen-image" }] }, shotId)).toBe("keyframe_failed");
+      shotPromptPackages: [{ shotId, schemaVersion: 2 as const, inputFingerprint: "a".repeat(64) }] } as unknown as GenerationProject;
+    expect(deriveShotGenerationState(project, shotId)).toBe("prompt_failed");
+    expect(deriveShotGenerationState(project, shotId, true)).toBe("prompt_generating");
   });
 });

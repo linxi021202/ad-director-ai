@@ -1,16 +1,35 @@
 "use client";
 
-import { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { GenerationProject } from "@/lib/schemas/project";
 import { ViewportDrawer } from "@/components/workspace/ViewportDrawer";
 
-export function StoryboardTimeline({ project }: { project: GenerationProject }) {
+export function StoryboardTimeline({ project, selectedShotId, onVisibleShotChange }: { project: GenerationProject; selectedShotId?: string; onVisibleShotChange?: (shotId: string) => void }) {
   const [selectedStoryboardShotId, setSelectedStoryboardShotId] = useState<string | null>(null);
+  const timelineRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const cards = [...(timelineRef.current?.querySelectorAll<HTMLElement>("article[data-shot-id]") ?? [])];
+    if (!cards.length || !onVisibleShotChange || typeof IntersectionObserver === "undefined") return;
+    const visible = new Map<string, IntersectionObserverEntry>();
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.shotId;
+        if (!id) continue;
+        if (entry.isIntersecting) visible.set(id, entry);
+        else visible.delete(id);
+      }
+      const first = [...visible.values()].sort((a, b) => Math.abs(a.boundingClientRect.top - 112) - Math.abs(b.boundingClientRect.top - 112))[0];
+      const id = first && (first.target as HTMLElement).dataset.shotId;
+      if (id) onVisibleShotChange(id);
+    }, { rootMargin: "-100px 0px -55% 0px", threshold: 0 });
+    cards.forEach((card) => observer.observe(card));
+    return () => observer.disconnect();
+  }, [project.shots, onVisibleShotChange]);
   const detailShot = project.shots.find((shot) => shot.id === selectedStoryboardShotId);
   const promptPackage = detailShot ? project.shotPromptPackages?.find((item) => item.shotId === detailShot.id) : undefined;
   return <>
-    <section className="storyboard-text-timeline" aria-label="文字分镜时间线">
-      {project.shots.map((shot) => <article id={`storyboard-shot-${shot.id}`} key={shot.id}>
+    <section ref={timelineRef} className="storyboard-text-timeline" aria-label="文字分镜时间线">
+      {project.shots.map((shot) => <article id={`storyboard-shot-${shot.id}`} data-shot-id={shot.id} className={selectedShotId === shot.id ? "is-current" : undefined} key={shot.id}>
         <header><strong>镜头 {String(shot.index).padStart(2, "0")}</strong><span>{shot.durationSec} 秒</span></header>
         <h2>{shot.title ?? shot.narrativeProgression?.newInformation ?? shot.goal}</h2>
         <p>{shot.visualSummary ?? shot.visualDescription}</p>

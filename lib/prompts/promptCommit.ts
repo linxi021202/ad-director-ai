@@ -88,19 +88,27 @@ export async function commitFinalPromptBundle(context: CommitContext, raw: Detai
       visualContinuityBible: before.project.visualContinuityBible, referencePack: before.project.referencePack });
     if (!fingerprintMatches) throw new AnonymousProjectVersionConflictError();
     phase = "PROJECT_PERSIST_FAILED";
-    await step("prompt-bundle-persisting");
+    const projectPatchStartedAt = Date.now();
+    await step("prompt-bundle-persisting", { projectPatchStartedAt, projectVersionBefore: before.version });
     const saved = await saveOwnedShotPromptPackage(context.sessionId, context.projectId, bundle, productVisualSpec);
     versions.projectVersionActual = saved.version;
-    await step("prompt-bundle-persisted", { canonicalValid: true, finalUsed: true });
+    const verified = await requireOwnedAnonymousProject(context.sessionId, context.projectId);
+    const projectPatchCompletedAt = Date.now();
+    const persistedShot = verified.project.shots.find((item) => item.id === context.shotId);
+    const promptBundlePersisted = verified.project.shotPromptPackages?.some((item) => item.shotId === context.shotId
+      && item.inputFingerprint === inputFingerprint) ?? false;
+    const shotStatusPersisted = Boolean(persistedShot && isShotPromptReady(verified.project, persistedShot));
+    const persistDiagnostics = { projectPatchStartedAt, projectPatchCompletedAt, projectVersionBefore: before.version,
+      projectVersionAfter: verified.version, shotStatusPersisted, promptBundlePersisted };
+    if (!promptBundlePersisted || !shotStatusPersisted) throw new Error("PERSISTED_PROMPT_BUNDLE_NOT_READY");
+    await step("prompt-bundle-persisted", { ...persistDiagnostics, canonicalValid: true, finalUsed: true });
     await step("shot-status-updating");
-    const persistedShot = saved.project.shots.find((item) => item.id === context.shotId);
-    if (!persistedShot || !isShotPromptReady(saved.project, persistedShot)) throw new Error("PERSISTED_PROMPT_BUNDLE_NOT_READY");
-    await step("shot-status-ready", { canonicalValid: true, finalUsed: true });
+    await step("shot-status-ready", { ...persistDiagnostics, canonicalValid: true, finalUsed: true });
     phase = "TASK_STATE_TRANSITION_FAILED";
     await step("task-completing");
     await completeGenerationEvent(context.sessionId, context.projectId, context.taskId, `镜头 ${shot.index} 的图片与视频提示词已保存。`, { latencyMs });
-    await step("task-completed", { canonicalValid: true, finalUsed: true });
-    return { bundle, record: saved, warnings };
+    await step("task-completed", { ...persistDiagnostics, canonicalValid: true, finalUsed: true });
+    return { bundle, record: verified, warnings };
   } catch (error) {
     if (error instanceof AnonymousProjectVersionConflictError) phase = "VERSION_CONFLICT";
     const actual = await requireOwnedAnonymousProject(context.sessionId, context.projectId).catch(() => undefined);

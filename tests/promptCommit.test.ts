@@ -15,7 +15,8 @@ import { commitFinalPromptBundle, PromptCommitError } from "../lib/prompts/promp
 import { buildShotPromptInputFingerprint } from "../lib/prompts/shotPromptFingerprint";
 import { isShotPromptReady } from "../lib/prompts/shotPromptReadiness";
 import { deriveShotGenerationState } from "../lib/workflow/shotGenerationState";
-import { derivePromptStageProgress } from "../lib/workflow/shotPromptProgress";
+import { derivePromptStageProgress, derivePromptStageShotState } from "../lib/workflow/shotPromptProgress";
+import { getShotKeyframeViewState } from "../lib/image/keyframeViewState";
 import { planShotKeyframeMoments } from "../lib/storyboard/keyframePlan";
 import { detailedFramePromptSchema, detailedShotPromptFoundationSchema, detailedShotPromptPackageSchema } from "../lib/schemas/project";
 import { expandShotPrompts } from "../lib/providers/deepseekProvider";
@@ -152,6 +153,8 @@ describe("final prompt commit", () => {
     const refreshed = await store.requireOwnedAnonymousProject(apiSession.id, data.context.projectId);
     expect(isShotPromptReady(refreshed.project, refreshed.project.shots[2]!)).toBe(true);
     expect(deriveShotGenerationState(refreshed.project, "shot-03")).toBe("prompt_ready");
+    expect(derivePromptStageShotState(refreshed.project, "shot-03")).toMatchObject({ status: "ready", hasPersistedPromptBundle: true });
+    expect(getShotKeyframeViewState(refreshed.project, "shot-03").promptStatus).toBe("ready");
     expect(refreshed.project.generationEvents!.at(-1)!.status).toBe("completed");
     const entries = await logs.listModelCallLogs(apiSession.id, { projectId: data.context.projectId, limit: 500 });
     expect(entries.filter((entry) => entry.mode?.endsWith("canonical-selected"))).toHaveLength(4);
@@ -159,6 +162,11 @@ describe("final prompt commit", () => {
       "shot-status-updating", "shot-status-ready", "task-completing", "task-completed"]) {
       expect(entries.some((entry) => entry.mode === mode && entry.status === "completed"), mode).toBe(true);
     }
+    const verified = entries.find((entry) => entry.mode === "shot-status-ready");
+    expect(verified).toMatchObject({ shotStatusPersisted: true, promptBundlePersisted: true,
+      projectVersionBefore: expect.any(Number), projectVersionAfter: expect.any(Number),
+      projectPatchStartedAt: expect.any(Number), projectPatchCompletedAt: expect.any(Number) });
+    expect(verified!.projectVersionAfter!).toBeLessThanOrEqual(refreshed.version);
   });
 
   it("classifies persistence failures and preserves drafts with sanitized internal stack evidence", async () => {

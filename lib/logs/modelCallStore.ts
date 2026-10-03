@@ -73,6 +73,8 @@ const modelCallLogSchema = z.object({
   projectPatchStartedAt: z.number().int().nonnegative().optional(),
   projectPatchCompletedAt: z.number().int().nonnegative().optional(),
   projectVersionAfter: z.number().int().positive().optional(),
+  shotStatusPersisted: z.boolean().optional(),
+  promptBundlePersisted: z.boolean().optional(),
   keyframeRecordId: z.string().max(320).optional(),
   referenceSourceTypes: z.array(z.string().max(40)).max(3).optional(),
   failurePhase: z.string().max(40).optional(),

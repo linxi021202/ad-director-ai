@@ -25,8 +25,12 @@ export async function GET(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "导出参数无效。" }, { status: 400 });
   try {
     const report = await buildModelCallExport(sessionResult.session.id, parsed.data);
-    if ((parsed.data.taskId || parsed.data.requestedStage || parsed.data.requestedShotId) && !report.entries.length)
-      return NextResponse.json({ error: "当前镜头没有匹配的关键帧生成任务日志。" }, { status: 404 });
+    if (parsed.data.requestedShotId && (!report.resolvedTaskId || !report.entries.length))
+      return NextResponse.json({ error: parsed.data.requestedStage === "prompts"
+        ? `未找到镜头 ${parsed.data.requestedShotId.replace(/^shot-0*/, "").padStart(2, "0")} 的详细提示词生成日志。`
+        : "当前镜头没有匹配的关键帧生成任务日志。" }, { status: 404 });
+    if (parsed.data.taskId && !report.entries.length)
+      return NextResponse.json({ error: "未找到匹配的任务日志。" }, { status: 404 });
     const markdown = parsed.data.format === "markdown";
     const body = markdown ? modelCallExportMarkdown(report) : `${JSON.stringify(report, null, 2)}\n`;
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "_");

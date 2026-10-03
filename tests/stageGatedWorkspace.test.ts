@@ -23,7 +23,8 @@ describe("stage-gated director workspace", () => {
     expect(rail).toContain('activeStage === "brief"');
     expect(rail).toContain('activeStage === "anchors"');
     expect(rail).toContain('activeStage === "keyframes" ? <div className="stage-shot-navigator keyframe-shot-nav"');
-    expect(rail).toContain('activeStage === "storyboard" || activeStage === "video"');
+    expect(rail).toContain('className="stage-shot-navigator storyboard-shot-nav"');
+    expect(rail).toContain('onClick={() => onShotSelect?.(shot.id)}');
   });
 
   it("stops after each low-cost stage and leaves the old one-click chain without a UI trigger", () => {

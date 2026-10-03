@@ -1,9 +1,8 @@
-import type { DetailedShotPromptPackage, GenerationProject, KeyframeMetadata } from "../schemas/project";
+import type { GenerationProject, KeyframeMetadata } from "../schemas/project";
+import { derivePromptStageShotState } from "../workflow/shotPromptProgress";
 import type { KeyframeResult } from "@/components/KeyframePreview";
 
-export type KeyframeProjectSnapshot = Pick<GenerationProject, "id" | "shots" | "keyframes" | "generationEvents" | "shotPromptDrafts" | "keyframeQAResults"> & {
-  shotPromptPackages?: Array<Pick<DetailedShotPromptPackage, "shotId" | "schemaVersion" | "inputFingerprint">>;
-};
+export type KeyframeProjectSnapshot = GenerationProject;
 
 export function projectKeyframesToImages(project: KeyframeProjectSnapshot): Array<KeyframeResult & { provider: string; model: string; latencyMs: number; cacheStatus: string; fallbackUsed: boolean }> {
   return (project.keyframes ?? []).map((item) => ({ ...item,
@@ -22,13 +21,11 @@ export function getShotKeyframeViewState(project: KeyframeProjectSnapshot, shotI
   const shot = project.shots.find((item) => item.id === shotId);
   const latest = (stage: "prompts" | "keyframes") => project.generationEvents?.filter((event) => event.stage === stage && event.shotId === shotId)
     .sort((a, b) => b.startedAt - a.startedAt)[0];
-  const promptEvent = latest("prompts");
   const imageEvent = latest("keyframes");
   const active = (status?: string) => ["queued", "running", "qa-review"].includes(status ?? "");
   const failed = (status?: string) => ["failed", "interrupted"].includes(status ?? "");
-  const draft = project.shotPromptDrafts?.find((item) => item.shotId === shotId);
-  const promptStatus = project.shotPromptPackages?.some((item) => item.shotId === shotId && item.schemaVersion === 2 && item.inputFingerprint)
-    ? "ready" : draft?.foundation || draft?.framePrompts.length ? "partial" : failed(promptEvent?.status) ? "failed" : "not_started";
+  const promptState = derivePromptStageShotState(project, shotId);
+  const promptStatus = promptState.status;
   const records = projectKeyframesToImages(project).filter((item) => item.shotId === shotId);
   const frameViews = (shot?.frames?.length ? shot.frames : [undefined]).map((frame, index) => {
     const saved = project.keyframes?.findLast((item) => item.shotId === shotId && (item.frameId === frame?.id || !item.frameId && index === 0));
@@ -47,8 +44,8 @@ export function getShotKeyframeViewState(project: KeyframeProjectSnapshot, shotI
     const confirmationStatus = imageUrl && frame?.isLocked ? "confirmed" : "unconfirmed";
     const frameEvent = project.generationEvents?.filter((event) => event.stage === "keyframes" && event.shotId === shotId && event.frameId === frame?.id)
       .sort((a, b) => b.startedAt - a.startedAt)[0];
-    const framePromptStatus = promptStatus === "ready" ? "ready" : draft?.framePrompts.some((item) => item.frameId === frame?.id) ? "partial"
-      : failed(promptEvent?.status) ? "failed" : "not_started";
+    const framePromptStatus = promptStatus === "ready" ? "ready" : promptState.completedFrameIds.includes(frame?.id ?? "") ? "partial"
+      : promptState.failedFrameIds.includes(frame?.id ?? "") ? "failed" : promptStatus;
     const keyframeGenerationStatus = active(frameEvent?.status) || image && ["loading", "generated", "qa-review"].includes(image.status) ? "generating"
       : imageUrl && metadata?.status === "ready" ? "completed" : imageUrl ? "partial" : assetStatus === "broken" || failed(frameEvent?.status) ? "failed" : "not_started";
     return { frame, metadata, image, imageUrl, assetStatus, confirmationStatus, promptStatus: framePromptStatus, keyframeGenerationStatus,

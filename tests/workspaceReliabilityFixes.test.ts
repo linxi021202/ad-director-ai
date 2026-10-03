@@ -13,10 +13,10 @@ describe("workspace reliability fixes", () => {
     expect(cinemaCss).toContain(".site-body .ad-call-toggle small { color: rgba(255, 255, 255, .62) !important; }");
   });
 
-  it("updates generated media frames from the live aspect-ratio draft", () => {
-    expect(generateWorkflow).toContain("const previewProject = useMemo<GenerationProject>");
-    expect(generateWorkflow).toContain("aspectRatio: briefDraft.brief.aspectRatio");
-    expect(generateWorkflow).toContain("<KeyframeStageWorkspace project={previewProject}");
+  it("keeps keyframe readiness on the persisted project rather than an unsaved brief draft", () => {
+    expect(generateWorkflow).toContain("<KeyframeStageWorkspace project={activeProject}");
+    expect(generateWorkflow).toContain("<StageContextPanel project={activeProject}");
+    expect(generateWorkflow).not.toContain("const previewProject = useMemo<GenerationProject>");
   });
 
   it("keeps Wan selectable and moves the video library after final composition", () => {

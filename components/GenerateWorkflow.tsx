@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelSettingsSheet, type ModelSettingsStatus, type ProviderId } from "@/components/ModelSettingsSheet";
 import { ModelSettingsTrigger } from "@/components/model-settings/ModelSettingsTrigger";
 import { useModelSettingsStatus } from "@/components/model-settings/useModelSettingsStatus";
@@ -234,19 +234,13 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   const [keyframeBusyShotId, setKeyframeBusyShotId] = useState<string | null>(null);
   const [keyframeError, setKeyframeError] = useState<string | null>(null);
   const [selectedKeyframeShotId, setSelectedKeyframeShotId] = useState<string | undefined>(initialProject.shots[0]?.id);
+  const [selectedStoryboardShotId, setSelectedStoryboardShotId] = useState<string | undefined>(initialProject.shots[0]?.id);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsProvider, setSettingsProvider] = useState<ProviderId | undefined>();
   const [settingsGuidance, setSettingsGuidance] = useState<string | null>(null);
   const [usageGuideOpen, setUsageGuideOpen] = useState(false);
   const [usageGuideIntro, setUsageGuideIntro] = useState(false);
   const { status: modelStatus, setStatus: setModelStatus } = useModelSettingsStatus();
-  const previewProject = useMemo<GenerationProject>(() => ({
-    ...activeProject,
-    brief: {
-      ...activeProject.brief,
-      aspectRatio: briefDraft.brief.aspectRatio
-    }
-  }), [activeProject, briefDraft.brief.aspectRatio]);
   useKeyframeProjectRefresh(activeProject.id, activeStage === "keyframes" || activeStage === "anchors", async () => {
     applyProjectUpdate(await fetchServerProject(activeProject.id));
   });
@@ -592,7 +586,6 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       const events = payload.data?.events ?? [];
       setCallTrace(generationEventsToTrace(events));
       setTraceLabel(initialTraceLabel(events));
-      setActiveProject((current) => current.id === projectId ? { ...current, generationEvents: events } : current);
     } catch {
       // Keep the last server-backed snapshot visible while a refresh is unavailable.
     }
@@ -853,12 +846,20 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setContextOpen(false);
     setInspectorOpen(false);
     router.replace(stageUrl(activeProject.id, stageId), { scroll: false });
-    if (stageId === "anchors") {
+    if (["anchors", "storyboard", "keyframes"].includes(stageId)) {
       void fetchServerProject(activeProject.id).then((snapshot) => applyProjectUpdate(snapshot)).catch(() => {
-        setError("人物与场景页面刷新失败，请稍后重试。");
+        setError("项目最新状态读取失败，请稍后重试。");
       });
     }
   }
+
+  const selectStoryboardShot = (shotId: string) => {
+    setSelectedStoryboardShotId(shotId);
+    setContextOpen(false);
+    const card = [...document.querySelectorAll<HTMLElement>(".storyboard-text-timeline [data-shot-id]")]
+      .find((element) => element.dataset.shotId === shotId);
+    card?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  };
 
   function applyProjectUpdate(saved: ProjectPatchData) {
     if (saved.project.id !== latestProjectRef.current.id || saved.version < activeVersionRef.current) return latestProjectRef.current;
@@ -913,8 +914,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   }
 
   async function expandStoryboardPrompts(source: GenerationProject, onlyShotId?: string) {
-    let refreshed = source;
-    const targets = source.shots.filter((shot) => !onlyShotId || shot.id === onlyShotId);
+    let refreshed = applyProjectUpdate(await fetchServerProject(source.id));
+    const targets = refreshed.shots.filter((shot) => !onlyShotId || shot.id === onlyShotId);
     for (const shot of targets) {
       if (derivePromptStageShotState(refreshed, shot.id).status === "ready") continue;
       setTraceLabel(`正在生成镜头 ${String(shot.index).padStart(2, "0")} 的详细提示词`);
@@ -1396,7 +1397,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         <StageDirectorRail project={activeProject} activeStage={activeStage} states={stageStates} onSelect={selectStage} />
 
         <section className="workbench-layout stage-gated-layout">
-          <StageContextPanel project={previewProject} activeStage={activeStage} onSelect={selectStage} selectedShotId={selectedKeyframeShotId} onShotSelect={setSelectedKeyframeShotId} busyShotId={keyframeBusyShotId} open={contextOpen} onClose={() => setContextOpen(false)} />
+          <StageContextPanel project={activeProject} activeStage={activeStage} onSelect={selectStage}
+            selectedShotId={activeStage === "storyboard" ? selectedStoryboardShotId : selectedKeyframeShotId}
+            onShotSelect={activeStage === "storyboard" ? selectStoryboardShot : setSelectedKeyframeShotId}
+            busyShotId={keyframeBusyShotId} open={contextOpen} onClose={() => setContextOpen(false)} />
 
           <section className="generation-stage-v3 stage-canvas workspace-column workspace-column--main">
             <div className="generation-stage-v3__glow" aria-hidden="true" />
@@ -1453,7 +1457,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               onEnterStoryboard={() => selectStage("storyboard")}
             /> : null}
 
-            {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : activeStageState.status === "repairing" ? <div className="storyboard-loading"><strong>正在校正文字分镜结构…</strong><span>系统只整理数据结构，不会缩短或重写已经生成的创意内容。</span></div> : activeStageState.status === "failed" ? <div className="creative-empty-state"><strong>文字分镜生成失败</strong><p>{latestStoryboardEvent?.progressCurrent ? `已完成 ${latestStoryboardEvent.progressCurrent} / ${latestStoryboardEvent.progressTotal ?? activeProject.shots.length} 镜头，成功内容已经保留。` : "文字分镜的数据结构不完整，系统未保存错误结果。"}</p><button type="button" className="button-secondary-v3" disabled={isGenerating} onClick={() => void runStoryboardStage()}>{latestStoryboardEvent?.progressCurrent ? "继续生成剩余镜头" : "重新生成文字分镜"}</button></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}
+            {activeStage === "storyboard" && activeStageState.status !== "blocked" ? activeStageState.status === "running" ? <div className="storyboard-loading"><strong>正在生成文字分镜</strong><span>系统会严格按 {activeProject.planningConstraints?.shotCount ?? activeProject.shots.length} 个镜头和 {activeProject.planningConstraints?.targetDurationSec ?? activeProject.brief.durationSec} 秒完成。</span></div> : activeStageState.status === "repairing" ? <div className="storyboard-loading"><strong>正在校正文字分镜结构…</strong><span>系统只整理数据结构，不会缩短或重写已经生成的创意内容。</span></div> : activeStageState.status === "failed" ? <div className="creative-empty-state"><strong>文字分镜生成失败</strong><p>{latestStoryboardEvent?.progressCurrent ? `已完成 ${latestStoryboardEvent.progressCurrent} / ${latestStoryboardEvent.progressTotal ?? activeProject.shots.length} 镜头，成功内容已经保留。` : "文字分镜的数据结构不完整，系统未保存错误结果。"}</p><button type="button" className="button-secondary-v3" disabled={isGenerating} onClick={() => void runStoryboardStage()}>{latestStoryboardEvent?.progressCurrent ? "继续生成剩余镜头" : "重新生成文字分镜"}</button></div> : ["ready", "locked", "outdated"].includes(activeStageState.status) ? <StoryboardTimeline project={activeProject} selectedShotId={selectedStoryboardShotId} onVisibleShotChange={setSelectedStoryboardShotId} /> : <div className="creative-empty-state"><strong>文字分镜尚未生成</strong><p>确认人物与场景后，系统会按广告需求中的镜头数量和目标时长生成。</p></div> : null}
 
             {storyboardPromptsIncomplete ? <section className="shot-prompt-status" aria-label="详细提示词任务状态">
               <header><div><strong>详细提示词</strong><p>已完成 {promptProgress.completed} / {activeProject.shots.length} 镜；{promptProgress.failed} 个失败，{promptProgress.notStarted} 个未开始。此处是 DeepSeek 提示词准备，不是 Qwen 图片生成；成功内容已保存。</p></div><div className="shot-prompt-status__actions"><CallLogDrawer projectId={activeProject.id} projectName={activeProject.brief.productName} label="查看提示词日志" focusStage="prompts" /><button type="button" className="button-secondary-v3" disabled={stageLocking} onClick={() => void retryStoryboardPromptExpansion()}>{stageLocking ? "正在生成…" : "继续生成"}</button></div></header>
@@ -1469,7 +1473,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               })}</div>
             </section> : null}
 
-            {activeStage === "keyframes" && activeStageState.status !== "blocked" ? <KeyframeStageWorkspace project={previewProject} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} error={keyframeError} onGenerate={(shotId, frameId) => void generateCurrentShotKeyframes(shotId, frameId)} onConfirm={(shotId, frameId, locked) => void confirmCurrentFrame(shotId, frameId, locked)} /> : null}
+            {activeStage === "keyframes" && activeStageState.status !== "blocked" ? <KeyframeStageWorkspace project={activeProject} selectedShotId={selectedKeyframeShotId} busyShotId={keyframeBusyShotId} error={keyframeError} onGenerate={(shotId, frameId) => void generateCurrentShotKeyframes(shotId, frameId)} onConfirm={(shotId, frameId, locked) => void confirmCurrentFrame(shotId, frameId, locked)} /> : null}
             {activeStage === "video" ? <><div className="generation-call-picker-v3"><CallToggle active={selection.wan} title="Wan 2.7 视频" desc="只生成当前镜头，不自动批量运行" onClick={() => toggleSelection("wan")} disabled={isGenerating} /></div><section className="stage-readiness-grid"><StageReadiness label="已确认关键帧" value={`${activeProject.shots.filter((shot) => shot.frames?.every((frame) => frame.isLocked)).length} / ${activeProject.shots.length}`} /><StageReadiness label="镜头视频" value={activeProject.heroVideo ? "1 个已存在" : "等待逐镜头生成"} /><StageReadiness label="旁白" value={activeProject.narrationPlan ? `${activeProject.narrationPlan.beats.length} 条计划` : "尚未计划"} /></section></> : null}
             {activeStage === "final" ? <section className="stage-readiness-grid"><StageReadiness label="关键帧" value={`${liveKeyframes.filter((item) => item.status === "ready").length} 个已完成`} /><StageReadiness label="视频" value={activeProject.heroVideo ? "已完成" : "未完成"} /><StageReadiness label="旁白" value={activeProject.narrationAssetId ? "已完成" : "待生成"} /><StageReadiness label="成片时长" value={`${getProjectDurationSec(activeProject)} 秒`} /><Link href={`/projects/${activeProject.id}#final`} className="button-primary-v3">进入最终成片检查</Link></section> : null}
 

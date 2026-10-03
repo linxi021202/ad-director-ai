@@ -44,12 +44,14 @@ describe("shot prompt progress", () => {
     });
     const progress = derivePromptStageProgress(project);
     expect(progress.shots.map((shot) => shot.status)).toEqual(["ready", "ready", "partial"]);
-    expect(progress.shots[2]).toMatchObject({ completedFrames: 2, totalFrames: 3, reason: "DEEPSEEK_QUOTA_EXHAUSTED" });
+    expect(progress.shots[2]).toMatchObject({ completedFrames: 2, completedFrameCount: 2, totalFrames: 3,
+      failedFrameIds: ["frame-3-3"], hasPersistedPromptBundle: false, reason: "DEEPSEEK_QUOTA_EXHAUSTED" });
     expect(progress.failedShots.map((shot) => shot.id)).toEqual(["shot-03"]);
     expect(progress.completed).toBe(2);
     project.shotPromptPackages!.push({ ...project.shotPromptPackages![0]!, shotId: "shot-03" });
     const completed = derivePromptStageProgress(project);
     expect(completed.failedShots).toEqual([]);
     expect(completed.completed).toBe(3);
+    expect(completed.shots[2]).toMatchObject({ status: "ready", failedFrameIds: [], hasPersistedPromptBundle: true });
   });
 });

@@ -6,6 +6,8 @@ import { ensureShotArchitecture } from "../lib/storyboard/shotArchitecture";
 import { getMissingKeyframeIds, getProjectKeyframeViewState, getShotKeyframeViewState } from "../lib/image/keyframeViewState";
 import { KeyframeStageWorkspace } from "../components/KeyframeStageWorkspace";
 import { StageContextPanel } from "../components/StageDirectorRail";
+import { StoryboardTimeline } from "../components/storyboard/StoryboardTimeline";
+import { derivePromptStageShotState } from "../lib/workflow/shotPromptProgress";
 import type { GenerationProject } from "../lib/schemas/project";
 
 function fixture(): GenerationProject {
@@ -17,6 +19,20 @@ function fixture(): GenerationProject {
 }
 const noop = () => undefined;
 describe("canonical keyframe views", () => {
+  it("renders accessible storyboard shot buttons and matching card targets from one project", () => {
+    const project = fixture();
+    const selectedShotId = project.shots[1]!.id;
+    const nav = renderToStaticMarkup(<StageContextPanel project={project} activeStage="storyboard" selectedShotId={selectedShotId} onShotSelect={noop} />);
+    const cards = renderToStaticMarkup(<StoryboardTimeline project={project} selectedShotId={selectedShotId} />);
+    expect(nav.match(/<button type="button"/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(nav).toContain('aria-current="location"');
+    expect(nav).toContain(`${project.shots[1]!.durationSec} 秒 · 未开始`);
+    for (const shot of project.shots) {
+      expect(cards).toContain(`data-shot-id="${shot.id}"`);
+      expect(derivePromptStageShotState(project, shot.id).status).toBe("not_started");
+    }
+    expect(cards).toContain(`id="storyboard-shot-${selectedShotId}"`);
+  });
   it("shows generated-but-unconfirmed shots 01/02 and a genuinely empty shot 03 consistently", () => {
     const project = fixture();
     const nav = renderToStaticMarkup(<StageContextPanel project={project} activeStage="keyframes" />);

@@ -185,6 +185,38 @@ describe("persistent model call logs", () => {
     expect(report.entries.every((entry) => entry.stage === "keyframes" && entry.shotId === "shot-02")).toBe(true);
   });
 
+  it("binds a focused prompt export to shot 02 and prefers running, then failed, then completed tasks", async () => {
+    const base = Date.now();
+    const failed = randomUUID();
+    const completed = randomUUID();
+    const running = randomUUID();
+    const newerOtherShot = randomUUID();
+    for (const entry of [
+      { taskId: completed, shotId: "shot-02", status: "completed" as const, startedAt: base - 200 },
+      { taskId: failed, shotId: "shot-02", status: "failed" as const, startedAt: base - 100 },
+      { taskId: newerOtherShot, shotId: "shot-03", status: "completed" as const, startedAt: base }
+    ]) await upsertModelCallLog(sessionMock.id, { ...entry, kind: "task", projectId, stage: "prompts", provider: "deepseek" });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: failed, projectId, stage: "prompts",
+      provider: "deepseek", model: "deepseek-v4-pro", shotId: "shot-02", frameId: "frame-2",
+      status: "failed", startedAt: base - 90, errorCode: "SCHEMA_VALIDATION_FAILED", failurePhase: "SCHEMA_VALIDATION_FAILED" });
+    const url = `http://localhost/api/call-logs/export?projectId=${projectId}&format=json&requestedStage=prompts&requestedShotId=shot-02`;
+    const first = await exportLogs(new Request(url));
+    expect(first.status).toBe(200);
+    const report = await first.json();
+    expect(report).toMatchObject({ requestedStage: "prompts", requestedShotId: "shot-02",
+      resolvedTaskId: failed, resolvedStage: "prompts", resolvedShotId: "shot-02" });
+    expect(report.entries.every((entry: { taskId: string; shotId: string }) => entry.taskId === failed && entry.shotId === "shot-02")).toBe(true);
+    await upsertModelCallLog(sessionMock.id, { kind: "task", taskId: running, projectId, stage: "prompts",
+      provider: "deepseek", shotId: "shot-02", status: "running", startedAt: base + 1 });
+    const active = await exportLogs(new Request(url));
+    expect((await active.json()).resolvedTaskId).toBe(running);
+    const stage = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&format=json&requestedStage=prompts`));
+    expect((await stage.json()).entries.some((entry: { shotId: string }) => entry.shotId === "shot-03")).toBe(true);
+    const missing = await exportLogs(new Request(`http://localhost/api/call-logs/export?projectId=${projectId}&format=json&requestedStage=prompts&requestedShotId=shot-04`));
+    expect(missing.status).toBe(404);
+    expect((await missing.json()).error).toContain("镜头 04");
+  });
+
   it("relinks a verified private keyframe from its model call without a new model request or duplicate record", async () => {
     const original = await requireOwnedAnonymousProject(sessionMock.id, projectId);
     const shot = original.project.shots[0]!;

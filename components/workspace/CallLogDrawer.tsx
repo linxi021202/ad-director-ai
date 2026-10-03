@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { ViewportDrawer } from "./ViewportDrawer";
+import { resolveScopedTask } from "@/lib/logs/taskAssociation";
 
 type Entry = {
   id: string; kind: "task" | "call"; taskId: string; jobId?: string; projectId: string; stage: string;
@@ -111,7 +112,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
   }, [open, projectId, focusStage, focusShotId, focusFrameId]);
 
   useEffect(() => {
-    if (open && focusShotId && entries.length && !selectedId) setSelectedId(entries.find((entry) => entry.shotId === focusShotId && (!focusStage || entry.stage === focusStage) && (!focusFrameId || entry.frameId === focusFrameId) && entry.kind === "task")?.id
+    if (open && focusShotId && entries.length && !selectedId) setSelectedId((focusStage ? resolveScopedTask(entries, focusStage, focusShotId)?.id : undefined)
       ?? entries.find((entry) => entry.shotId === focusShotId && (!focusStage || entry.stage === focusStage) && (!focusFrameId || entry.frameId === focusFrameId))?.id ?? null);
   }, [open, focusShotId, focusFrameId, focusStage, entries, selectedId]);
 
@@ -122,7 +123,8 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
   const active = scopedEntries.filter((entry) => entry.kind === "task" && ["queued", "running", "qa-review"].includes(entry.status));
   const selected = scopedEntries.find((entry) => entry.id === selectedId);
   const currentProjectId = projectId ?? selected?.projectId ?? entries[0]?.projectId;
-  const currentTaskId = selected?.taskId ?? active[0]?.taskId ?? scopedEntries.find((entry) => entry.kind === "task")?.taskId
+  const currentTaskId = focusShotId && focusStage ? resolveScopedTask(scopedEntries, focusStage, focusShotId)?.taskId
+    : selected?.taskId ?? active[0]?.taskId ?? scopedEntries.find((entry) => entry.kind === "task")?.taskId
     ?? scopedEntries[0]?.taskId;
 
   async function clearLogs() {
@@ -140,15 +142,18 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
   }
 
   async function exportLogs(scope: "task" | "project", format: "json" | "markdown", copy = false) {
-    if (!currentProjectId || (scope === "task" && !currentTaskId)) return;
+    if (!currentProjectId || (scope === "task" && !currentTaskId && !focusShotId)) return;
     setExporting(true);
     try {
       const query = new URLSearchParams({ projectId: currentProjectId, format });
-      if (scope === "task" && currentTaskId) query.set("taskId", currentTaskId);
-      if (scope === "task" && focusStage) query.set("requestedStage", focusStage);
-      if (scope === "task" && focusShotId) query.set("requestedShotId", focusShotId);
+      if (scope === "task" && currentTaskId && !focusShotId) query.set("taskId", currentTaskId);
+      if (focusStage) query.set("requestedStage", focusStage);
+      if (focusShotId && focusStage) query.set("requestedShotId", focusShotId);
       const response = await fetch(`/api/call-logs/export?${query}`, { cache: "no-store" });
-      if (!response.ok) throw new Error(response.status === 404 ? "当前镜头没有匹配的关键帧生成任务日志。" : "日志导出失败，请稍后重试。");
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(failure?.error ?? "日志导出失败，请稍后重试。");
+      }
       const content = await response.text();
       if (copy) await navigator.clipboard.writeText(content.replace(/^\uFEFF/, ""));
       else {
@@ -167,7 +172,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
     <button type="button" className="call-log-trigger" onClick={() => setOpen(true)}>{label}</button>
     <ViewportDrawer open={open} label="调用日志" onClose={() => setOpen(false)} className="call-log-sheet">
       <header className="call-log-sheet__header">
-        <div><span>任务与模型</span><h2>调用日志</h2><p>{focusStage ? `${focusStage === "keyframes" ? "关键帧" : focusStage === "prompts" ? "详细提示词" : focusStage} · ${focusShotId ? `镜头 ${focusShotId.replace(/^shot-0*/, "")}` : "当前项目"}` : projectName ?? (currentProjectId ? `项目 ${currentProjectId.slice(0, 8)}` : "近期任务")}</p></div>
+        <div><span>任务与模型</span><h2>调用日志</h2><p>{focusStage ? `${focusStage === "keyframes" ? "关键帧" : focusStage === "prompts" ? "详细提示词" : focusStage} · ${focusShotId ? `镜头 ${focusShotId.replace(/^shot-0*/, "").padStart(2, "0")}` : "全部镜头"}` : projectName ?? (currentProjectId ? `项目 ${currentProjectId.slice(0, 8)}` : "近期任务")}</p></div>
         <button type="button" aria-label="关闭调用日志" onClick={() => setOpen(false)}>×</button>
       </header>
       <div className="call-log-sheet__toolbar">
@@ -177,8 +182,8 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
           {!entries.length ? <p>当前没有可导出的调用记录。</p> : null}
           <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "json")}>当前任务 · JSON</button>
           <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "markdown")}>当前任务 · Markdown</button>
-          <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "json")}>当前项目 · JSON</button>
-          <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "markdown")}>当前项目 · Markdown</button>
+          <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "json")}>{focusShotId ? "当前镜头" : focusStage ? "当前阶段" : "当前项目"} · JSON</button>
+          <button type="button" disabled={exporting || !currentProjectId || !entries.length} onClick={() => void exportLogs("project", "markdown")}>{focusShotId ? "当前镜头" : focusStage ? "当前阶段" : "当前项目"} · Markdown</button>
           <button type="button" disabled={exporting || !currentTaskId || !entries.length} onClick={() => void exportLogs("task", "markdown", true)}>复制诊断摘要</button>
         </div></details>
         <button type="button" className="call-log-clear" disabled={!projectId || !entries.length || clearing} title={!entries.length ? "当前没有可清空的调用记录" : undefined} onClick={() => setConfirmClear(true)}>清空日志</button>
@@ -186,7 +191,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
       <div className="call-log-sheet__scroll">
         <section><h3>当前任务</h3>{active.length ? active.map((entry) => <button type="button" className="call-log-row" key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {entry.stage}</span><strong>{entry.message || "任务执行中"}</strong><small>{statusNames[entry.status]} · 已运行 {Math.max(0, Math.floor((Date.now() - entry.startedAt) / 1000))} 秒{entry.progressTotal ? ` · ${entry.progressCurrent ?? 0}/${entry.progressTotal}` : ""}</small></button>) : <p className="call-log-empty">当前没有运行中的任务。</p>}</section>
         <section><h3>调用历史</h3>{filtered.map((entry) => <button type="button" className={`call-log-row${selectedId === entry.id ? " is-selected" : ""}`} key={entry.id} onClick={() => setSelectedId(entry.id)}><span>{providerNames[entry.provider] ?? entry.provider} · {anchorLabel(entry) ?? (entry.mode ? commitModeNames[entry.mode] ?? entry.mode : entry.stage)} {entry.shotId ? `· ${entry.shotId}` : ""}</span><strong>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态待核查" : statusNames[entry.status] ?? entry.status} · {new Date(entry.startedAt).toLocaleString("zh-CN")}</strong>{entry.errorCode || entry.errorSummary ? <small>{entry.errorCode === "SUBMISSION_STATE_UNKNOWN" ? "提交状态未知" : entry.errorCode || ""} {entry.errorSummary?.slice(0, 110)}</small> : null}</button>)}
-          {!filtered.length ? <p className="call-log-empty">{focusStage === "keyframes" ? "当前镜头尚无关键帧调用记录。旧任务可能未采集诊断信息，请重试该帧后查看。" : projectId && !entries.length ? "当前项目暂无调用日志。" : "暂无符合条件的记录。"}</p> : null}{hasMore ? <button type="button" className="call-log-more" disabled={loading} onClick={() => void load(entries.at(-1)?.startedAt)}>{loading ? "正在加载…" : "加载更早记录"}</button> : null}</section>
+          {!filtered.length ? <p className="call-log-empty">{focusStage === "prompts" && focusShotId ? `未找到镜头 ${focusShotId.replace(/^shot-0*/, "").padStart(2, "0")} 的详细提示词生成日志。` : focusStage === "keyframes" ? "当前镜头尚无关键帧调用记录。旧任务可能未采集诊断信息，请重试该帧后查看。" : projectId && !entries.length ? "当前项目暂无调用日志。" : "暂无符合条件的记录。"}</p> : null}{hasMore ? <button type="button" className="call-log-more" disabled={loading} onClick={() => void load(entries.at(-1)?.startedAt)}>{loading ? "正在加载…" : "加载更早记录"}</button> : null}</section>
         {selected ? <section className="call-log-diagnostics"><h3>技术诊断</h3><dl>{([
           ["提示词阶段", selected.promptStage ? ({ foundation: "导演基础", frame: "逐帧提示词", qa: "质量校验", repair: "局部修复" })[selected.promptStage] : undefined],
           ["结果版本", selected.resultVersion ? ({ raw: "原始输出", normalized: "规范化输出", repaired: "修复结果", final: "最终结果" })[selected.resultVersion] : undefined],

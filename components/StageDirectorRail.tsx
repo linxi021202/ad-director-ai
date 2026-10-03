@@ -9,6 +9,7 @@ import { GuardedActionButton } from "@/components/workflow/GuardedActionButton";
 import { deriveVisualSetupStageState, visualSetupStatusLabel } from "@/lib/visual/visualSetupStage";
 import { creativeStageStatusLabel, deriveCreativeStageState } from "@/lib/creative/creativeStageState";
 import { getShotKeyframeViewState } from "@/lib/image/keyframeViewState";
+import { derivePromptStageShotState } from "@/lib/workflow/shotPromptProgress";
 
 const MAJOR_STEPS: Array<{ label: string; stages: StageId[] }> = [
   { label: "商品与创意", stages: ["brief", "creative"] },
@@ -40,7 +41,15 @@ export function StageContextPanel({ project, activeStage, onSelect, selectedShot
     {activeStage === "keyframes" ? <div className="stage-shot-navigator keyframe-shot-nav"><span>镜头列表</span>{project.shots.map((shot) => {
       const view = getShotKeyframeViewState(project, shot.id, busyShotId === shot.id);
       return <button type="button" key={shot.id} className={shot.id === selectedShotId ? "is-current" : ""} onClick={() => onShotSelect?.(shot.id)}><strong>镜头 {String(shot.index).padStart(2, "0")}</strong><small>{shot.durationSec} 秒 · {view.label}</small></button>;
-    })}</div> : (activeStage === "storyboard" || activeStage === "video") ? <div className="stage-shot-navigator"><span>镜头列表</span>{project.shots.map((shot) => <a key={shot.id} href={`#${activeStage}-shot-${shot.id}`}>镜头 {String(shot.index).padStart(2, "0")}<small>{shot.durationSec} 秒</small></a>)}</div> : null}
+    })}</div> : activeStage === "storyboard" ? <div className="stage-shot-navigator storyboard-shot-nav"><span>镜头列表</span>{project.shots.map((shot) => {
+      const state = derivePromptStageShotState(project, shot.id);
+      const label = state.status === "ready" ? "已完成" : state.status === "failed" ? "失败"
+        : state.status === "partial" ? "部分完成" : state.status === "generating" ? "生成中" : "未开始";
+      return <button type="button" key={shot.id} aria-current={shot.id === selectedShotId ? "location" : undefined}
+        className={shot.id === selectedShotId ? "is-current" : ""} onClick={() => onShotSelect?.(shot.id)}>
+        <strong>镜头 {String(shot.index).padStart(2, "0")}</strong><small>{shot.durationSec} 秒 · {label}</small>
+      </button>;
+    })}</div> : activeStage === "video" ? <div className="stage-shot-navigator"><span>镜头列表</span>{project.shots.map((shot) => <a key={shot.id} href={`#video-shot-${shot.id}`}>镜头 {String(shot.index).padStart(2, "0")}<small>{shot.durationSec} 秒</small></a>)}</div> : null}
     <footer className="stage-project-summary"><small>{project.brief.productName}</small><strong>{constraints.shotCount} 镜头 · {constraints.targetDurationSec} 秒 · {constraints.aspectRatio}</strong></footer>
   </aside>;
 }

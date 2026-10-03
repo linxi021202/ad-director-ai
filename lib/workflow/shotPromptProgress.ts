@@ -39,24 +39,31 @@ export function deriveShotPromptProgress(
 export function derivePromptStageShotState(project: GenerationProject, shotId: string) {
   const shot = project.shots.find((item) => item.id === shotId);
   const totalFrames = shot?.frames?.length ?? 0;
+  const frameIds = new Set(shot?.frames?.map((frame) => frame.id) ?? []);
   const input = shot ? { brief: project.brief, strategy: project.strategy, shot,
     previousShot: project.shots.find((item) => item.index === shot.index - 1),
     productVisualSpec: project.productVisualSpec, visualContinuityBible: project.visualContinuityBible,
     referencePack: project.referencePack } : undefined;
   const ready = Boolean(shot && isShotPromptReady(project, shot));
-  if (ready) return { shotId, status: "ready" as const, completedFrames: totalFrames, totalFrames, reason: undefined };
+  if (ready) return { shotId, status: "ready" as const, completedFrames: totalFrames, completedFrameCount: totalFrames,
+    totalFrames, totalFrameCount: totalFrames, completedFrameIds: [...frameIds], failedFrameIds: [] as string[],
+    hasPersistedPromptBundle: true, reason: undefined };
   const latest = (project.generationEvents ?? []).filter((item) => item.stage === "prompts" && item.shotId === shotId)
     .sort((a, b) => b.startedAt - a.startedAt)[0];
   const draft = project.shotPromptDrafts?.find((item) => item.shotId === shotId && input
     && matchesShotPromptInputFingerprint(item.inputFingerprint, input));
-  const frameIds = new Set(shot?.frames?.map((frame) => frame.id) ?? []);
   const completedFrames = draft?.framePrompts.filter((frame) => frameIds.has(frame.frameId)).length ?? 0;
   const partial = Boolean(draft?.foundation || completedFrames);
   const status = latest && ["running", "queued", "qa-review"].includes(latest.status) ? "generating" as const
     : partial ? "partial" as const
     : latest && ["failed", "interrupted"].includes(latest.status) ? "failed" as const
     : "not_started" as const;
-  return { shotId, status, completedFrames, totalFrames, reason: latest?.errorCode };
+  const completedFrameIds = new Set(draft?.framePrompts.map((frame) => frame.frameId) ?? []);
+  return { shotId, status, completedFrames, completedFrameCount: completedFrames, totalFrames, totalFrameCount: totalFrames,
+    completedFrameIds: [...completedFrameIds].filter((id) => frameIds.has(id)),
+    failedFrameIds: latest && ["failed", "interrupted"].includes(latest.status)
+      ? [...frameIds].filter((id) => !completedFrameIds.has(id)) : [],
+    hasPersistedPromptBundle: false, reason: latest?.errorCode };
 }
 
 export function derivePromptStageProgress(project: GenerationProject) {

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { readModelCallLogArchive } from "./modelCallStore";
+import { resolveScopedTask } from "./taskAssociation";
 import { requireOwnedAnonymousProject } from "../projects/anonymousProjectStore";
 
 type ExportScope = { projectId: string; taskId?: string; requestedStage?: string; requestedShotId?: string };
@@ -10,9 +11,10 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
   const scopedArchive = await readModelCallLogArchive(sessionId, scope.projectId, scope.taskId);
   const matches = scopedArchive.entries.filter((entry) => (!scope.requestedStage || entry.stage === scope.requestedStage)
     && (!scope.requestedShotId || entry.shotId === scope.requestedShotId));
-  const resolvedTaskId = scope.taskId ?? (scope.requestedStage || scope.requestedShotId
-    ? [...matches].sort((a, b) => b.startedAt - a.startedAt).find((entry) => entry.kind === "task")?.taskId
-      ?? [...matches].sort((a, b) => b.startedAt - a.startedAt)[0]?.taskId : undefined);
+  const selectedTask = scope.requestedStage && scope.requestedShotId
+    ? resolveScopedTask(matches, scope.requestedStage, scope.requestedShotId)
+    : scope.taskId ? matches.find((entry) => entry.kind === "task" && entry.taskId === scope.taskId) : undefined;
+  const resolvedTaskId = scope.requestedShotId ? selectedTask?.taskId : scope.taskId;
   const archive = resolvedTaskId && !scope.taskId
     ? await readModelCallLogArchive(sessionId, scope.projectId, resolvedTaskId) : scopedArchive;
   const entries = archive.entries.filter((entry) => (!scope.requestedStage || entry.stage === scope.requestedStage)
@@ -42,6 +44,11 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     projectVersionBefore: entry.projectVersionBefore ?? null,
     projectVersionExpected: entry.projectVersionExpected ?? null,
     projectVersionActual: entry.projectVersionActual ?? null,
+    projectPatchStartedAt: entry.projectPatchStartedAt ?? null,
+    projectPatchCompletedAt: entry.projectPatchCompletedAt ?? null,
+    projectVersionAfter: entry.projectVersionAfter ?? null,
+    shotStatusPersisted: entry.shotStatusPersisted ?? null,
+    promptBundlePersisted: entry.promptBundlePersisted ?? null,
     projectVersionAtStart: entry.projectVersionAtStart ?? null,
     projectVersionBeforePersist: entry.projectVersionBeforePersist ?? null,
     projectVersionAfterPersist: entry.projectVersionAfterPersist ?? null,
@@ -77,6 +84,8 @@ export async function buildModelCallExport(sessionId: string, scope: ExportScope
     requestedStage: scope.requestedStage ?? null,
     requestedShotId: scope.requestedShotId ?? null,
     resolvedTaskId: resolvedTaskId ?? null,
+    resolvedStage: selectedTask?.stage ?? null,
+    resolvedShotId: selectedTask?.shotId ?? null,
     environment: { nodeEnv: process.env.NODE_ENV ?? null, commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT_SHA ?? null },
     retention: { days: archive.retentionDays, maxSessionEntries: 500, limitReached: archive.retentionLimitReached, firstAvailableAt: archive.firstAvailableAt ? new Date(archive.firstAvailableAt).toISOString() : null,
       notice: archive.retentionLimitReached ? "会话日志达到保留上限，更早记录可能已被清理；本文件包含当前仍保存的全部匹配记录。" : null },
@@ -98,7 +107,7 @@ export function modelCallExportMarkdown(report: Awaited<ReturnType<typeof buildM
     "## 一、任务概览",
     `项目：${safe(report.project.name)}（${report.project.id}）`,
     `范围：${report.scope === "task" ? `任务 ${report.taskId}` : "当前项目"}`,
-    `请求阶段：${report.requestedStage ?? "全部"}；请求镜头：${report.requestedShotId ?? "全部"}；匹配任务：${report.resolvedTaskId ?? "无"}`,
+    `请求阶段：${report.requestedStage ?? "全部"}；请求镜头：${report.requestedShotId ?? "全部"}；匹配任务：${report.resolvedTaskId ?? "无"}；匹配阶段：${report.resolvedStage ?? "无"}；匹配镜头：${report.resolvedShotId ?? "无"}`,
     `导出时间：${report.exportedAt}`, `应用提交：${report.environment.commit ?? "未提供"}`,
     `记录数量：${report.summary.total}`, "",
     "## 二、失败摘要",
