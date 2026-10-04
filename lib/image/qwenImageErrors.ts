@@ -8,9 +8,9 @@ export type QwenFailureCode =
 export function classifyQwenFailure(httpStatus: number | undefined, providerCode: string | undefined, message: string): QwenFailureCode {
   const detail = `${providerCode ?? ""} ${message}`.toLowerCase();
   const code = (providerCode ?? "").toLowerCase();
-  if (httpStatus === 401 || httpStatus === 403 || /invalidapikey|invalid.api.key|unauthorized|authentication|permission.denied|forbidden/.test(detail)) return "AUTH_FAILED";
   if (/insufficient[._ -]*balance|arrearage|arrears|account[._ -]*balance|balance[._ -]*insufficient/.test(detail)) return "INSUFFICIENT_BALANCE";
   if (/allocationquota\.freetieronly|quota[._ -]*exhaust|free[._ -]*quota|quota[._ -]*limit|free allocated quota exceeded/.test(detail)) return "QUOTA_EXHAUSTED";
+  if (httpStatus === 401 || httpStatus === 403 || /invalidapikey|invalid.api.key|unauthorized|authentication|permission.denied|forbidden|accountnotgoodstanding|account.not.good.standing/.test(detail)) return "AUTH_FAILED";
   if (httpStatus === 402) return "INSUFFICIENT_BALANCE";
   if (httpStatus === 429 || /rate.limit|throttl|too.many.requests/.test(detail)) return "RATE_LIMITED";
   if (/region|workspace.region/.test(detail) && /not.support|unavailable|mismatch|invalid/.test(detail)) return "MODEL_NOT_SUPPORTED_IN_REGION";
@@ -35,10 +35,11 @@ export function qwenImageUserMessage(code?: string): string {
   if (code === "PROVIDER_RESPONSE_TIMEOUT") return "图像模型响应超时，本次结果状态未知。已成功生成的关键帧会继续保留，可查看镜头日志后单独重试当前帧。";
   if (code === "STORAGE_CAPACITY_LOW") return "服务器素材存储空间不足，图片无法保存。请先扩容存储或清理不需要的素材，再重试。";
   if (code === "STORAGE_UNAVAILABLE") return "服务器素材存储暂不可用，已暂停图片生成，请稍后重试或联系管理员。";
-  if (code === "QUOTA_EXHAUSTED" || code === "MODEL_NOT_AVAILABLE" || code === "MODEL_TEMPORARILY_UNAVAILABLE" || code === "MODEL_NOT_SUPPORTED_IN_REGION")
-    return "当前图像模型免费额度已用尽或模型暂不可用，系统已尝试其它可用模型；请检查模型设置或更换可用模型账户。";
-  if (code === "INSUFFICIENT_BALANCE" || code === "AUTH_FAILED" || code === "PROVIDER_NOT_CONFIGURED")
-    return "当前百炼图像模型账户不可用，请检查 API Key 对应账户余额、权限或免费额度设置。";
+  if (code === "QUOTA_EXHAUSTED") return "当前兼容的免费图像模型额度均已用尽。可以在模型设置中更换 API Key，或前往百炼控制台查看各模型免费额度。";
+  if (code === "MODEL_NOT_AVAILABLE" || code === "MODEL_TEMPORARILY_UNAVAILABLE" || code === "MODEL_NOT_SUPPORTED_IN_REGION")
+    return "当前兼容的图像模型暂不可用，请查看调用日志或模型设置。";
+  if (code === "INSUFFICIENT_BALANCE") return "当前百炼账户处于欠费或不可用状态，即使其它模型仍有免费额度也无法调用。请先检查 API Key 所属账户状态。";
+  if (code === "AUTH_FAILED" || code === "PROVIDER_NOT_CONFIGURED") return "当前百炼账户密钥无效或没有调用权限，请检查 API Key。";
   if (code === "INVALID_PARAMETER" || code === "INVALID_IMAGE" || code === "REFERENCE_IMAGE_REQUIRED" || code === "MODEL_ROUTING_FAILED")
     return "当前图片生成请求存在参数或参考图问题，请查看调用日志后重试。";
   if (code === "RATE_LIMITED") return "图像模型调用频繁，系统已排队重试；请稍后再试。";

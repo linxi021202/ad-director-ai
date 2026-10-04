@@ -100,7 +100,45 @@ describe("Qwen capability-aware routing", () => {
     ]);
     await generateQwenImageAdaptive(input, async (attempt) => { attempts.push(attempt); }, call);
     expect(call.mock.calls.filter(([request]) => request.model === "qwen-image-edit-max-2026-01-16")).toHaveLength(1);
-    expect(attempts.some((attempt) => attempt.model === "qwen-image-edit-max-2026-01-16" && attempt.errorCode === "MODEL_SKIPPED_COOLDOWN")).toBe(true);
+    expect(attempts.at(-1)).toMatchObject({ model: "qwen-image-2.0-pro-2026-06-22", routerDecision: "SELECT_MODEL", routerResult: "SUCCESS" });
+    expect(attempts[0]).toMatchObject({ routerDecision: "FALLBACK_NEXT_MODEL", routerResult: "FREE_TIER_EXHAUSTED" });
+  });
+
+  it.each([2, 3, 4])("falls through %i exhausted reference models within the free-only pool", async (exhaustedCount) => {
+    const pool = selectQwenImageModels(input);
+    const attempts: QwenModelAttempt[] = [];
+    const call = vi.fn(async (request: QwenImageRequest) => result(request.model!, pool.indexOf(request.model!) >= exhaustedCount, "QUOTA_EXHAUSTED"));
+    const response = await generateQwenImageAdaptive(input, async (attempt) => { attempts.push(attempt); }, call);
+    expect(call.mock.calls.map(([request]) => request.model)).toEqual(pool.slice(0, exhaustedCount === 4 ? 4 : exhaustedCount + 1));
+    if (exhaustedCount === 4) {
+      expect(response).toMatchObject({ success: false, errorCode: "QUOTA_EXHAUSTED" });
+      expect(attempts.every((attempt) => attempt.routerResult === "FREE_TIER_EXHAUSTED")).toBe(true);
+      await generateQwenImageAdaptive(input, undefined, call);
+      expect(call).toHaveBeenCalledTimes(4);
+    } else expect(response).toMatchObject({ success: true, model: pool[exhaustedCount] });
+  });
+
+  it("caches an account hard stop across candidates and clears it when the key changes", async () => {
+    const call = vi.fn(async (request: QwenImageRequest) => secret.value === "sk-first-key-for-tests"
+      ? result(request.model!, false, "INSUFFICIENT_BALANCE") : result(request.model!, true));
+    const first = await generateQwenImageAdaptive(input, undefined, call);
+    const attempts: QwenModelAttempt[] = [];
+    const second = await generateQwenImageAdaptive(input, async (attempt) => { attempts.push(attempt); }, call);
+    expect(first.errorCode).toBe("INSUFFICIENT_BALANCE");
+    expect(second.errorCode).toBe("INSUFFICIENT_BALANCE");
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(attempts[0]).toMatchObject({ status: "blocked", errorCode: "BLOCKED_ACCOUNT_ERROR", routerDecision: "STOP_PROVIDER" });
+    secret.value = "sk-second-key-for-tests";
+    expect((await generateQwenImageAdaptive(input, undefined, call)).success).toBe(true);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fallback after response timeout or asset persistence failure", async () => {
+    for (const code of ["PROVIDER_RESPONSE_TIMEOUT", "ASSET_PERSIST_FAILED"]) {
+      const call = vi.fn(async (request: QwenImageRequest) => result(request.model!, false, code));
+      expect((await generateQwenImageAdaptive(input, undefined, call)).errorCode).toBe(code);
+      expect(call).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("stops on malformed parameters instead of repeating the request on another model", async () => {
@@ -159,7 +197,9 @@ describe("Qwen capability-aware routing", () => {
     expect(classifyQwenFailure(429, "Throttling.AllocationQuota", "Rate limit exceeded")).toBe("RATE_LIMITED");
     expect(classifyQwenFailure(400, "QuotaExceeded", "Free quota exhausted")).toBe("QUOTA_EXHAUSTED");
     expect(classifyQwenFailure(400, "AllocationQuota.FreeTierOnly", "free tier only")).toBe("QUOTA_EXHAUSTED");
+    expect(classifyQwenFailure(403, "AllocationQuota.FreeTierOnly", "free tier only")).toBe("QUOTA_EXHAUSTED");
     expect(classifyQwenFailure(400, "Arrearage", "Insufficient balance")).toBe("INSUFFICIENT_BALANCE");
+    expect(classifyQwenFailure(403, "Arrearage", "AccountNotGoodStanding")).toBe("INSUFFICIENT_BALANCE");
     expect(classifyQwenFailure(400, "InvalidParameter", "Invalid image size")).toBe("INVALID_PARAMETER");
     expect(shouldFallbackQwen("AUTH_FAILED")).toBe(false);
     expect(shouldFallbackQwen("INVALID_PARAMETER")).toBe(false);

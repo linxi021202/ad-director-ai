@@ -513,6 +513,7 @@ async function executeImageBatch(input: ImageBatchInput) {
           id: logId,
           kind: "call", taskId: eventId, jobId: input.batchRunId, projectId: input.projectId,
           stage: "keyframes", provider: "qwen-image", model: attempt.model, mode: attempt.mode, taskType: attempt.taskType,
+          routerDecision: attempt.routerDecision, routerResult: attempt.routerResult, selectedModel: attempt.selectedModel,
           shotId: shot.id, frameId: frame.id, attempt: attempt.attempt, status: attempt.status,
           ...(input.userRetryFrameIds?.has(frame.id) ? { retryReason: "user_retry" as const, previousAttempt: "response_timeout" as const } : {}),
           startedAt: attempt.startedAt, completedAt: attempt.completedAt,

@@ -637,7 +637,7 @@ describe("second-stage API routes", () => {
     const text = JSON.stringify(await completedImageResponse(response));
 
     expect(text).not.toContain("sk-dashscope-secret-test-key");
-    expect(text).toContain("百炼图像模型账户不可用");
+    expect(text).toContain("当前百炼账户密钥无效或没有调用权限");
     expect(text).toContain("fallbackUsed");
   });
   it("render-video no longer returns mock or planned final video URLs", async () => {

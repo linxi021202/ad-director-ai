@@ -52,6 +52,43 @@ afterEach(async () => {
 });
 
 describe("visual anchor candidate calls", () => {
+  it("blocks the remaining scene candidates after the first account arrearage without more Qwen calls", async () => {
+    const created = await createAnonymousProject(session.id, { templateId: "cold-brew-demo" });
+    const continuity = buildProjectContinuity({ brief: created.project.brief, strategy: created.project.strategy!, shots: created.project.shots });
+    const saved = await mutateOwnedAnonymousProject(session.id, created.id, (project) => {
+      const workspace = ensureVisualAnchorWorkspace({ ...project, ...continuity });
+      return { ...workspace, sceneVisualSpecs: workspace.sceneVisualSpecs?.map((spec) => ({ ...spec, heroProps: [], layout: undefined })) };
+    });
+    vi.mocked(generateQwenImageAdaptive).mockImplementation(async (request, onAttempt) => {
+      const now = Date.now();
+      await onAttempt?.({ taskType: "scene_candidate_text_only", model: "qwen-image-max-2025-12-30", attempt: 1,
+        status: "failed", startedAt: now, completedAt: now + 5, errorCode: "INSUFFICIENT_BALANCE",
+        providerErrorCode: "Arrearage", httpStatus: 400, referenceCount: 0, size: request.size!, mode: "text-to-image",
+        promptExtend: false, watermark: false, routerDecision: "STOP_PROVIDER", routerResult: "ACCOUNT_ARREARAGE" });
+      return { success: false, provider: "dashscope", model: "qwen-image-max-2025-12-30", latencyMs: 5,
+        size: request.size!, errorCode: "INSUFFICIENT_BALANCE", providerErrorCode: "Arrearage", httpStatus: 400 };
+    });
+    const response = await POST(new Request(`http://localhost/api/projects/${created.id}/visual-anchors`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "generate-candidates", kind: "scene", targetId: saved.project.sceneVisualSpecs![0]!.id,
+        count: 3, expectedVersion: saved.version })
+    }), { params: Promise.resolve({ projectId: created.id }) });
+    expect(response.status).toBe(502);
+    expect(generateQwenImageAdaptive).toHaveBeenCalledTimes(1);
+    const logs = await listModelCallLogs(session.id, { projectId: created.id, stage: "anchors", limit: 100 });
+    expect(logs.filter((entry) => entry.kind === "call" && entry.status === "blocked")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ candidateIndex: 2, blockedBy: "ACCOUNT_ARREARAGE", errorCode: "BLOCKED_ACCOUNT_ERROR" }),
+      expect.objectContaining({ candidateIndex: 3, blockedBy: "ACCOUNT_ARREARAGE", errorCode: "BLOCKED_ACCOUNT_ERROR" })
+    ]));
+    expect(logs.find((entry) => entry.kind === "call" && entry.candidateIndex === 1)).toMatchObject({
+      providerErrorCode: "Arrearage", routerDecision: "STOP_PROVIDER", routerResult: "ACCOUNT_ARREARAGE"
+    });
+    const exported = await buildModelCallExport(session.id, { projectId: created.id });
+    expect(exported.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ candidateIndex: 1, routerDecision: "STOP_PROVIDER", routerResult: "ACCOUNT_ARREARAGE" }),
+      expect.objectContaining({ candidateIndex: 2, blockedBy: "ACCOUNT_ARREARAGE" })
+    ]));
+  });
   it("retries a project version conflict with the same three generated asset IDs", async () => {
     const created = await createAnonymousProject(session.id, { templateId: "cold-brew-demo" });
     const continuity = buildProjectContinuity({ brief: created.project.brief, strategy: created.project.strategy!, shots: created.project.shots });

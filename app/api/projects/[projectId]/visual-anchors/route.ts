@@ -270,17 +270,30 @@ async function generateCandidates(
     };
     candidatesStarted = true;
     const results = [] as Awaited<ReturnType<typeof runCandidate>>[];
-    for (const candidate of requested) results.push(await runCandidate(candidate));
+    let providerHardStop: "ACCOUNT_ARREARAGE" | "ACCOUNT_AUTH_FAILED" | null = null;
+    for (const candidate of requested) {
+      if (providerHardStop) {
+        await logAnchorCandidateBlocked(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, providerHardStop, needsProductReference);
+        results.push({ requestItem: { ...candidate, prompt: "" }, result: null });
+        continue;
+      }
+      const completed = await runCandidate(candidate);
+      results.push(completed);
+      if (completed.result?.errorCode === "INSUFFICIENT_BALANCE") providerHardStop = "ACCOUNT_ARREARAGE";
+      else if (completed.result?.errorCode === "AUTH_FAILED") providerHardStop = "ACCOUNT_AUTH_FAILED";
+    }
     const initialAssetIds = results.flatMap(({ result }) => result?.success && result.assetId ? [result.assetId] : []);
     const diversity = await inspectCandidateDiversity({ kind: body.kind, assetIds: initialAssetIds, sessionId, projectId });
     if (!diversity.passed && initialAssetIds.length === body.count) {
       const repairIndexes = new Set(diversity.tooSimilarIndexes.slice(0, 2));
       for (let index = 0; index < results.length; index += 1) {
         const result = results[index]!;
-        if (!repairIndexes.has(index + 1)) continue;
+        if (!repairIndexes.has(index + 1) || providerHardStop) continue;
         const candidate = requested[index]!;
         const repaired = await runCandidate(candidate,
           true, `${result.requestItem.prompt}\n多样性修复：上一版与其他方案过于相似。必须强化本方向的独有脸型/空间拓扑、轮廓、材质和构图差异，同时保持角色或场景功能不变。`);
+        if (repaired.result?.errorCode === "INSUFFICIENT_BALANCE") providerHardStop = "ACCOUNT_ARREARAGE";
+        else if (repaired.result?.errorCode === "AUTH_FAILED") providerHardStop = "ACCOUNT_AUTH_FAILED";
         if (repaired.result?.success && repaired.result.assetId) results[index] = { ...result, result: repaired.result };
       }
     }
@@ -506,6 +519,7 @@ async function logAnchorModelAttempt(sessionId: string, projectId: string, event
     durationMs: Math.max(0, attempt.completedAt - attempt.startedAt),
     referenceImageCount: attempt.referenceCount, referenceImagesIncluded: attempt.referenceCount > 0,
     errorCode: attempt.errorCode, providerErrorCode: attempt.providerErrorCode, errorSummary: attempt.error,
+    routerDecision: attempt.routerDecision, routerResult: attempt.routerResult, selectedModel: attempt.selectedModel,
     httpStatus: attempt.httpStatus, providerRequestId: attempt.requestId, providerTaskId: attempt.taskId,
     finalAssetId: attempt.assetId, ...(attempt.assetId ? { outputAssetIds: [attempt.assetId] } : {}),
     failurePhase: attempt.status === "failed" ? anchorFailurePhase({ success: false, provider: "dashscope", model: attempt.model,
@@ -544,6 +558,21 @@ async function logAnchorCandidateResult(sessionId: string, projectId: string, ev
     finalAssetId: result.assetId, ...(result.assetId ? { outputAssetIds: [result.assetId] } : {}),
     failurePhase: anchorFailurePhase(result), errorName: result.networkFailure?.errorName,
     causeCode: result.networkFailure?.causeCode
+  });
+}
+
+async function logAnchorCandidateBlocked(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
+  anchorType: VisualAnchorCandidateKind, anchorTargetId: string, candidateId: string, candidateIndex: number,
+  blockedBy: "ACCOUNT_ARREARAGE" | "ACCOUNT_AUTH_FAILED", productReference: boolean) {
+  const now = Date.now();
+  await upsertModelCallLog(sessionId, {
+    id: anchorAttemptId(event.id, candidateId, "initial:account-blocked"),
+    kind: "call", taskId: event.id, jobId: event.runId, projectId, stage: "anchors", provider: "qwen-image",
+    taskType: anchorType === "character" ? "character_candidate" : productReference ? "scene_candidate_with_product_reference" : "scene_candidate_text_only",
+    anchorType, anchorTargetId, candidateId, candidateIndex, model: "未调用", attempt: 1, mode: "anchor-candidate",
+    status: "blocked", startedAt: now, completedAt: now, durationMs: 0,
+    referenceImageCount: 0, referenceImagesIncluded: false, blockedBy, errorCode: "BLOCKED_ACCOUNT_ERROR",
+    routerDecision: "STOP_PROVIDER", routerResult: blockedBy, errorSummary: "账户不可用，当前候选未向百炼发送请求。"
   });
 }
 
