@@ -12,6 +12,10 @@ type Entry = {
   jobElapsedMs?: number; lastHeartbeatAt?: number; interruptedAt?: number;
   progressCurrent?: number; progressTotal?: number; attempt?: number; errorCode?: string; blockedBy?: string; errorSummary?: string;
   routerDecision?: string; routerResult?: string; selectedModel?: string;
+  routerStage?: string; blockedReason?: string; accountState?: string; accountStateSource?: string;
+  apiKeyFingerprintMasked?: string; accountStateCheckedAt?: number; accountStateExpiresAt?: number;
+  requiredCapabilities?: { textToImage?: boolean; referenceImageInput?: boolean; highConsistency?: boolean };
+  candidateModels?: string[]; skippedModels?: string[]; providerRequestModel?: string; fallbackReason?: string; finalModel?: string;
   retryReason?: "user_retry"; previousAttempt?: "response_timeout";
   providerErrorCode?: string; validationIssues?: Array<{ path: string; code: string; message: string }>;
   requestOptions?: { temperature?: number; maxTokens?: number; responseFormat?: string; thinking?: string };
@@ -162,7 +166,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
   }
 
   return <>
-    <button type="button" className="call-log-trigger" onClick={() => setOpen(true)}>{label}</button>
+    <button type="button" className="call-log-trigger workspace-header-action" onClick={() => setOpen(true)}>{label}</button>
     <ViewportDrawer open={open} label="调用日志" onClose={() => setOpen(false)} className="call-log-sheet">
       <header className="call-log-sheet__header">
         <div><span>任务与模型</span><h2>调用日志</h2><p>{focusShotId ? `镜头 ${focusShotId.replace(/^shot-0*/, "").padStart(2, "0")}${focusStage ? ` · ${focusStage === "keyframes" ? "关键帧" : focusStage === "prompts" ? "生成准备" : focusStage}` : " · 完整生成链路"}` : focusStage ? focusStage : projectName ?? (currentProjectId ? `项目 ${currentProjectId.slice(0, 8)}` : "近期任务")}</p></div>
@@ -193,6 +197,15 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
           ["质量问题", selected.qualityIssues?.map((issue) => `${issue.path}：${issue.reason}；建议：${issue.suggestion}`).join("\n")],
           ["调用编号", selected.id], ["请求关联编号", selected.requestId], ["批次编号", selected.jobId], ["任务编号", selected.taskId], ["候选", anchorLabel(selected)], ["候选编号", selected.candidateId], ["模型", selected.model], ["生成模式", selected.mode ? commitModeNames[selected.mode] ?? selected.mode : undefined], ["镜头", selected.shotId], ["帧", selected.frameId], ["参考图数量", selected.referenceImageCount], ["生成素材", selected.outputAssetIds?.join("、")], ["状态", statusNames[selected.status] ?? selected.status],
           ["生成前项目版本", selected.projectVersionAtStart], ["持久化前项目版本", selected.projectVersionBeforePersist],
+          ["路由阶段", selected.routerStage ? ({ ACCOUNT_GATE: "账户检查", CAPABILITY_FILTER: "能力筛选", MODEL_SELECTION: "模型选择", PROVIDER_CALL: "服务商请求" } as Record<string, string>)[selected.routerStage] : undefined],
+          ["阻止原因", selected.blockedReason ? ({ ACCOUNT_ARREARAGE_CACHE_VALID: "有效缓存：账户欠费", ACCOUNT_ARREARAGE_FRESH_PROVIDER_RESPONSE: "本次请求：账户欠费", ACCOUNT_AUTH_FAILED_CACHE_VALID: "有效缓存：密钥无效", ACCOUNT_AUTH_FAILED_FRESH_PROVIDER_RESPONSE: "本次请求：密钥无效", NO_COMPATIBLE_MODEL: "无兼容模型" } as Record<string, string>)[selected.blockedReason] : undefined],
+          ["账户状态来源", selected.accountStateSource === "CACHE" ? "本次密钥缓存" : selected.accountStateSource === "PROVIDER_RESPONSE" ? "本次服务商响应" : undefined],
+          ["密钥标识", selected.apiKeyFingerprintMasked],
+          ["账户状态记录", selected.accountStateCheckedAt ? new Date(selected.accountStateCheckedAt).toLocaleString("zh-CN") : undefined],
+          ["账户状态过期", selected.accountStateExpiresAt ? new Date(selected.accountStateExpiresAt).toLocaleString("zh-CN") : undefined],
+          ["能力要求", selected.requiredCapabilities ? JSON.stringify(selected.requiredCapabilities) : undefined],
+          ["候选模型池", selected.candidateModels?.join(" → ")], ["跳过模型", selected.skippedModels?.join("、")],
+          ["请求模型", selected.providerRequestModel], ["回退原因", selected.fallbackReason], ["最终模型", selected.finalModel],
           ["持久化后项目版本", selected.projectVersionAfterPersist], ["保存尝试次数", selected.persistAttempt],
           ["持久化状态", selected.persistStatus], ["场景需求编号", selected.anchorTargetId],
           ["保存前项目版本", selected.projectVersionBefore], ["预期项目版本", selected.projectVersionExpected], ["实际项目版本", selected.projectVersionActual], ["内部异常堆栈", selected.errorStack],

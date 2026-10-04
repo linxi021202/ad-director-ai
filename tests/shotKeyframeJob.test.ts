@@ -112,4 +112,29 @@ describe("single-shot keyframe job", () => {
     expect((await requireOwnedAnonymousProject("shot-job-session", created.id)).project.generationEvents
       .filter((item) => item.action === "制作单镜关键帧")).toHaveLength(1);
   });
+
+  it("does not deduplicate against a failed historical shot job", async () => {
+    const created = await createAnonymousProject("shot-job-session", { templateId: "cold-brew-demo" });
+    const shotId = created.project.shots[0]!.id;
+    await mutateOwnedAnonymousProject("shot-job-session", created.id, (project) => ({ ...project,
+      stageStates: { ...project.stageStates!, storyboard: { status: "locked", updatedAt: Date.now() } }
+    }));
+    const failed = await startGenerationEvent("shot-job-session", created.id, {
+      stage: "keyframes", provider: "system", action: "制作单镜关键帧", shotId, message: "旧任务失败。"
+    });
+    await mutateOwnedAnonymousProject("shot-job-session", created.id, (project) => ({ ...project,
+      generationEvents: project.generationEvents.map((event) => event.id === failed.id ? { ...event, status: "failed" as const } : event)
+    }));
+    const response = await submitShotJob(new Request("http://localhost/api/shot-keyframes", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: created.id, shotId }) }));
+    expect(response.status).toBe(202);
+    const data = (await response.json()).data as { eventId: string };
+    expect(data.eventId).not.toBe(failed.id);
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const current = (await requireOwnedAnonymousProject("shot-job-session", created.id)).project.generationEvents
+        .find((event) => event.id === data.eventId);
+      if (current && ["failed", "completed", "interrupted"].includes(current.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  });
 });

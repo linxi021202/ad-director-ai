@@ -30,6 +30,7 @@ export async function downloadGeneratedImage(input: DownloadImageInput): Promise
       kind: "keyframe",
       role: input.shotId,
       source: "qwen-image",
+      generatedByModel: input.generatedByModel,
       fileName: `${input.shotId}.${inspected.extension}`,
       mimeType: inspected.mimeType,
       bytes,

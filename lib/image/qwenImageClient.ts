@@ -323,11 +323,13 @@ function taskMessage(payload: unknown) { return getStringProperty(payload, "mess
 
 async function cacheImageIfNeeded(
   input: QwenImageRequest,
-  imageUrl: string
+  imageUrl: string,
+  model: string
 ): Promise<Pick<QwenImageResult, "assetId" | "localUrl" | "cacheStatus" | "error" | "errorCode"> & { failureStage?: "download" | "persist" }> {
   if (!input.projectId || !input.shotId) return { cacheStatus: "remote-only" };
   const download = await downloadGeneratedImage({
     imageUrl,
+    generatedByModel: model,
     projectId: input.projectId,
     shotId: input.shotId,
     sessionId: input.sessionId
@@ -510,7 +512,7 @@ export async function callQwenImage(input: QwenImageRequest): Promise<QwenImageR
 
     requestCompletedAt = Date.now();
     const downloadStartedAt = Date.now();
-    const cached = await cacheImageIfNeeded(input, imageUrl);
+    const cached = await cacheImageIfNeeded(input, imageUrl, model);
     const downloadElapsedMs = input.projectId && input.shotId ? Date.now() - downloadStartedAt : undefined;
     if (input.projectId && input.shotId && (!cached.assetId || cached.cacheStatus !== "cached")) {
       return {

@@ -11,6 +11,7 @@ import type { QwenImageRequest, QwenImageResult, QwenImageTaskType, QwenNetworkF
 export const QWEN_TEXT_MODELS = ["qwen-image-max-2025-12-30", "qwen-image-2.0-pro-2026-06-22", "qwen-image-plus"] as const;
 export const QWEN_REFERENCE_MODELS = ["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22", "qwen-image-edit-plus", "qwen-image-edit"] as const;
 export const QWEN_FREE_ONLY = process.env.QWEN_FREE_ONLY !== "false";
+export const DEFAULT_QWEN_ACCOUNT_HARD_STOP_TTL_MS = 5 * 60_000;
 export const QWEN_IMAGE_CANDIDATES = [...new Set([...QWEN_TEXT_MODELS, ...QWEN_REFERENCE_MODELS])].map((modelId) => ({
   modelId, textToImage: QWEN_TEXT_MODELS.includes(modelId as typeof QWEN_TEXT_MODELS[number]),
   referenceImageInput: QWEN_REFERENCE_MODELS.includes(modelId as typeof QWEN_REFERENCE_MODELS[number]),
@@ -48,10 +49,23 @@ export type QwenModelAttempt = {
   routerDecision?: "FALLBACK_NEXT_MODEL" | "STOP_PROVIDER" | "STOP_REQUEST" | "RETRY_SAME_MODEL" | "SKIP_CACHED_MODEL" | "SELECT_MODEL";
   routerResult?: "FREE_TIER_EXHAUSTED" | "ACCOUNT_ARREARAGE" | "ACCOUNT_AUTH_FAILED" | "SUCCESS" | "MODEL_UNAVAILABLE" | "REQUEST_FAILED";
   selectedModel?: string;
+  routerStage?: "ACCOUNT_GATE" | "CAPABILITY_FILTER" | "MODEL_SELECTION" | "PROVIDER_CALL";
+  blockedReason?: "ACCOUNT_ARREARAGE_CACHE_VALID" | "ACCOUNT_ARREARAGE_FRESH_PROVIDER_RESPONSE" | "ACCOUNT_AUTH_FAILED_CACHE_VALID" | "ACCOUNT_AUTH_FAILED_FRESH_PROVIDER_RESPONSE" | "NO_COMPATIBLE_MODEL";
+  accountState?: AccountHealth["status"];
+  accountStateSource?: "PROVIDER_RESPONSE" | "CACHE" | "UNKNOWN";
+  apiKeyFingerprintMasked?: string;
+  accountStateCheckedAt?: number;
+  accountStateExpiresAt?: number;
+  requiredCapabilities?: QwenImageRequest["requiredCapabilities"];
+  candidateModels?: string[];
+  skippedModels?: string[];
+  providerRequestModel?: string;
+  fallbackReason?: string;
+  finalModel?: string;
 };
 
 type Availability = { code: string; status: "AVAILABLE" | "FREE_TIER_EXHAUSTED" | "RATE_LIMITED" | "TEMP_UNAVAILABLE" | "UNKNOWN"; cooldownUntil: number | null; lastCheckedAt: number; apiKeyFingerprint: string };
-type AccountHealth = { status: "HEALTHY" | "ARREARAGE" | "AUTH_FAILED" | "UNKNOWN"; lastCheckedAt: number };
+type AccountHealth = { status: "HEALTHY" | "ARREARAGE" | "AUTH_FAILED" | "UNKNOWN"; checkedAt: number; cooldownUntil: number | null };
 const availability = new Map<string, Map<string, Availability>>();
 const providerAccountState = new Map<string, AccountHealth>();
 const modelQueues = new Map<string, Promise<void>>();
@@ -72,6 +86,21 @@ function keyFingerprint(key: string | null) {
 
 function credentialScope(sessionId: string, key: string | null) {
   return `${sessionId}:${keyFingerprint(key)}`;
+}
+
+function accountHardStopTtlMs() {
+  const configured = Number(process.env.QWEN_ACCOUNT_HARD_STOP_TTL_MS);
+  return Number.isFinite(configured) && configured >= 30_000 && configured <= 30 * 60_000
+    ? configured : DEFAULT_QWEN_ACCOUNT_HARD_STOP_TTL_MS;
+}
+
+function activeAccountHealth(scope: string): AccountHealth | undefined {
+  const health = providerAccountState.get(scope);
+  if (health?.cooldownUntil && health.cooldownUntil <= Date.now()) {
+    providerAccountState.delete(scope);
+    return undefined;
+  }
+  return health;
 }
 
 export function clearQwenModelAvailability(sessionId: string) {
@@ -120,15 +149,26 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
   const mode = referenceCount ? "reference-image" : "text-to-image";
   const defaults = getAIConfig({ allowSessionSecrets: true }).qwenImage;
   const parameters = { promptExtend: input.promptExtend ?? defaults.promptExtend, watermark: input.watermark ?? defaults.watermark };
+  const candidateModels = [...pool];
+  const requiredCapabilities = input.requiredCapabilities ?? { referenceImageInput: referenceCount > 0, textToImage: referenceCount === 0 };
+  const apiKeyFingerprintMasked = `…${keyFingerprint(key).slice(-8)}`;
+  const trace = () => ({ requiredCapabilities, candidateModels, apiKeyFingerprintMasked,
+    skippedModels: candidateModels.filter((modelId) => {
+      const entry = state.get(modelId);
+      return entry?.status === "FREE_TIER_EXHAUSTED" || Boolean(entry?.cooldownUntil && entry.cooldownUntil > Date.now());
+    }) });
   let index = 0;
   let last: QwenImageResult | undefined;
-  const account = providerAccountState.get(scope);
+  const account = activeAccountHealth(scope);
   if (account?.status === "ARREARAGE" || account?.status === "AUTH_FAILED") {
     const errorCode = account.status === "ARREARAGE" ? "INSUFFICIENT_BALANCE" : "AUTH_FAILED";
     const blocked = { success: false, provider: "dashscope" as const, model: "未调用", latencyMs: 0,
       size: input.size ?? "1152*2048", cacheStatus: "not-requested" as const, errorCode, error: qwenImageUserMessage(errorCode) };
     await onAttempt?.({ taskType, model: "未调用", attempt: 1, status: "blocked", startedAt: Date.now(), completedAt: Date.now(),
       errorCode: "BLOCKED_ACCOUNT_ERROR", error: blocked.error, referenceCount, size: blocked.size, mode,
+      routerStage: "ACCOUNT_GATE", blockedReason: account.status === "ARREARAGE" ? "ACCOUNT_ARREARAGE_CACHE_VALID" : "ACCOUNT_AUTH_FAILED_CACHE_VALID",
+      accountState: account.status, accountStateSource: "CACHE", accountStateCheckedAt: account.checkedAt,
+      accountStateExpiresAt: account.cooldownUntil ?? undefined, ...trace(),
       routerDecision: "STOP_PROVIDER", routerResult: account.status === "ARREARAGE" ? "ACCOUNT_ARREARAGE" : "ACCOUNT_AUTH_FAILED", ...parameters });
     return blocked;
   }
@@ -163,10 +203,11 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
     const attempt = ++index;
     for (let rateRetry = 0; rateRetry < 3; rateRetry += 1) {
       const attemptNumber = rateRetry ? ++index : attempt;
-      const result = await withModelSlot(scope, modelId, async () => {
-        const accountInQueue = providerAccountState.get(scope);
+      const result: QwenImageResult & { routerBlockedFromCache?: boolean } = await withModelSlot(scope, modelId, async () => {
+        const accountInQueue = activeAccountHealth(scope);
         if (accountInQueue?.status === "ARREARAGE" || accountInQueue?.status === "AUTH_FAILED") return {
           success: false, provider: "dashscope" as const, model: modelId, latencyMs: 0, size,
+          routerBlockedFromCache: true,
           errorCode: accountInQueue.status === "ARREARAGE" ? "INSUFFICIENT_BALANCE" : "AUTH_FAILED",
           error: qwenImageUserMessage(accountInQueue.status === "ARREARAGE" ? "INSUFFICIENT_BALANCE" : "AUTH_FAILED")
         };
@@ -178,7 +219,8 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
         onSubmissionStart: async (diagnostic) => {
           await input.onSubmissionStart?.(diagnostic);
           await onAttempt?.({ taskType, model: modelId, attempt: attemptNumber, status: "running", startedAt: diagnostic.requestStartedAt,
-            completedAt: diagnostic.requestStartedAt, referenceCount, size, mode, submissionDiagnostic: diagnostic, ...parameters });
+            completedAt: diagnostic.requestStartedAt, referenceCount, size, mode, submissionDiagnostic: diagnostic,
+            routerStage: "PROVIDER_CALL", selectedModel: modelId, providerRequestModel: modelId, ...trace(), ...parameters });
         },
         onTaskProgress: async (progress) => {
           await input.onTaskProgress?.(progress);
@@ -190,10 +232,11 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
         const generatedCode = generated.errorCode as QwenFailureCode | undefined;
         if (generated.success) {
           state.set(modelId, { code: "SUCCESS", status: "AVAILABLE", cooldownUntil: null, lastCheckedAt: Date.now(), apiKeyFingerprint: keyFingerprint(key) });
-          providerAccountState.set(scope, { status: "HEALTHY", lastCheckedAt: Date.now() });
+          providerAccountState.set(scope, { status: "HEALTHY", checkedAt: Date.now(), cooldownUntil: null });
         }
         else if (isAccountError(generatedCode)) providerAccountState.set(scope,
-          { status: generatedCode === "INSUFFICIENT_BALANCE" ? "ARREARAGE" : "AUTH_FAILED", lastCheckedAt: Date.now() });
+          { status: generatedCode === "INSUFFICIENT_BALANCE" ? "ARREARAGE" : "AUTH_FAILED",
+            checkedAt: Date.now(), cooldownUntil: Date.now() + accountHardStopTtlMs() });
         else if (generatedCode && shouldFallbackQwen(generatedCode)) state.set(modelId,
           { code: generatedCode, status: generatedCode === "QUOTA_EXHAUSTED" ? "FREE_TIER_EXHAUSTED" : "TEMP_UNAVAILABLE",
             cooldownUntil: generatedCode === "QUOTA_EXHAUSTED" ? null : Date.now() + availabilityTtl(generatedCode, generated.retryAfterMs),
@@ -206,6 +249,7 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
       if (result.errorCode === "MODEL_SKIPPED_COOLDOWN") {
         await onAttempt?.({ taskType, model: modelId, attempt: attemptNumber, status: "blocked", startedAt: Date.now(), completedAt: Date.now(),
           errorCode: result.errorCode, error: result.error, referenceCount, size, mode, routerDecision: "SKIP_CACHED_MODEL",
+          routerStage: "CAPABILITY_FILTER", ...trace(),
           routerResult: state.get(modelId)?.status === "FREE_TIER_EXHAUSTED" ? "FREE_TIER_EXHAUSTED" : "MODEL_UNAVAILABLE", ...parameters });
         break;
       }
@@ -213,7 +257,9 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
       const decision = result.success ? "SELECT_MODEL" : isAccountError(code) ? "STOP_PROVIDER"
         : code === "RATE_LIMITED" && rateRetry < 2 ? "RETRY_SAME_MODEL"
         : code && shouldFallbackQwen(code) && modelId !== pool.at(-1) ? "FALLBACK_NEXT_MODEL" : "STOP_REQUEST";
-      await onAttempt?.({ taskType, model: modelId, attempt: attemptNumber, status: result.success ? "completed" : result.errorCode === "TASK_POLL_INTERRUPTED" ? "running" : "failed",
+      const blockedFromCache = "routerBlockedFromCache" in result && result.routerBlockedFromCache === true;
+      const currentAccount = activeAccountHealth(scope);
+      await onAttempt?.({ taskType, model: modelId, attempt: attemptNumber, status: blockedFromCache ? "blocked" : result.success ? "completed" : result.errorCode === "TASK_POLL_INTERRUPTED" ? "running" : "failed",
         startedAt: result.requestStartedAt ?? now, completedAt: result.requestCompletedAt ?? Date.now(),
         errorCode: result.errorCode, error: result.error, providerErrorCode: result.providerErrorCode, httpStatus: result.httpStatus,
         requestId: result.requestId, taskId: result.taskId, referenceCount, size, assetId: result.assetId, mode,
@@ -221,7 +267,16 @@ export async function generateQwenImageAdaptive(input: QwenImageRequest, onAttem
         submissionDiagnostic: result.submissionDiagnostic, networkFailure: result.networkFailure,
         providerOutcome: result.providerOutcome, timeoutSource: result.timeoutSource,
         responseReceivedAt: result.responseReceivedAt, assetPersistedAt: result.assetPersistedAt,
-        routerDecision: decision, routerResult: routerResult(result), selectedModel: result.success ? modelId : undefined, ...parameters });
+        routerStage: blockedFromCache ? "ACCOUNT_GATE" : "PROVIDER_CALL",
+        blockedReason: isAccountError(code) ? code === "INSUFFICIENT_BALANCE"
+          ? blockedFromCache ? "ACCOUNT_ARREARAGE_CACHE_VALID" : "ACCOUNT_ARREARAGE_FRESH_PROVIDER_RESPONSE"
+          : blockedFromCache ? "ACCOUNT_AUTH_FAILED_CACHE_VALID" : "ACCOUNT_AUTH_FAILED_FRESH_PROVIDER_RESPONSE" : undefined,
+        accountState: currentAccount?.status ?? "UNKNOWN", accountStateSource: isAccountError(code) ? blockedFromCache ? "CACHE" : "PROVIDER_RESPONSE" : undefined,
+        accountStateCheckedAt: currentAccount?.checkedAt, accountStateExpiresAt: currentAccount?.cooldownUntil ?? undefined,
+        ...trace(), providerRequestModel: blockedFromCache ? undefined : modelId,
+        fallbackReason: decision === "FALLBACK_NEXT_MODEL" ? code : undefined,
+        routerDecision: decision, routerResult: routerResult(result), selectedModel: result.success ? modelId : undefined,
+        finalModel: result.success ? result.model : undefined, ...parameters });
       if (result.success) return result;
       last = result;
       if (code === "RATE_LIMITED" && rateRetry < 2) {
@@ -248,7 +303,7 @@ export async function inspectQwenImageModels(sessionId: string) {
   const connection = await diagnoseDashScopeConnection(baseUrl, key ?? undefined);
   const scope = credentialScope(sessionId, key);
   const cached = availability.get(scope);
-  const accountHealth = providerAccountState.get(scope)?.status ?? "UNKNOWN";
+  const accountHealth = activeAccountHealth(scope)?.status ?? "UNKNOWN";
   let listed: Set<string> | undefined;
   let notice = "模型列表未验证；将在首次生成时检测额度与实际能力。";
   if (key) {

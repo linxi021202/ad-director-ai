@@ -64,9 +64,12 @@ describe("visual anchor candidate calls", () => {
       await onAttempt?.({ taskType: "scene_candidate_text_only", model: "qwen-image-max-2025-12-30", attempt: 1,
         status: "failed", startedAt: now, completedAt: now + 5, errorCode: "INSUFFICIENT_BALANCE",
         providerErrorCode: "Arrearage", httpStatus: 400, referenceCount: 0, size: request.size!, mode: "text-to-image",
-        promptExtend: false, watermark: false, routerDecision: "STOP_PROVIDER", routerResult: "ACCOUNT_ARREARAGE" });
+        promptExtend: false, watermark: false, routerDecision: "STOP_PROVIDER", routerResult: "ACCOUNT_ARREARAGE",
+        accountState: "ARREARAGE", accountStateSource: "PROVIDER_RESPONSE", apiKeyFingerprintMasked: "…test1234",
+        accountStateCheckedAt: now, accountStateExpiresAt: now + 300_000 });
       return { success: false, provider: "dashscope", model: "qwen-image-max-2025-12-30", latencyMs: 5,
-        size: request.size!, errorCode: "INSUFFICIENT_BALANCE", providerErrorCode: "Arrearage", httpStatus: 400 };
+        size: request.size!, errorCode: "INSUFFICIENT_BALANCE", providerErrorCode: "Arrearage", httpStatus: 400,
+        requestStartedAt: now };
     });
     const response = await POST(new Request(`http://localhost/api/projects/${created.id}/visual-anchors`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -77,8 +80,10 @@ describe("visual anchor candidate calls", () => {
     expect(generateQwenImageAdaptive).toHaveBeenCalledTimes(1);
     const logs = await listModelCallLogs(session.id, { projectId: created.id, stage: "anchors", limit: 100 });
     expect(logs.filter((entry) => entry.kind === "call" && entry.status === "blocked")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ candidateIndex: 2, blockedBy: "ACCOUNT_ARREARAGE", errorCode: "BLOCKED_ACCOUNT_ERROR" }),
-      expect.objectContaining({ candidateIndex: 3, blockedBy: "ACCOUNT_ARREARAGE", errorCode: "BLOCKED_ACCOUNT_ERROR" })
+      expect.objectContaining({ candidateIndex: 2, blockedBy: "ACCOUNT_ARREARAGE", errorCode: "BLOCKED_ACCOUNT_ERROR",
+        accountStateSource: "PROVIDER_RESPONSE", apiKeyFingerprintMasked: "…test1234", accountStateExpiresAt: expect.any(Number) }),
+      expect.objectContaining({ candidateIndex: 3, blockedBy: "ACCOUNT_ARREARAGE", errorCode: "BLOCKED_ACCOUNT_ERROR",
+        accountStateSource: "PROVIDER_RESPONSE", apiKeyFingerprintMasked: "…test1234", accountStateExpiresAt: expect.any(Number) })
     ]));
     expect(logs.find((entry) => entry.kind === "call" && entry.candidateIndex === 1)).toMatchObject({
       providerErrorCode: "Arrearage", routerDecision: "STOP_PROVIDER", routerResult: "ACCOUNT_ARREARAGE"

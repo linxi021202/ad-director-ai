@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { generateQwenImageAdaptive, type QwenModelAttempt } from "@/lib/image/qwenImageModelRouter";
+import { generateQwenImageAdaptive, QWEN_REFERENCE_MODELS, QWEN_TEXT_MODELS, type QwenModelAttempt } from "@/lib/image/qwenImageModelRouter";
 import { qwenImageUserMessage } from "@/lib/image/qwenImageErrors";
 import { assertImageStorageCapacity, StorageCapacityError } from "@/lib/assets/storageCapacity";
 import { assertPrivateAssetReadable, requirePrivateAsset } from "@/lib/assets/assetStore";
@@ -257,6 +257,7 @@ async function generateCandidates(
           sessionId, size: body.kind === "character" ? "1152*2048" : "2048*1152", watermark: false
         }, (attempt) => {
           modelAttemptSeen = true;
+          if (attempt.accountState === "ARREARAGE" || attempt.accountState === "AUTH_FAILED") providerHardStopTrace = attempt;
           return logAnchorModelAttempt(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, attempt, repair);
         });
         if (!modelAttemptSeen) await logAnchorCandidateResult(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, result, startedAt, repair, needsProductReference);
@@ -271,9 +272,11 @@ async function generateCandidates(
     candidatesStarted = true;
     const results = [] as Awaited<ReturnType<typeof runCandidate>>[];
     let providerHardStop: "ACCOUNT_ARREARAGE" | "ACCOUNT_AUTH_FAILED" | null = null;
+    let providerHardStopSource: "CACHE" | "PROVIDER_RESPONSE" = "PROVIDER_RESPONSE";
+    let providerHardStopTrace: QwenModelAttempt | undefined;
     for (const candidate of requested) {
       if (providerHardStop) {
-        await logAnchorCandidateBlocked(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, providerHardStop, needsProductReference);
+        await logAnchorCandidateBlocked(sessionId, projectId, event, body.kind, body.targetId, candidate.id, candidate.index, providerHardStop, providerHardStopSource, needsProductReference, providerHardStopTrace);
         results.push({ requestItem: { ...candidate, prompt: "" }, result: null });
         continue;
       }
@@ -281,6 +284,7 @@ async function generateCandidates(
       results.push(completed);
       if (completed.result?.errorCode === "INSUFFICIENT_BALANCE") providerHardStop = "ACCOUNT_ARREARAGE";
       else if (completed.result?.errorCode === "AUTH_FAILED") providerHardStop = "ACCOUNT_AUTH_FAILED";
+      if (providerHardStop) providerHardStopSource = completed.result?.requestStartedAt ? "PROVIDER_RESPONSE" : "CACHE";
     }
     const initialAssetIds = results.flatMap(({ result }) => result?.success && result.assetId ? [result.assetId] : []);
     const diversity = await inspectCandidateDiversity({ kind: body.kind, assetIds: initialAssetIds, sessionId, projectId });
@@ -520,6 +524,12 @@ async function logAnchorModelAttempt(sessionId: string, projectId: string, event
     referenceImageCount: attempt.referenceCount, referenceImagesIncluded: attempt.referenceCount > 0,
     errorCode: attempt.errorCode, providerErrorCode: attempt.providerErrorCode, errorSummary: attempt.error,
     routerDecision: attempt.routerDecision, routerResult: attempt.routerResult, selectedModel: attempt.selectedModel,
+    routerStage: attempt.routerStage, blockedReason: attempt.blockedReason,
+    accountState: attempt.accountState, accountStateSource: attempt.accountStateSource,
+    apiKeyFingerprintMasked: attempt.apiKeyFingerprintMasked, accountStateCheckedAt: attempt.accountStateCheckedAt,
+    accountStateExpiresAt: attempt.accountStateExpiresAt, requiredCapabilities: attempt.requiredCapabilities,
+    candidateModels: attempt.candidateModels, skippedModels: attempt.skippedModels,
+    providerRequestModel: attempt.providerRequestModel, fallbackReason: attempt.fallbackReason, finalModel: attempt.finalModel,
     httpStatus: attempt.httpStatus, providerRequestId: attempt.requestId, providerTaskId: attempt.taskId,
     finalAssetId: attempt.assetId, ...(attempt.assetId ? { outputAssetIds: [attempt.assetId] } : {}),
     failurePhase: attempt.status === "failed" ? anchorFailurePhase({ success: false, provider: "dashscope", model: attempt.model,
@@ -563,7 +573,8 @@ async function logAnchorCandidateResult(sessionId: string, projectId: string, ev
 
 async function logAnchorCandidateBlocked(sessionId: string, projectId: string, event: Awaited<ReturnType<typeof startGenerationEvent>>,
   anchorType: VisualAnchorCandidateKind, anchorTargetId: string, candidateId: string, candidateIndex: number,
-  blockedBy: "ACCOUNT_ARREARAGE" | "ACCOUNT_AUTH_FAILED", productReference: boolean) {
+  blockedBy: "ACCOUNT_ARREARAGE" | "ACCOUNT_AUTH_FAILED", accountStateSource: "CACHE" | "PROVIDER_RESPONSE", productReference: boolean,
+  accountTrace?: QwenModelAttempt) {
   const now = Date.now();
   await upsertModelCallLog(sessionId, {
     id: anchorAttemptId(event.id, candidateId, "initial:account-blocked"),
@@ -572,6 +583,15 @@ async function logAnchorCandidateBlocked(sessionId: string, projectId: string, e
     anchorType, anchorTargetId, candidateId, candidateIndex, model: "未调用", attempt: 1, mode: "anchor-candidate",
     status: "blocked", startedAt: now, completedAt: now, durationMs: 0,
     referenceImageCount: 0, referenceImagesIncluded: false, blockedBy, errorCode: "BLOCKED_ACCOUNT_ERROR",
+    routerStage: "ACCOUNT_GATE", accountState: blockedBy === "ACCOUNT_ARREARAGE" ? "ARREARAGE" : "AUTH_FAILED",
+    accountStateSource, blockedReason: blockedBy === "ACCOUNT_ARREARAGE"
+      ? accountStateSource === "CACHE" ? "ACCOUNT_ARREARAGE_CACHE_VALID" : "ACCOUNT_ARREARAGE_FRESH_PROVIDER_RESPONSE"
+      : accountStateSource === "CACHE" ? "ACCOUNT_AUTH_FAILED_CACHE_VALID" : "ACCOUNT_AUTH_FAILED_FRESH_PROVIDER_RESPONSE",
+    apiKeyFingerprintMasked: accountTrace?.apiKeyFingerprintMasked,
+    accountStateCheckedAt: accountTrace?.accountStateCheckedAt,
+    accountStateExpiresAt: accountTrace?.accountStateExpiresAt,
+    requiredCapabilities: { textToImage: !productReference, referenceImageInput: productReference, highConsistency: productReference },
+    candidateModels: productReference ? [...QWEN_REFERENCE_MODELS] : [...QWEN_TEXT_MODELS],
     routerDecision: "STOP_PROVIDER", routerResult: blockedBy, errorSummary: "账户不可用，当前候选未向百炼发送请求。"
   });
 }

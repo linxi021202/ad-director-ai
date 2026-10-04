@@ -11,6 +11,7 @@ import { readClientApiResponse, type ClientApiResponse } from "@/lib/api/clientR
 import { CinematicWorkspaceBackground } from "@/components/workspace/CinematicWorkspaceBackground";
 import { WorkflowFlowRail, idleWorkflowSteps, type WorkflowStepKey, type WorkflowStepState, type WorkflowStepStatus } from "@/components/WorkflowFlowRail";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
+import { HeaderActionButton } from "@/components/workspace/HeaderActionButton";
 import { CallLogDrawer } from "@/components/workspace/CallLogDrawer";
 import { UsageGuideSheet } from "@/components/workspace/UsageGuideSheet";
 import { ProductImageUploader } from "@/components/ProductImageUploader";
@@ -1347,7 +1348,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
   return (
     <main className="workbench-v3">
       <CinematicWorkspaceBackground />
-      <WorkspaceHeader active="工作台" workbenchHref={"/generate?projectId=" + activeProject.id} projectHref="/projects" onProjectsClick={openProjectEntry} projectName={activeProject.brief.productName} trailing={<><button type="button" className="workspace-guide-trigger" onClick={() => { setUsageGuideIntro(false); setUsageGuideOpen(true); }}>使用说明</button>{canCreateProject ? <button type="button" className="workspace-new-project" onClick={openProjectEntry}>新建项目</button> : <Link href="/projects?notice=project-limit" className="workspace-new-project">管理项目</Link>}<ModelSettingsTrigger status={modelStatus} onClick={() => openModelSettings()} className="workspace-model-settings-trigger" /><AIModeBadge status={aiStatus} /></>} />
+      <WorkspaceHeader active="工作台" workbenchHref={"/generate?projectId=" + activeProject.id} projectHref="/projects" onProjectsClick={openProjectEntry} projectName={activeProject.brief.productName} trailing={<><HeaderActionButton onClick={() => { setUsageGuideIntro(false); setUsageGuideOpen(true); }}>使用说明</HeaderActionButton>{canCreateProject ? <HeaderActionButton onClick={openProjectEntry}>新建项目</HeaderActionButton> : <HeaderActionButton href="/projects?notice=project-limit">管理项目</HeaderActionButton>}<ModelSettingsTrigger status={modelStatus} onClick={() => openModelSettings()} className="workspace-model-settings-trigger workspace-header-action" /><AIModeBadge status={aiStatus} /></>} />
       <ProjectEntryDialog open={projectEntryOpen} onClose={() => setProjectEntryOpen(false)}
         onEnter={(projectId) => { shotPollingActiveRef.current = false; router.push(`/generate?projectId=${encodeURIComponent(projectId)}`); }}
         onManage={() => { shotPollingActiveRef.current = false; router.push("/projects"); }} />

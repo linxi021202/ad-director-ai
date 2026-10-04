@@ -81,6 +81,7 @@ export type QwenImageResult = {
 
 export type DownloadImageInput = {
   imageUrl: string;
+  generatedByModel?: string;
   projectId: string;
   shotId: string;
   sessionId?: string;

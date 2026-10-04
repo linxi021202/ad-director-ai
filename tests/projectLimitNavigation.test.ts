@@ -15,8 +15,8 @@ describe("anonymous project limit navigation", () => {
   it("replaces the create action with project management when the session is full", () => {
     const source = readSource("components/GenerateWorkflow.tsx");
     expect(source).toContain('href="/projects?notice=project-limit"');
-    expect(source).toContain('canCreateProject ? <button type="button" className="workspace-new-project" onClick={openProjectEntry}>新建项目</button>');
-    expect(source).toContain('className="workspace-new-project">管理项目</Link>');
+    expect(source).toContain('canCreateProject ? <HeaderActionButton onClick={openProjectEntry}>新建项目</HeaderActionButton>');
+    expect(source).toContain('<HeaderActionButton href="/projects?notice=project-limit">管理项目</HeaderActionButton>');
   });
 
   it("explains how to free a project slot", () => {

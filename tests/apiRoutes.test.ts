@@ -28,7 +28,7 @@ import { POST as generateStoryboardPOST } from "../app/api/generate-storyboard/r
 import { POST as generateStrategyPOST } from "../app/api/generate-strategy/route";
 import { POST as renderVideoPOST } from "../app/api/render-video/route";
 import { coldBrewDemo } from "../lib/mock/coldBrewDemo";
-import { createPrivateAsset } from "../lib/assets/assetStore";
+import { createPrivateAsset, getPrivateAsset } from "../lib/assets/assetStore";
 import * as storageCapacity from "../lib/assets/storageCapacity";
 import { clearQwenModelAvailability } from "../lib/image/qwenImageModelRouter";
 import { listModelCallLogs, upsertModelCallLog } from "../lib/logs/modelCallStore";
@@ -477,7 +477,7 @@ describe("second-stage API routes", () => {
     const body = await completedImageResponse(response);
     const data = body.data as { images: Array<{ fallbackUsed: boolean }> };
 
-    expect(body.success).toBe(true);
+    expect(body.success, JSON.stringify(body)).toBe(true);
     expect(data.images[0].fallbackUsed).toBe(false);
   });
 
@@ -674,12 +674,18 @@ describe("second-stage API routes", () => {
     expect(requestedModels).toEqual(["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22"]);
     expect(data.images[0]).toMatchObject({ model: "qwen-image-2.0-pro-2026-06-22", referenceUsed: true, fallbackUsed: false });
     expect(data.images[0]?.assetId).toBeTruthy();
+    expect((await getPrivateAsset("test-session", testProjectId, data.images[0]!.assetId!))?.generatedByModel)
+      .toBe("qwen-image-2.0-pro-2026-06-22");
     const saved = await requireOwnedAnonymousProject("test-session", testProjectId);
     expect(saved.project.keyframes?.find((frame) => frame.frameId === frameId)).toMatchObject({ model: "qwen-image-2.0-pro-2026-06-22", assetId: data.images[0]?.assetId });
     const entries = await listModelCallLogs("test-session", { projectId: testProjectId, stage: "keyframes", shotId: shot.id, frameId });
     expect(entries.filter((entry) => entry.kind === "call").map((entry) => [entry.model, entry.status, entry.errorCode])).toEqual([
       ["qwen-image-2.0-pro-2026-06-22", "completed", undefined], ["qwen-image-edit-max-2026-01-16", "failed", "QUOTA_EXHAUSTED"]
     ]);
+    expect(entries.find((entry) => entry.model === "qwen-image-2.0-pro-2026-06-22" && entry.kind === "call")).toMatchObject({
+      selectedModel: "qwen-image-2.0-pro-2026-06-22", providerRequestModel: "qwen-image-2.0-pro-2026-06-22",
+      finalModel: "qwen-image-2.0-pro-2026-06-22", candidateModels: ["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22", "qwen-image-edit-plus", "qwen-image-edit"]
+    });
     const taskId = entries.find((entry) => entry.kind === "task")!.taskId;
     const reportResponse = await exportCallLogs(new Request(`http://localhost/api/call-logs/export?projectId=${testProjectId}&taskId=${taskId}&format=json`));
     const report = await reportResponse.json() as { summary: { failedCalls: number }; entries: Array<{ model: string }> };

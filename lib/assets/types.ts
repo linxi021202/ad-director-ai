@@ -29,6 +29,7 @@ export const projectAssetRecordSchema = z.object({
   kind: projectAssetKindSchema,
   role: z.string().trim().min(1).max(80).optional(),
   source: projectAssetSourceSchema,
+  generatedByModel: z.string().trim().min(1).max(100).optional(),
   fileName: z.string().trim().min(1).max(255),
   storageRelativePath: z.string().trim().min(1),
   mimeType: z.string().trim().min(1).max(120),

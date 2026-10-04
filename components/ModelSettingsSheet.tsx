@@ -254,7 +254,7 @@ export function ModelSettingsSheet({
                 </div>
                 {provider.id === "qwen-image" ? <div className="model-local-status">
                   免费额度优先：{imageModels?.freeOnly === false ? "关闭" : "开启"}。兼容模型免费额度用尽后自动切换其它模型；请在百炼控制台开启“免费额度用完即停”，避免服务商扣费。
-                  {imageModels?.accountHealth === "ARREARAGE" ? <p role="alert">账户异常 / 欠费。账户恢复后重新保存密钥，再继续生成。</p> : null}
+                  {imageModels?.accountHealth === "ARREARAGE" ? <p role="alert">账户异常 / 欠费。账户恢复后可在冷却结束时重试，或重新保存密钥立即刷新状态。</p> : null}
                   {imageModels?.accountHealth === "AUTH_FAILED" ? <p role="alert">账户密钥无效或缺少调用权限。</p> : null}
                 </div> : null}
                 {provider.id === "qwen-image" && imageModels ? <div className="model-image-inspection"><p>{imageModels.notice}</p><ul>{imageModels.models.map((model) => <li key={model.modelId}><strong>{model.modelId}</strong><span>{model.referenceImageInput ? "支持参考图" : "不支持参考图"} · {model.status === "available" ? "列表可见" : model.status === "unavailable" ? "暂不可用" : "待验证"}</span><small>{model.reason}</small></li>)}</ul></div> : null}

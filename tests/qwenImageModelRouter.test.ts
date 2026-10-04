@@ -8,7 +8,7 @@ vi.mock("../lib/image/dashscopeDiagnostics", async (importOriginal) => ({
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildQwenImageRequestBody, callQwenImage } from "../lib/image/qwenImageClient";
-import { clearQwenModelAvailability, generateQwenImageAdaptive, inspectQwenImageModels, selectQwenImageModels, type QwenModelAttempt } from "../lib/image/qwenImageModelRouter";
+import { clearQwenModelAvailability, DEFAULT_QWEN_ACCOUNT_HARD_STOP_TTL_MS, generateQwenImageAdaptive, inspectQwenImageModels, selectQwenImageModels, type QwenModelAttempt } from "../lib/image/qwenImageModelRouter";
 import { classifyQwenFailure, shouldFallbackQwen } from "../lib/image/qwenImageErrors";
 import type { QwenImageRequest, QwenImageResult } from "../lib/image/types";
 
@@ -51,6 +51,23 @@ describe("Qwen capability-aware routing", () => {
     expect(selectQwenImageModels({ prompt: "商品在桌上", taskType: "scene_candidate_with_product_reference", referenceImage: "data:image/png;base64,AA==" })[0]).toBe("qwen-image-edit-max-2026-01-16");
     expect(() => selectQwenImageModels({ prompt: "商品在桌上", taskType: "scene_candidate_with_product_reference" })).toThrow("REFERENCE_IMAGE_REQUIRED");
     expect(selectQwenImageModels({ ...input, taskType: "keyframe_regeneration" })[0]).toBe("qwen-image-edit-max-2026-01-16");
+  });
+
+  it("traces a one-reference scene through the compatible pool and selected provider model", async () => {
+    const request = { ...input, taskType: "scene_candidate_with_product_reference" as const,
+      requiredCapabilities: { referenceImageInput: true, highConsistency: true } };
+    const attempts: QwenModelAttempt[] = [];
+    const call = vi.fn(async (item: QwenImageRequest) => item.model === "qwen-image-edit-max-2026-01-16"
+      ? result(item.model, false, "QUOTA_EXHAUSTED") : result(item.model!, true));
+    const response = await generateQwenImageAdaptive(request, async (attempt) => { attempts.push(attempt); }, call);
+    expect(response.model).toBe("qwen-image-2.0-pro-2026-06-22");
+    expect(attempts[0]).toMatchObject({ taskType: "scene_candidate_with_product_reference", referenceCount: 1,
+      requiredCapabilities: { referenceImageInput: true, highConsistency: true },
+      candidateModels: ["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22", "qwen-image-edit-plus", "qwen-image-edit"],
+      fallbackReason: "QUOTA_EXHAUSTED" });
+    expect(attempts[1]).toMatchObject({ selectedModel: "qwen-image-2.0-pro-2026-06-22",
+      providerRequestModel: "qwen-image-2.0-pro-2026-06-22", finalModel: "qwen-image-2.0-pro-2026-06-22" });
+    expect(call.mock.calls.map(([item]) => item.model)).toEqual(["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22"]);
   });
 
   it("does not change model on an invalid reference image", async () => {
@@ -131,6 +148,40 @@ describe("Qwen capability-aware routing", () => {
     secret.value = "sk-second-key-for-tests";
     expect((await generateQwenImageAdaptive(input, undefined, call)).success).toBe(true);
     expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks account health on the next real task after the hard-stop TTL", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-10-05T00:00:00Z"));
+      const call = vi.fn(async (request: QwenImageRequest) => call.mock.calls.length === 1
+        ? { ...result(request.model!, false, "INSUFFICIENT_BALANCE"), requestStartedAt: Date.now() }
+        : result(request.model!, true));
+      const attempts: QwenModelAttempt[] = [];
+      await generateQwenImageAdaptive(input, async (attempt) => { attempts.push(attempt); }, call);
+      const cached = await generateQwenImageAdaptive(input, async (attempt) => { attempts.push(attempt); }, call);
+      expect(cached.errorCode).toBe("INSUFFICIENT_BALANCE");
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(attempts.at(-1)).toMatchObject({ routerStage: "ACCOUNT_GATE", accountStateSource: "CACHE",
+        blockedReason: "ACCOUNT_ARREARAGE_CACHE_VALID", accountStateExpiresAt: Date.now() + DEFAULT_QWEN_ACCOUNT_HARD_STOP_TTL_MS });
+      await vi.advanceTimersByTimeAsync(DEFAULT_QWEN_ACCOUNT_HARD_STOP_TTL_MS + 1);
+      expect((await generateQwenImageAdaptive(input, async (attempt) => { attempts.push(attempt); }, call)).success).toBe(true);
+      expect(call).toHaveBeenCalledTimes(2);
+      expect(attempts.at(-1)).toMatchObject({ routerStage: "PROVIDER_CALL", accountState: "HEALTHY",
+        candidateModels: ["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22", "qwen-image-edit-plus", "qwen-image-edit"] });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("uses the new key for a previously failed project's next real request", async () => {
+    const call = vi.fn(async (request: QwenImageRequest) => secret.value === "sk-first-key-for-tests"
+      ? result(request.model!, false, "INSUFFICIENT_BALANCE") : result(request.model!, true));
+    await generateQwenImageAdaptive(input, undefined, call);
+    secret.value = "sk-second-key-for-tests";
+    const attempts: QwenModelAttempt[] = [];
+    const resumed = await generateQwenImageAdaptive({ ...input, projectId: input.projectId }, async (attempt) => { attempts.push(attempt); }, call);
+    expect(resumed.success).toBe(true);
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(attempts.at(-1)?.accountStateSource).toBeUndefined();
   });
 
   it("does not fallback after response timeout or asset persistence failure", async () => {

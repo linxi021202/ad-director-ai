@@ -568,3 +568,59 @@ html { background: #000; }
     grid-template-columns: minmax(0, 1fr) !important;
   }
 }
+
+/* Shared workbench header action sizing and non-shrinking layout. */
+.site-body .workspace-header {
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  gap: clamp(16px, 2vw, 28px);
+}
+.site-body .workspace-brand { flex: 0 0 auto; white-space: nowrap; }
+.site-body .workspace-nav { min-width: 0; justify-content: center; gap: clamp(14px, 2vw, 30px); white-space: nowrap; }
+.site-body .workspace-header__tools {
+  min-width: 0;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 10px;
+}
+.site-body .workspace-header__tools > .workspace-header-action {
+  box-sizing: border-box;
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: max-content !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--cinema-line) !important;
+  border-radius: 8px !important;
+  background: rgba(0, 0, 0, .44) !important;
+  padding: 0 15px !important;
+  color: var(--cinema-text-2) !important;
+  font-size: 13px !important;
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.site-body .workspace-header__tools > .workspace-header-action:hover { border-color: rgba(100, 220, 210, .45) !important; color: #fff !important; }
+.site-body .workspace-header__tools > .workspace-header-action > span { flex-shrink: 0; }
+.site-body .workspace-header__tools > span:last-child { flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 1100px) {
+  .site-body .workspace-header { grid-template-columns: max-content minmax(0, 1fr); }
+  .site-body .workspace-nav { display: none; }
+  .site-body .workspace-header__tools {
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+}
+@media (max-width: 640px) {
+  .site-body .workspace-header__tools > span:last-child { display: none; }
+  .site-body .workspace-header__tools > .workspace-header-action { display: inline-flex !important; }
+}

@@ -30,6 +30,7 @@ export type CreatePrivateAssetInput = {
   kind: ProjectAssetKind;
   role?: string;
   source: ProjectAssetSource;
+  generatedByModel?: string;
   fileName: string;
   mimeType: string;
   bytes: Uint8Array;
@@ -208,6 +209,7 @@ async function registerAssetRecord(
     kind: input.kind,
     ...(input.role ? { role: input.role } : {}),
     source: input.source,
+    ...(input.generatedByModel ? { generatedByModel: input.generatedByModel } : {}),
     fileName: sanitizeStorageFileName(input.fileName),
     storageRelativePath: toStorageRelativePath(destination),
     mimeType: input.mimeType,
