@@ -77,6 +77,18 @@ afterEach(async () => {
 });
 
 describe("Phase 2 visual anchors", () => {
+  it("shows separate manual character and scene actions without a combined generation action", async () => {
+    const markup = renderVisualSetupFixture(anchorProject());
+    expect(markup).toContain("生成人物候选");
+    expect(markup).toContain("生成场景候选");
+    expect(markup).not.toContain(">生成人物与场景候选</button>");
+    const workflowSource = await readFile("components/GenerateWorkflow.tsx", "utf8");
+    const confirmCreative = workflowSource.split("async function confirmCreativeCandidate(")[1]?.split("async function postAnchorAction(")[0];
+    expect(confirmCreative).toContain('selectStage("anchors")');
+    expect(confirmCreative).not.toContain("generateCandidateSlots(");
+    expect(workflowSource).not.toContain("generateAllVisualCandidates");
+  });
+
   it("uses the uploaded main product as an exact Product Master and requires an explicit lock", () => {
     let project = anchorProject();
     expect(project.visualAnchorWorkspace?.productMaster).toMatchObject({
@@ -505,7 +517,6 @@ function renderVisualSetupFixture(project: GenerationProject) {
       project,
       busyTarget: null,
       onInitialize: noop,
-      onGenerateAll: noop,
       onConfirmProduct: noop,
       onSetMainProduct: noop,
       onRemoveProductReference: noop,

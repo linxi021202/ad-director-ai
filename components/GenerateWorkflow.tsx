@@ -973,11 +973,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     setCreativeOperation("confirm");
     setError(null);
     try {
-      const confirmed = await postCreativeAction({ action: "confirm", candidateId });
-      const prepared = await postAnchorAction({ action: "initialize" }, "initialize") ?? confirmed;
+      await postCreativeAction({ action: "confirm", candidateId });
+      await postAnchorAction({ action: "initialize" }, "initialize");
       selectStage("anchors");
-      if (modelStatus?.qwenImage.configured) await generateAllVisualCandidates(prepared);
-      else setError("创意已确认。配置 Qwen-Image 后即可生成人物与场景候选。");
+      setTraceLabel("创意已确认，等待分别生成人物与场景候选");
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "创意确认失败。");
     } finally {
@@ -1084,38 +1083,6 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     } finally {
       setAnchorBusyTarget(null);
     }
-    return latest;
-  }
-
-  async function generateAllVisualCandidates(source: GenerationProject = activeProject) {
-    if (!modelStatus?.qwenImage.configured) {
-      const guidance = "生成人物与场景候选前需要配置 Qwen-Image。";
-      setError(guidance);
-      openModelSettings("qwen-image", guidance);
-      return source;
-    }
-    let latest = source;
-    const failures: string[] = [];
-    const characters = latest.visualAnchorWorkspace?.requiredCharacterIds ?? [];
-    const scenes = latest.visualAnchorWorkspace?.requiredSceneIds ?? [];
-    for (const targetId of characters) {
-      try {
-        latest = await generateCandidateSlots("character", targetId, latest);
-      } catch (error) {
-        failures.push(error instanceof Error ? error.message : "人物候选生成未完成。");
-        break;
-      }
-    }
-    for (const targetId of failures.length ? [] : scenes) {
-      try {
-        latest = await generateCandidateSlots("scene", targetId, latest);
-      } catch (error) {
-        failures.push(error instanceof Error ? error.message : "场景候选生成未完成。");
-        break;
-      }
-    }
-    setTraceLabel(failures.length ? "部分视觉候选生成失败，可在对应模块重试" : "人物与场景候选已生成，等待选择");
-    if (failures.length) setError(failures[0]!);
     return latest;
   }
 
@@ -1440,7 +1407,6 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
               project={activeProject}
               busyTarget={anchorBusyTarget}
               onInitialize={() => void initializeVisualAnchors()}
-              onGenerateAll={() => void generateAllVisualCandidates()}
               onConfirmProduct={() => void lockVisualMaster("product")}
               onSetMainProduct={(imageId) => void updateAnchorProductImages(setMainProductImage(activeProject.brief.productImages ?? [], imageId))}
               onRemoveProductReference={(imageId) => void updateAnchorProductImages(removeProductImage(activeProject.brief.productImages ?? [], imageId))}

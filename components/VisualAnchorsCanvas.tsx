@@ -14,7 +14,6 @@ type Props = {
   project: GenerationProject;
   busyTarget: string | null;
   onInitialize: () => void;
-  onGenerateAll: () => void;
   onConfirmProduct: () => void;
   onSetMainProduct: (imageId: string) => void;
   onRemoveProductReference: (imageId: string) => void;
@@ -25,7 +24,7 @@ type Props = {
   onEnterStoryboard: () => void;
 };
 
-export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGenerateAll, onConfirmProduct, onSetMainProduct, onRemoveProductReference, onGenerateCandidates, onSetCurrent, onConfirmTarget, onConfirmSelection, onEnterStoryboard }: Props) {
+export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onConfirmProduct, onSetMainProduct, onRemoveProductReference, onGenerateCandidates, onSetCurrent, onConfirmTarget, onConfirmSelection, onEnterStoryboard }: Props) {
   const workspace = project.visualAnchorWorkspace;
   const visualSetup = deriveVisualSetupStageState(project);
   const productAssets = getProjectProductAssets(project);
@@ -33,8 +32,6 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
   const supplementalProducts = productAssets.assets.filter((image) => image.id !== mainProduct?.id).slice(0, 2);
   const characters = (project.characterVisualSpecs ?? []).filter((item) => workspace?.requiredCharacterIds.includes(item.id));
   const scenes = (project.sceneVisualSpecs ?? []).filter((item) => workspace?.requiredSceneIds.includes(item.id));
-  const hasCandidates = characters.every((spec) => activeCandidates(workspace?.characterCandidates, spec.id).length > 0)
-    && scenes.every((spec) => activeCandidates(workspace?.sceneCandidates, spec.id).length > 0);
 
   return (
     <section className="visual-anchor-canvas" aria-label="视觉设定">
@@ -44,8 +41,7 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
         {visualSetup.status === "completed" ? <div className="visual-setup-final-state"><span className="anchor-complete-state">人物与场景已完成</span><button type="button" className="button-primary-v3" onClick={onEnterStoryboard}>进入分镜制作</button></div>
           : visualSetup.status === "ready-to-complete" ? <div className="visual-setup-ready"><div className="visual-setup-checklist"><span>✓ 产品已确认</span><span>✓ 主角已确认</span><span>✓ 场景已确认</span></div><GuardedActionButton className="button-primary-v3" blockers={getActionBlockers(project, "CONFIRM_VISUAL_SETUP")} busy={busyTarget !== null} busyLabel="确认中…" onAction={onConfirmSelection}>确认人物与场景，继续制作分镜</GuardedActionButton></div>
             : !workspace ? <button type="button" className="button-primary-v3" disabled={busyTarget !== null} onClick={onInitialize}>{busyTarget ? "准备中" : "准备人物与场景"}</button>
-              : !hasCandidates ? <GuardedActionButton className="button-primary-v3" blockers={getActionBlockers(project, "GENERATE_CHARACTER")} busy={busyTarget !== null} busyLabel="生成中…" onAction={onGenerateAll}>生成人物与场景候选</GuardedActionButton>
-                : <span className="anchor-progress-state">逐一确认下方设定后即可继续</span>}
+              : <span className="anchor-progress-state">请分别生成并确认下方的人物与场景</span>}
       </div>
 
       <section className="anchor-work-section anchor-product-section" id="anchor-product">
@@ -85,7 +81,7 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
           const candidates = activeCandidates(workspace?.characterCandidates, spec.id);
           const selection = getVisualAnchorSelection(project, "character", spec.id);
           return <div className="visual-choice-module" key={spec.id}>
-            <header><div><h3>{spec.role}</h3><p>{brief?.apparentAgeRange} · {brief?.wardrobe ?? spec.wardrobe.join("、")}</p></div><button type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("character", spec.id)}>{busyTarget === `generate:character:${spec.id}` ? "生成中" : candidates.length === 3 ? "换一组" : candidates.length ? "补齐候选" : "生成人物候选"}</button></header>
+            <header><div><h3>{spec.role}</h3><p>{brief?.apparentAgeRange} · {brief?.wardrobe ?? spec.wardrobe.join("、")}</p></div><GuardedActionButton className="button-secondary-v3" blockers={getActionBlockers(project, "GENERATE_CHARACTER")} busy={busyTarget !== null} busyLabel="生成中…" onAction={() => onGenerateCandidates("character", spec.id)}>{candidates.length === 3 ? "换一组人物候选" : candidates.length ? "补齐人物候选" : "生成人物候选"}</GuardedActionButton></header>
             <CandidateGrid projectId={project.id} candidates={candidates} selectedCandidateId={selection?.selectedCandidateId} confirmedCandidateId={selection?.confirmedCandidateId} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("character", spec.id, candidateId)} />
             {candidates.length > 0 && candidates.length < 3 ? <div className="anchor-missing-candidates">{[1, 2, 3].filter((index) => !candidates.some((item) => candidateSlot(item) === index)).map((index) => <button key={index} type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("character", spec.id, index)}>补生成人物候选 {index}</button>)}</div> : null}
             <TargetConfirmBar kind="character" selection={selection} busy={busyTarget === `lock:character:${spec.id}`} onConfirm={() => onConfirmTarget("character", spec.id)} />
@@ -99,7 +95,7 @@ export function VisualAnchorsCanvas({ project, busyTarget, onInitialize, onGener
           const candidates = activeCandidates(workspace?.sceneCandidates, spec.id);
           const selection = getVisualAnchorSelection(project, "scene", spec.id);
           return <div className="visual-choice-module" key={spec.id}>
-            <header><div><h3>{spec.name}</h3><p>{spec.architecture}</p></div><button type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("scene", spec.id)}>{busyTarget === `generate:scene:${spec.id}` ? "生成中" : candidates.length === 3 ? "换一组" : candidates.length ? "补齐候选" : "生成场景候选"}</button></header>
+            <header><div><h3>{spec.name}</h3><p>{spec.architecture}</p></div><GuardedActionButton className="button-secondary-v3" blockers={getActionBlockers(project, "GENERATE_SCENE")} busy={busyTarget !== null} busyLabel="生成中…" onAction={() => onGenerateCandidates("scene", spec.id)}>{candidates.length === 3 ? "换一组场景候选" : candidates.length ? "补齐场景候选" : "生成场景候选"}</GuardedActionButton></header>
             <CandidateGrid projectId={project.id} candidates={candidates} selectedCandidateId={selection?.selectedCandidateId} confirmedCandidateId={selection?.confirmedCandidateId} busy={busyTarget !== null} onSelect={(candidateId) => onSetCurrent("scene", spec.id, candidateId)} />
             {candidates.length > 0 && candidates.length < 3 ? <div className="anchor-missing-candidates">{[1, 2, 3].filter((index) => !candidates.some((item) => candidateSlot(item) === index)).map((index) => <button key={index} type="button" className="button-secondary-v3" disabled={busyTarget !== null} onClick={() => onGenerateCandidates("scene", spec.id, index)}>补生成场景候选 {index}</button>)}</div> : null}
             <TargetConfirmBar kind="scene" selection={selection} busy={busyTarget === `lock:scene:${spec.id}`} onConfirm={() => onConfirmTarget("scene", spec.id)} />
