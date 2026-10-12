@@ -301,12 +301,23 @@ describe("persistent model call logs", () => {
     expect(await listGenerationEvents(sessionMock.id, projectId)).toEqual([]);
   });
 
-  it("rejects cross-session clearing and preserves logs while a generation job runs", async () => {
-    await startGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", message: "运行中", shotId: "shot-1", frameId: "frame-1" });
+  it("clears finished history while preserving an active task and its calls", async () => {
+    const finished = await appendGenerationEvent(sessionMock.id, projectId, { stage: "anchors", provider: "qwen-image", action: "人物候选", status: "failed", message: "失败" });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: finished.id, projectId, stage: "anchors", provider: "qwen-image", status: "failed", startedAt: Date.now() });
+    const active = await startGenerationEvent(sessionMock.id, projectId, { stage: "keyframes", provider: "qwen-image", action: "生成单帧关键帧", message: "运行中", shotId: "shot-1", frameId: "frame-1" });
+    await upsertModelCallLog(sessionMock.id, { kind: "call", taskId: active.id, projectId, stage: "keyframes", provider: "qwen-image", status: "running", startedAt: Date.now() });
     const request = () => new NextRequest(`http://localhost/api/call-logs?projectId=${projectId}`, { method: "DELETE", headers: { origin: "http://localhost" } });
-    const blocked = await DELETE(request());
-    expect(blocked.status).toBe(409);
-    expect((await listModelCallLogs(sessionMock.id, { projectId })).length).toBeGreaterThan(0);
+    const before = await requireOwnedAnonymousProject(sessionMock.id, projectId);
+    const cleared = await DELETE(request());
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ clearedEvents: 1, clearedCalls: 2, activeCount: 1 });
+    expect((await listModelCallLogs(sessionMock.id, { projectId })).map((entry) => entry.taskId)).toEqual([active.id, active.id]);
+    expect((await listGenerationEvents(sessionMock.id, projectId)).map((event) => event.id)).toEqual([active.id]);
+    const after = await requireOwnedAnonymousProject(sessionMock.id, projectId);
+    expect(after.version).toBe(before.version);
+    expect(after.project.keyframes).toEqual(before.project.keyframes);
+    const clearedAgain = await DELETE(request());
+    expect(await clearedAgain.json()).toMatchObject({ clearedEvents: 0, clearedCalls: 0, activeCount: 1 });
     sessionMock.id = "log-session-b";
     const foreign = await DELETE(request());
     expect(foreign.status).toBe(404);

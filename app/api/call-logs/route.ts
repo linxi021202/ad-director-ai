@@ -47,8 +47,7 @@ export async function DELETE(request: NextRequest) {
   if (!projectId) return projectNotFoundResponse();
   try {
     const result = await clearOwnedProjectDiagnosticHistory(sessionResult.session.id, projectId,
-      () => clearModelCallLogs(sessionResult.session.id, projectId));
-    if (result.activeCount) return NextResponse.json({ error: `当前仍有 ${result.activeCount} 个生成任务运行，请等待完成后再清空日志。`, activeCount: result.activeCount }, { status: 409 });
+      (preserveTaskIds) => clearModelCallLogs(sessionResult.session.id, projectId, preserveTaskIds));
     return NextResponse.json({ success: true, ...result }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return projectStoreErrorResponse(error) ?? NextResponse.json({ error: "清空调用日志失败，请稍后重试。" }, { status: 500 });

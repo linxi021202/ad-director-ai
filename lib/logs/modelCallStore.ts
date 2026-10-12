@@ -188,14 +188,15 @@ export async function readModelCallLogArchive(sessionId: string, projectId: stri
   return { entries, retentionLimitReached: archive.entries.length >= MODEL_CALL_LOG_LIMIT, retentionDays: 30, firstAvailableAt: archive.entries[0]?.startedAt ?? null };
 }
 
-export async function clearModelCallLogs(sessionId: string, projectId: string): Promise<number> {
+export async function clearModelCallLogs(sessionId: string, projectId: string, preserveTaskIds: ReadonlySet<string> = new Set()): Promise<number> {
   await requireOwnedAnonymousProject(sessionId, projectId);
   const file = logPath(sessionId);
   let removed = 0;
   await serialize(file, async () => {
     const stored = await readLogFile(file);
-    removed = stored.entries.filter((entry) => entry.projectId === projectId).length;
-    if (removed) await writeLogFile(file, { version: 1, entries: stored.entries.filter((entry) => entry.projectId !== projectId) });
+    const kept = stored.entries.filter((entry) => entry.projectId !== projectId || preserveTaskIds.has(entry.taskId));
+    removed = stored.entries.length - kept.length;
+    if (removed) await writeLogFile(file, { version: 1, entries: kept });
   });
   return removed;
 }

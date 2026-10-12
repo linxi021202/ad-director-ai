@@ -92,9 +92,9 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
       setHasMore((data.data?.entries ?? []).length === 50);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "调用日志暂时无法读取。");
+      if (epoch === loadEpoch.current) setError(cause instanceof Error ? cause.message : "调用日志暂时无法读取。");
     } finally {
-      setLoading(false);
+      if (epoch === loadEpoch.current) setLoading(false);
     }
   }
 
@@ -127,13 +127,18 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
   async function clearLogs() {
     if (!projectId) return;
     setClearing(true);
+    setError(null);
     try {
       const response = await fetch(`/api/call-logs?projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" });
-      const data = await response.json() as { error?: string; clearedCalls?: number; clearedEvents?: number };
+      const data = await response.json() as { error?: string; clearedCalls?: number; clearedEvents?: number; activeCount?: number };
       if (!response.ok) throw new Error(data.error ?? "清空调用日志失败。");
       loadEpoch.current += 1;
       setEntries([]); setSelectedId(null); setHasMore(false); setConfirmClear(false);
-      setNotice("调用日志已清空。"); setError(null);
+      const removed = (data.clearedCalls ?? 0) + (data.clearedEvents ?? 0);
+      setNotice(removed ? `已清空 ${data.clearedCalls ?? 0} 条调用记录和 ${data.clearedEvents ?? 0} 条任务记录。${data.activeCount ? `正在运行的 ${data.activeCount} 个任务及其日志已保留。` : ""}`
+        : data.activeCount ? "没有可清空的历史记录；正在运行的任务及其日志已保留。" : "当前没有可清空的记录。");
+      setError(null);
+      void load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "清空调用日志失败。"); }
     finally { setClearing(false); }
   }
@@ -217,7 +222,7 @@ export function CallLogDrawer({ projectId, projectName, label = "调用日志", 
         {error ? <p className="call-log-error">{error}</p> : null}
         {notice ? <p className="call-log-notice" role="status">{notice}</p> : null}
       </div>
-      {confirmClear ? <div className="call-log-confirm-layer"><div role="alertdialog" aria-modal="true" aria-label="确认清空调用日志"><strong>清空当前项目日志？</strong><p>清空后将无法恢复，但不会删除项目内容和生成素材。</p><div><button type="button" disabled={clearing} onClick={() => setConfirmClear(false)}>取消</button><button type="button" className="is-danger" disabled={clearing} onClick={() => void clearLogs()}>{clearing ? "清空中…" : "确认清空"}</button></div></div></div> : null}
+      {confirmClear ? <div className="call-log-confirm-layer"><div role="alertdialog" aria-modal="true" aria-label="确认清空调用日志"><strong>清空当前项目日志？</strong><p>已结束的任务及调用历史将无法恢复；正在运行的任务及其日志会保留。项目内容和生成素材不会删除。</p>{error ? <p className="call-log-error" role="alert">{error}</p> : null}<div><button type="button" disabled={clearing} onClick={() => { setConfirmClear(false); setError(null); }}>取消</button><button type="button" className="is-danger" disabled={clearing} onClick={() => void clearLogs()}>{clearing ? "清空中…" : "确认清空"}</button></div></div></div> : null}
     </ViewportDrawer>
   </>;
 }

@@ -512,22 +512,21 @@ export async function mutateOwnedAnonymousProject(
 export async function clearOwnedProjectDiagnosticHistory(
   sessionId: string,
   projectId: string,
-  clearModelLogs: () => Promise<number>
+  clearModelLogs: (preserveTaskIds: ReadonlySet<string>) => Promise<number>
 ): Promise<{ clearedEvents: number; clearedCalls: number; activeCount: number }> {
   const safeId = parseProjectId(projectId);
   return withWriteQueue(`project:${sessionNamespace(sessionId)}:${safeId}`, async () => {
     const current = await requireOwnedAnonymousProject(sessionId, safeId);
     const events = current.project.generationEvents ?? [];
-    const activeCount = events.filter((event) => ["queued", "running", "qa-review"].includes(event.status)).length;
-    if (activeCount) return { clearedEvents: 0, clearedCalls: 0, activeCount };
-    const clearedCalls = await clearModelLogs();
-    if (events.length) {
+    const activeEvents = events.filter((event) => ["queued", "running", "qa-review"].includes(event.status));
+    const clearedCalls = await clearModelLogs(new Set(activeEvents.map((event) => event.id)));
+    if (events.length !== activeEvents.length) {
       await writeRecordAtomic(sessionId, anonymousProjectRecordSchema.parse({
         ...current,
-        project: { ...current.project, generationEvents: [] }
+        project: { ...current.project, generationEvents: activeEvents }
       }));
     }
-    return { clearedEvents: events.length, clearedCalls, activeCount: 0 };
+    return { clearedEvents: events.length - activeEvents.length, clearedCalls, activeCount: activeEvents.length };
   });
 }
 export async function deleteOwnedAnonymousProject(sessionId: string, projectId: string): Promise<void> {
