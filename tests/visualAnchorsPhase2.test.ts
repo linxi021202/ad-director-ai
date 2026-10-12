@@ -21,6 +21,7 @@ import { ensureStageWorkflow, lockStageInProject, setStageStatusInProject } from
 import { buildCharacterCandidatePrompt, buildSceneCandidatePrompt } from "../lib/visual/anchorPrompts";
 import { fallbackCharacterDirections, fallbackSceneDirections } from "../lib/visual/candidateDirections";
 import {
+  candidateIndexesToGenerate,
   ensureVisualAnchorWorkspace,
   getVisualAnchorSelection,
   getVisualAnchorReadiness,
@@ -32,6 +33,18 @@ import { canEnterStoryboard, deriveVisualSetupStageState, getVisualSetupBlockers
 import { getActionBlockers } from "../lib/workflow/actionBlockers";
 import { StageContextPanel, StageDirectorRail, StageInspector } from "../components/StageDirectorRail";
 import { VisualAnchorsCanvas } from "../components/VisualAnchorsCanvas";
+
+describe("candidate generation slots", () => {
+  it("generates only missing slots and keeps successful images until the set is complete", () => {
+    const targetId = "scene-a";
+    const candidates = [1, 2, 3].map((candidateIndex) => ({ targetId, candidateIndex, status: "ready", label: `场景方案 ${candidateIndex}` })) as VisualAnchorCandidate[];
+    expect(candidateIndexesToGenerate([], targetId)).toEqual([1, 2, 3]);
+    expect(candidateIndexesToGenerate(candidates.slice(0, 2), targetId)).toEqual([3]);
+    expect(candidateIndexesToGenerate(candidates, targetId)).toEqual([1, 2, 3]);
+    expect(candidateIndexesToGenerate(candidates, targetId, 2)).toEqual([2]);
+    expect(candidateIndexesToGenerate([{ ...candidates[0]!, status: "outdated" }, candidates[1]!], targetId)).toEqual([1, 3]);
+  });
+});
 
 const originalEnv = { ...process.env };
 (globalThis as typeof globalThis & { React: typeof React }).React = React;

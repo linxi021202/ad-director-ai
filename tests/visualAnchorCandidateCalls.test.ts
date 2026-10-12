@@ -214,13 +214,15 @@ describe("visual anchor candidate calls", () => {
       .some((entry) => entry.mode === "project-read-after-write-verified" && entry.projectVersionAtStart! < entry.projectVersionBeforePersist!)).toBe(true);
 
     await mutateOwnedAnonymousProject(session.id, created.id, (project) => ({ ...project,
-      visualAnchorWorkspace: { ...project.visualAnchorWorkspace!, sceneCandidates: [] } }));
+      visualAnchorWorkspace: { ...project.visualAnchorWorkspace!, sceneCandidates: project.visualAnchorWorkspace!.sceneCandidates.filter((item) => item.candidateIndex === 1) } }));
     const recoveryRequest = () => new Request(`http://localhost/api/projects/${created.id}/visual-anchors`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "recover-candidates", kind: "scene", targetId, taskId: event!.id,
         expectedVersion: saved.version })
     });
-    expect((await POST(recoveryRequest(), { params: Promise.resolve({ projectId: created.id }) })).status).toBe(200);
+    const partialRecovery = await POST(recoveryRequest(), { params: Promise.resolve({ projectId: created.id }) });
+    expect(partialRecovery.status).toBe(200);
+    expect((await partialRecovery.json()).recovered).toBe(2);
     expect((await POST(recoveryRequest(), { params: Promise.resolve({ projectId: created.id }) })).status).toBe(200);
     const recovered = await requireOwnedAnonymousProject(session.id, created.id);
     expect(recovered.project.visualAnchorWorkspace?.sceneCandidates.map((item) => item.assetId).sort())

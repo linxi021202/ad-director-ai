@@ -21,6 +21,13 @@ export type VisualAnchorReadiness = {
   missingSceneIds: string[];
 };
 
+export function candidateIndexesToGenerate(candidates: VisualAnchorCandidate[] | undefined, targetId: string, requestedIndex?: number): number[] {
+  if (requestedIndex) return [requestedIndex];
+  const occupied = new Set((candidates ?? []).filter((item) => item.targetId === targetId && item.status !== "outdated")
+    .map((item) => item.candidateIndex ?? Number(item.label.match(/方案\s*(\d+)/)?.[1])).filter((index) => index >= 1 && index <= 3));
+  return occupied.size === 3 ? [1, 2, 3] : [1, 2, 3].filter((index) => !occupied.has(index));
+}
+
 export function ensureVisualAnchorWorkspace(project: GenerationProject, now = new Date().toISOString()): GenerationProject {
   const stageWasLocked = project.stageStates?.anchors.status === "locked";
   const previous = project.visualAnchorWorkspace;

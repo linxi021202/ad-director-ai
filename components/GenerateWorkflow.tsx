@@ -38,7 +38,7 @@ import {
   ensureStageWorkflow,
   type DependencyImpact
 } from "@/lib/workflow/stageGates";
-import { currentMasterAssetId, getVisualAnchorReadiness, getVisualAnchorResourceId, getVisualAnchorSelection } from "@/lib/visual/visualAnchors";
+import { candidateIndexesToGenerate, currentMasterAssetId, getVisualAnchorReadiness, getVisualAnchorResourceId, getVisualAnchorSelection } from "@/lib/visual/visualAnchors";
 import { deriveVisualSetupStageState, visualSetupStatusLabel } from "@/lib/visual/visualSetupStage";
 import {
   saveProjectBriefWithConflictRetry,
@@ -258,10 +258,10 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     const sceneIds = activeProject.visualAnchorWorkspace?.requiredSceneIds ?? [];
     if (sceneIds.length !== 1) return;
     const targetId = sceneIds[0]!;
-    if (activeProject.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === targetId && item.status !== "outdated")) return;
+    if ((activeProject.visualAnchorWorkspace?.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated").length ?? 0) >= 3) return;
     const event = [...(activeProject.generationEvents ?? [])].reverse().find((item) => item.stage === "anchors"
       && item.provider === "qwen-image" && item.action === "生成场景候选方案"
-      && ["completed", "failed", "interrupted"].includes(item.status));
+      && ["completed", "needs-review", "failed", "interrupted"].includes(item.status));
     if (!event) return;
     const key = `${activeProject.id}:${event.id}`;
     if (attemptedSceneRecoveryRef.current.has(key)) return;
@@ -275,8 +275,11 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         if (response.status === 410) setError("先前生成的场景图片文件已失效，无法自动恢复；请查看调用日志。");
         return;
       }
-      applyProjectUpdate(await fetchServerProject(activeProject.id));
-      setTraceLabel("已恢复先前生成的场景图片");
+      const result = await response.json() as { recovered?: number };
+      if (result.recovered) {
+        applyProjectUpdate(await fetchServerProject(activeProject.id));
+        setTraceLabel(`已恢复 ${result.recovered} 张先前生成的场景图片`);
+      }
     })().catch(() => undefined);
   }, [activeStage, activeProject]);
 
@@ -983,8 +986,11 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     }
   }
 
-  async function postAnchorAction(body: Record<string, unknown>, busyTarget: string) {
+  async function postAnchorAction(body: Record<string, unknown>, busyTarget: string, keepBusy = false) {
     if (anchorBusyTarget) return null;
+    const previousCandidateIds = body.action === "generate-candidates" && body.kind === "scene"
+      ? new Set(latestProjectRef.current.visualAnchorWorkspace?.sceneCandidates.filter((item) => item.targetId === body.targetId
+        && item.candidateIndex === body.candidateIndex && item.status !== "outdated").map((item) => item.id)) : undefined;
     setAnchorBusyTarget(busyTarget);
     setError(null);
     try {
@@ -999,7 +1005,8 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
         const snapshot = await fetchServerProject(activeProject.id);
         const refreshed = applyProjectUpdate(snapshot);
         if (body.action === "generate-candidates" && body.kind === "scene"
-          && refreshed.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === body.targetId && item.status !== "outdated")) {
+          && refreshed.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === body.targetId
+            && item.candidateIndex === body.candidateIndex && item.status !== "outdated" && !previousCandidateIds?.has(item.id))) {
           return refreshed;
         }
         throw new Error("项目状态已更新，已同步最新场景信息；已生成的图片会优先恢复，请稍后查看。");
@@ -1011,7 +1018,7 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       await refreshServerEvents(activeProject.id);
       return refreshed;
     } finally {
-      setAnchorBusyTarget(null);
+      if (!keepBusy) setAnchorBusyTarget(null);
     }
   }
 
@@ -1026,15 +1033,15 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
 
   async function generateVisualAnchorCandidates(kind: VisualAnchorCandidateKind, targetId: string, candidateIndex?: number) {
     if (kind === "scene" && !candidateIndex
-      && !activeProject.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === targetId && item.status !== "outdated")) {
+      && (activeProject.visualAnchorWorkspace?.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated").length ?? 0) < 3) {
       const event = [...(activeProject.generationEvents ?? [])].reverse().find((item) => item.stage === "anchors"
         && item.provider === "qwen-image" && item.action === "生成场景候选方案"
-        && ["completed", "failed", "interrupted"].includes(item.status));
+        && ["completed", "needs-review", "failed", "interrupted"].includes(item.status));
       if (event) {
         try {
           const recovered = await postAnchorAction({ action: "recover-candidates", kind: "scene", targetId, taskId: event.id },
             `recover:scene:${targetId}`);
-          if (recovered?.visualAnchorWorkspace?.sceneCandidates.some((item) => item.targetId === targetId && item.status !== "outdated")) {
+          if ((recovered?.visualAnchorWorkspace?.sceneCandidates.filter((item) => item.targetId === targetId && item.status !== "outdated").length ?? 0) >= 3) {
             setTraceLabel("已恢复先前生成的场景图片，无需重新生成");
             return;
           }
@@ -1051,12 +1058,33 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
       return;
     }
     try {
-      await postAnchorAction({ action: "generate-candidates", kind, targetId, count: candidateIndex ? 1 : 3,
-        ...(candidateIndex ? { candidateIndex } : {}) }, `generate:${kind}:${targetId}`);
+      const latest = applyProjectUpdate(await fetchServerProject(activeProject.id));
+      await generateCandidateSlots(kind, targetId, latest, candidateIndex);
       setTraceLabel(`${kind === "character" ? "人物" : "场景"}候选已生成，等待选择`);
     } catch (stageError) {
       setError(stageError instanceof Error ? stageError.message : "视觉候选生成失败。");
     }
+  }
+
+  async function generateCandidateSlots(kind: VisualAnchorCandidateKind, targetId: string, source: GenerationProject, requestedIndex?: number) {
+    const busyTarget = `generate:${kind}:${targetId}`;
+    const existing = source.visualAnchorWorkspace?.[kind === "character" ? "characterCandidates" : "sceneCandidates"] ?? [];
+    const indexes = candidateIndexesToGenerate(existing, targetId, requestedIndex);
+    let latest = source;
+    try {
+      for (const index of indexes) {
+        try {
+          const saved = await postAnchorAction({ action: "generate-candidates", kind, targetId, count: 1, candidateIndex: index }, busyTarget, true);
+          if (!saved) throw new Error("已有视觉生成操作正在进行，请等待当前操作完成。");
+          latest = saved;
+        } catch (error) {
+          throw new Error(`${kind === "character" ? "人物" : "场景"}候选 ${index} 生成未完成；已成功保存的图片不会丢失。${error instanceof Error ? error.message : "请重试该候选。"}`);
+        }
+      }
+    } finally {
+      setAnchorBusyTarget(null);
+    }
+    return latest;
   }
 
   async function generateAllVisualCandidates(source: GenerationProject = activeProject) {
@@ -1072,20 +1100,22 @@ export function GenerateWorkflow({ project, projectVersion, aiStatus, canCreateP
     const scenes = latest.visualAnchorWorkspace?.requiredSceneIds ?? [];
     for (const targetId of characters) {
       try {
-        latest = await postAnchorAction({ action: "generate-candidates", kind: "character", targetId, count: 3 }, `generate:character:${targetId}`) ?? latest;
-      } catch {
-        failures.push("人物");
+        latest = await generateCandidateSlots("character", targetId, latest);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : "人物候选生成未完成。");
+        break;
       }
     }
-    for (const targetId of scenes) {
+    for (const targetId of failures.length ? [] : scenes) {
       try {
-        latest = await postAnchorAction({ action: "generate-candidates", kind: "scene", targetId, count: 3 }, `generate:scene:${targetId}`) ?? latest;
-      } catch {
-        failures.push("场景");
+        latest = await generateCandidateSlots("scene", targetId, latest);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : "场景候选生成未完成。");
+        break;
       }
     }
     setTraceLabel(failures.length ? "部分视觉候选生成失败，可在对应模块重试" : "人物与场景候选已生成，等待选择");
-    if (failures.length) setError(`${Array.from(new Set(failures)).join("和")}候选有部分失败，成功图片已保留，请在对应区域重试。`);
+    if (failures.length) setError(failures[0]!);
     return latest;
   }
 
