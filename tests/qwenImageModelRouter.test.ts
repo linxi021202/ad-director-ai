@@ -40,6 +40,36 @@ describe("Qwen capability-aware routing", () => {
     expect(call.mock.calls.map(([item]) => item.model)).toEqual(["qwen-image-max-2025-12-30", "qwen-image-2.0-pro-2026-06-22"]);
   });
 
+  it("falls back after Model not exist and skips the unavailable snapshot for later candidates", async () => {
+    const request = { ...input, referenceImages: [], taskType: "character_candidate" as const };
+    const calls: string[] = [];
+    const attempts: QwenModelAttempt[] = [];
+    const call = vi.fn(async (item: QwenImageRequest) => {
+      calls.push(item.model!);
+      return item.model === "qwen-image-max-2025-12-30"
+        ? { ...result(item.model, false, classifyQwenFailure(404, "InvalidParameter", "Model not exist.")), httpStatus: 404 }
+        : result(item.model!, true);
+    });
+    const first = await generateQwenImageAdaptive(request, async (attempt) => { attempts.push(attempt); }, call);
+    const second = await generateQwenImageAdaptive(request, async (attempt) => { attempts.push(attempt); }, call);
+    expect(first).toMatchObject({ success: true, model: "qwen-image-2.0-pro-2026-06-22" });
+    expect(second.success).toBe(true);
+    expect(calls.filter((model) => model === "qwen-image-max-2025-12-30")).toHaveLength(1);
+    expect(attempts).toContainEqual(expect.objectContaining({ model: "qwen-image-max-2025-12-30",
+      errorCode: "MODEL_NOT_AVAILABLE", routerDecision: "FALLBACK_NEXT_MODEL", httpStatus: 404 }));
+  });
+
+  it("tries the stable max alias when both dated text models are unavailable", async () => {
+    const request = { ...input, referenceImages: [], taskType: "character_candidate" as const };
+    const call = vi.fn(async (item: QwenImageRequest) => item.model === "qwen-image-max"
+      ? result(item.model, true) : result(item.model!, false, "MODEL_NOT_AVAILABLE"));
+    const response = await generateQwenImageAdaptive(request, undefined, call);
+    expect(response).toMatchObject({ success: true, model: "qwen-image-max" });
+    expect(call.mock.calls.map(([item]) => item.model)).toEqual([
+      "qwen-image-max-2025-12-30", "qwen-image-2.0-pro-2026-06-22", "qwen-image-max"
+    ]);
+  });
+
   it("stops the provider on Arrearage", async () => {
     const call = vi.fn(async (item: QwenImageRequest) => result(item.model!, false, "INSUFFICIENT_BALANCE"));
     expect((await generateQwenImageAdaptive({ ...input, referenceImages: [], taskType: "character_candidate" }, undefined, call)).errorCode).toBe("INSUFFICIENT_BALANCE");
@@ -252,6 +282,8 @@ describe("Qwen capability-aware routing", () => {
     expect(classifyQwenFailure(400, "Arrearage", "Insufficient balance")).toBe("INSUFFICIENT_BALANCE");
     expect(classifyQwenFailure(403, "Arrearage", "AccountNotGoodStanding")).toBe("INSUFFICIENT_BALANCE");
     expect(classifyQwenFailure(400, "InvalidParameter", "Invalid image size")).toBe("INVALID_PARAMETER");
+    expect(classifyQwenFailure(404, "InvalidParameter", "Model not exist.")).toBe("MODEL_NOT_AVAILABLE");
+    expect(classifyQwenFailure(400, "InvalidParameter", "Prompt not exist.")).toBe("INVALID_PARAMETER");
     expect(shouldFallbackQwen("AUTH_FAILED")).toBe(false);
     expect(shouldFallbackQwen("INVALID_PARAMETER")).toBe(false);
     expect(shouldFallbackQwen("INSUFFICIENT_BALANCE")).toBe(false);
@@ -292,6 +324,12 @@ describe("Qwen task lifecycle", () => {
     vi.stubGlobal("fetch", fetchMock);
     const response = await callQwenImage({ prompt: "人物", model: "qwen-image-max-2025-12-30", sessionId: input.sessionId });
     expect(response).toMatchObject({ success: true, model: "qwen-image-max-2025-12-30" });
+  });
+
+  it("maps the provider's Model not exist response to a model-scoped failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ code: "InvalidParameter", message: "Model not exist." }), { status: 404 })));
+    const response = await callQwenImage({ prompt: "人物", model: "qwen-image-max-2025-12-30", sessionId: input.sessionId });
+    expect(response).toMatchObject({ success: false, errorCode: "MODEL_NOT_AVAILABLE", providerErrorCode: "InvalidParameter", httpStatus: 404 });
   });
 
   it("submits 3.0 asynchronously, then observes PENDING, RUNNING and SUCCEEDED", async () => {

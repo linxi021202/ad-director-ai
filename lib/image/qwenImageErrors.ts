@@ -15,7 +15,7 @@ export function classifyQwenFailure(httpStatus: number | undefined, providerCode
   if (httpStatus === 429 || /rate.limit|throttl|too.many.requests/.test(detail)) return "RATE_LIMITED";
   if (/region|workspace.region/.test(detail) && /not.support|unavailable|mismatch|invalid/.test(detail)) return "MODEL_NOT_SUPPORTED_IN_REGION";
   if (/model.*temporar(?:y|ily).*unavailable|temporar(?:y|ily).*model.*unavailable/.test(detail)) return "MODEL_TEMPORARILY_UNAVAILABLE";
-  if (/model[._ -]*not[._ -]*found|model[._ -]*not[._ -]*available|model[._ -]*unavailable|invalid[._ -]*model|model.*does.not.exist/.test(detail)) return "MODEL_NOT_AVAILABLE";
+  if (/model[._ -]*not[._ -]*(?:found|available|exist)|model[._ -]*unavailable|invalid[._ -]*model|model.*does.not.exist/.test(detail)) return "MODEL_NOT_AVAILABLE";
   if (/reference.*not.support|image.input.*not.support/.test(detail)) return "REFERENCE_IMAGE_NOT_SUPPORTED";
   if (/invalid.parameter|invalidparam|malformed.request/.test(code)) return "INVALID_PARAMETER";
   if (/invalid.image|image.*invalid|image.*format|image.*too.large/.test(detail)) return "INVALID_IMAGE";
@@ -37,7 +37,7 @@ export function qwenImageUserMessage(code?: string): string {
   if (code === "STORAGE_UNAVAILABLE") return "服务器素材存储暂不可用，已暂停图片生成，请稍后重试或联系管理员。";
   if (code === "QUOTA_EXHAUSTED") return "当前兼容的免费图像模型额度均已用尽。可以在模型设置中更换 API Key，或前往百炼控制台查看各模型免费额度。";
   if (code === "MODEL_NOT_AVAILABLE" || code === "MODEL_TEMPORARILY_UNAVAILABLE" || code === "MODEL_NOT_SUPPORTED_IN_REGION")
-    return "当前兼容的图像模型暂不可用，请查看调用日志或模型设置。";
+    return "当前百炼密钥所在地域或工作空间可能不支持这些图像模型。请核对密钥所属地域与服务端地址，并查看调用日志。";
   if (code === "INSUFFICIENT_BALANCE") return "当前百炼账户处于欠费或不可用状态，即使其它模型仍有免费额度也无法调用。请先检查 API Key 所属账户状态。";
   if (code === "AUTH_FAILED" || code === "PROVIDER_NOT_CONFIGURED") return "当前百炼账户密钥无效或没有调用权限，请检查 API Key。";
   if (code === "INVALID_PARAMETER" || code === "INVALID_IMAGE" || code === "REFERENCE_IMAGE_REQUIRED" || code === "MODEL_ROUTING_FAILED")

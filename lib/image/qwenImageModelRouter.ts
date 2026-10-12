@@ -8,7 +8,7 @@ import { diagnoseDashScopeConnection } from "./dashscopeDiagnostics";
 import { qwenImageUserMessage, shouldFallbackQwen, type QwenFailureCode } from "./qwenImageErrors";
 import type { QwenImageRequest, QwenImageResult, QwenImageTaskType, QwenNetworkFailure, QwenSubmissionDiagnostic } from "./types";
 
-export const QWEN_TEXT_MODELS = ["qwen-image-max-2025-12-30", "qwen-image-2.0-pro-2026-06-22", "qwen-image-plus"] as const;
+export const QWEN_TEXT_MODELS = ["qwen-image-max-2025-12-30", "qwen-image-2.0-pro-2026-06-22", "qwen-image-max", "qwen-image-plus"] as const;
 export const QWEN_REFERENCE_MODELS = ["qwen-image-edit-max-2026-01-16", "qwen-image-2.0-pro-2026-06-22", "qwen-image-edit-plus", "qwen-image-edit"] as const;
 export const QWEN_FREE_ONLY = process.env.QWEN_FREE_ONLY !== "false";
 export const DEFAULT_QWEN_ACCOUNT_HARD_STOP_TTL_MS = 5 * 60_000;
